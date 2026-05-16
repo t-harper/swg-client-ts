@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { ReadIterator } from '../../archive/read-iterator.js';
+import {
+  ChatInstantMessageToCharacter,
+  ChatPersistentMessageToServer,
+  ChatRequestRoomList,
+  ChatSendToRoom,
+} from '../../messages/game/chat/index.js';
 import { ClientOpenContainerMessage } from '../../messages/game/client-open-container.js';
 import {
   CLIENT_TO_AUTH_SERVER_FLAGS,
@@ -176,4 +182,64 @@ describe('ScriptContext: combat / command-queue primitives', () => {
     }, ctx);
     expect(result.sendsCount).toBe(3);
   });
+});
+
+describe('ScriptContext: chat primitives', () => {
+  it('tell sends one ChatInstantMessageToCharacter with the target avatar', () => {
+    const { ctx, sent } = createFakeContext();
+    const seq = ctx.tell('FriendName', 'hello');
+    expect(seq).toBe(1);
+    expect(sent.length).toBe(1);
+    const m = sent[0];
+    expect(m).toBeInstanceOf(ChatInstantMessageToCharacter);
+    const tell = m as ChatInstantMessageToCharacter;
+    expect(tell.characterName.name).toBe('FriendName');
+    expect(tell.message).toBe('hello');
+    expect(tell.sequence).toBe(1);
+  });
+
+  it('sendToChannel sends one ChatSendToRoom with the right channel id', () => {
+    const { ctx, sent } = createFakeContext();
+    ctx.sendToChannel(42, 'in channel');
+    expect(sent.length).toBe(1);
+    const m = sent[0] as ChatSendToRoom;
+    expect(m).toBeInstanceOf(ChatSendToRoom);
+    expect(m.roomId).toBe(42);
+    expect(m.message).toBe('in channel');
+  });
+
+  it('sendMail sends one ChatPersistentMessageToServer', () => {
+    const { ctx, sent } = createFakeContext();
+    ctx.sendMail('PenPal', 'subject', 'body');
+    const m = sent[0];
+    expect(m).toBeInstanceOf(ChatPersistentMessageToServer);
+  });
+
+  it('requestChannelList sends one ChatRequestRoomList', () => {
+    const { ctx, sent } = createFakeContext();
+    ctx.requestChannelList();
+    expect(sent[0]).toBeInstanceOf(ChatRequestRoomList);
+  });
+
+  it('nextChatSequence increments independently of movement/command', () => {
+    const { ctx } = createFakeContext();
+    expect(ctx.nextChatSequence()).toBe(1);
+    expect(ctx.nextChatSequence()).toBe(2);
+    expect(ctx.nextSequenceNumber()).toBe(1);
+    expect(ctx.nextCommandSequence()).toBe(1);
+  });
+
+  it('chat sends count toward sendsCount', async () => {
+    const { ctx } = createFakeContext();
+    const result = await runScript(async (c) => {
+      c.tell('A', 'hi');
+      c.sendToChannel(1, 'hi');
+      c.requestChannelList();
+    }, ctx);
+    expect(result.sendsCount).toBe(3);
+  });
+
+  // ReadIterator is imported for parity with combat tests if future chat
+  // round-trips need it inline.
+  void ReadIterator;
 });

@@ -63,6 +63,25 @@ export type {
   FleetSummary,
 } from './client/fleet.js';
 
+// Chat message primitives — useful for consumers that want to send tells,
+// post in chat rooms, or send in-game mail without going through the
+// scripting engine.
+export {
+  ChatInstantMessageToCharacter,
+  ChatInstantMessageToClient,
+  ChatRequestRoomList,
+  ChatRoomList,
+  ChatSendToRoom,
+  ChatPersistentMessageToServer,
+  PERSISTENT_MESSAGE_MAX_SIZE,
+  chatAvatarId,
+  ChatRoomType,
+} from './messages/game/chat/index.js';
+export type {
+  ChatAvatarId,
+  ChatRoomData,
+} from './messages/game/chat/index.js';
+
 // Wire capture + replay harness
 export {
   attachCapture,

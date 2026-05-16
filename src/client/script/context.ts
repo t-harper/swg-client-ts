@@ -14,6 +14,14 @@
  *   };
  */
 
+import {
+  type ChatAvatarId,
+  ChatInstantMessageToCharacter,
+  ChatPersistentMessageToServer,
+  ChatRequestRoomList,
+  ChatSendToRoom,
+  chatAvatarId,
+} from '../../messages/game/chat/index.js';
 import { ClientOpenContainerMessage } from '../../messages/game/client-open-container.js';
 import {
   CommandQueueEnqueue,
@@ -136,6 +144,29 @@ export interface ScriptContext {
    *   - 'sitting'   → 'sit'
    */
   changePosture(posture: Posture): number;
+
+  // --- Chat primitives ---
+
+  /** Next chat sequence id (auto-incremented; separate from movement/command). */
+  nextChatSequence(): number;
+  /**
+   * Send `text` as a private tell to `targetName`. Pass a bare first-name
+   * (lowercased server-side) or a full `ChatAvatarId` for cross-cluster.
+   */
+  tell(targetName: string | ChatAvatarId, text: string): number;
+  /** Post `text` into chat-room `channelId`. */
+  sendToChannel(channelId: number, text: string): number;
+  /** Send in-game mail (persistent message) to `target`. */
+  sendMail(target: string | ChatAvatarId, subject: string, body: string): number;
+  /**
+   * Best-effort spatial-chat sugar. Today this routes through tell-to-self
+   * because true spatial chat is an ObjControllerMessage subtype
+   * (CM_spatialChat). When that decoder lands the implementation can switch
+   * without changing call sites.
+   */
+  say(text: string): number;
+  /** Request the server's chat-room list (server responds with ChatRoomList). */
+  requestChannelList(): void;
 }
 
 interface InternalContext extends ScriptContext {
@@ -146,6 +177,7 @@ interface InternalContext extends ScriptContext {
     pose: { x: number; y: number; z: number; yaw: number };
     sequenceNumber: number;
     commandSequence: number;
+    chatSequence: number;
   };
 }
 
@@ -157,6 +189,8 @@ export interface CreateScriptContextOptions {
   initialSequenceNumber?: number;
   /** Initial sequence number for command-queue messages. Default 1. */
   initialCommandSequence?: number;
+  /** Initial sequence number for chat messages. Default 1. */
+  initialChatSequence?: number;
 }
 
 export function createScriptContext(opts: CreateScriptContextOptions): ScriptContext {
@@ -171,6 +205,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     },
     sequenceNumber: opts.initialSequenceNumber ?? 1,
     commandSequence: opts.initialCommandSequence ?? 1,
+    chatSequence: opts.initialChatSequence ?? 1,
   };
 
   const ctx: InternalContext = {
@@ -261,6 +296,47 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
 
     changePosture(posture): number {
       return ctx.useAbility(POSTURE_COMMAND[posture]);
+    },
+
+    // --- Chat primitives ---
+
+    nextChatSequence(): number {
+      return state.chatSequence++;
+    },
+
+    tell(targetName, text): number {
+      const seq = ctx.nextChatSequence();
+      const avatar =
+        typeof targetName === 'string' ? chatAvatarId(targetName) : targetName;
+      ctx.send(new ChatInstantMessageToCharacter(avatar, text, '', seq));
+      return seq;
+    },
+
+    sendToChannel(channelId, text): number {
+      const seq = ctx.nextChatSequence();
+      ctx.send(new ChatSendToRoom(seq, channelId, text, ''));
+      return seq;
+    },
+
+    sendMail(target, subject, body): number {
+      const seq = ctx.nextChatSequence();
+      const avatar = typeof target === 'string' ? chatAvatarId(target) : target;
+      ctx.send(new ChatPersistentMessageToServer(seq, avatar, subject, body, ''));
+      return seq;
+    },
+
+    say(text): number {
+      // Tell-to-self as a placeholder until spatial-chat subtype lands in
+      // ObjController. Exercises the chat pipeline end-to-end.
+      const selfName = (opts.sceneStart.templateName.split('/').pop() ?? 'self').replace(
+        /\.iff$/,
+        '',
+      );
+      return ctx.tell(selfName, text);
+    },
+
+    requestChannelList(): void {
+      ctx.send(new ChatRequestRoomList());
     },
   };
 

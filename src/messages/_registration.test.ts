@@ -1,5 +1,5 @@
 /**
- * Sanity check that all 20 connection + game message classes load cleanly
+ * Sanity check that all connection + game + chat message classes load cleanly
  * and register unique constcrcs. Catches collisions early — they'd indicate
  * either a typo in messageName or a bug in our constcrc port.
  *
@@ -20,6 +20,12 @@ import { GameServerForLoginMessage } from './connection/game-server-for-login.js
 import { SelectCharacter } from './connection/select-character.js';
 import { StationIdHasJediSlot } from './connection/station-id-has-jedi-slot.js';
 import { AttributeListMessage } from './game/attribute-list-message.js';
+import { ChatInstantMessageToCharacter } from './game/chat/chat-instant-message-to-character.js';
+import { ChatInstantMessageToClient } from './game/chat/chat-instant-message-to-client.js';
+import { ChatPersistentMessageToServer } from './game/chat/chat-persistent-message-to-server.js';
+import { ChatRequestRoomList } from './game/chat/chat-request-room-list.js';
+import { ChatRoomList } from './game/chat/chat-room-list.js';
+import { ChatSendToRoom } from './game/chat/chat-send-to-room.js';
 import { CmdSceneReady } from './game/cmd-scene-ready.js';
 import { CmdStartScene } from './game/cmd-start-scene.js';
 import { HeartBeat } from './game/heart-beat.js';
@@ -52,11 +58,17 @@ const ALL_DECODERS = [
   ObjControllerMessage,
   UpdateTransformMessage,
   AttributeListMessage,
+  ChatInstantMessageToCharacter,
+  ChatInstantMessageToClient,
+  ChatRequestRoomList,
+  ChatRoomList,
+  ChatSendToRoom,
+  ChatPersistentMessageToServer,
 ];
 
 describe('message registration', () => {
-  it('exports 20 message classes', () => {
-    expect(ALL_DECODERS.length).toBe(20);
+  it('exports 26 message classes', () => {
+    expect(ALL_DECODERS.length).toBe(26);
   });
 
   it('every class has a non-empty messageName', () => {

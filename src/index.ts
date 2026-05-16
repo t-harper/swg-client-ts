@@ -44,3 +44,16 @@ export type {
   CreateCharacterOptions,
 } from './client/connection-stage.js';
 export type { GameStageResult, GameStageOptions, BaselineSummary } from './client/game-stage.js';
+
+// Fleet multi-client orchestrator
+export { Fleet } from './client/fleet.js';
+export type {
+  FleetClientConfig,
+  FleetMessageCount,
+  FleetOptions,
+  FleetOutcome,
+  FleetResult,
+  FleetRunOptions,
+  FleetSummary,
+  ScenarioFn,
+} from './client/fleet.js';

@@ -3,18 +3,21 @@
  * swg-ts-cli — single-command verification of the full SWG lifecycle.
  *
  * Usage:
- *   swg-ts-cli zone --host=10.254.0.253 [--port=44453] --user=ci-test
- *                  [--character=TsTest] [--planet=tatooine]
- *                  [--hold-ms=5000] [--verbose]
+ *   swg-ts-cli zone  --host=10.254.0.253 [--port=44453] --user=ci-test
+ *                    [--character=TsTest] [--planet=tatooine]
+ *                    [--hold-ms=5000] [--verbose]
+ *   swg-ts-cli swarm --host=10.254.0.253 [--port=44453] --count=3
+ *                    [--user-prefix=fleet] [--stagger-ms=500]
+ *                    [--max-concurrent=10] [--hold-ms=5000] [--skip-game]
  *
- * Emits the full LifecycleResult as JSON on stdout. Exits 0 on success,
- * non-zero on failure.
+ * Emits the full LifecycleResult (zone) or aggregated FleetSummary (swarm)
+ * as JSON on stdout. Exits 0 on success, non-zero on failure.
  */
-import { SwgClient, lifecycleResultToJSON } from '../src/index.js';
+import { Fleet, type FleetClientConfig, SwgClient, lifecycleResultToJSON } from '../src/index.js';
 import type { TranscriptEvent } from '../src/index.js';
 
 interface CliArgs {
-  command: 'zone' | 'help';
+  command: 'zone' | 'swarm' | 'help';
   host: string;
   port: number;
   user: string;
@@ -27,6 +30,11 @@ interface CliArgs {
   verbose: boolean;
   pretty: boolean;
   skipGame: boolean;
+  // swarm-only
+  count: number;
+  userPrefix: string;
+  staggerMs: number;
+  maxConcurrent: number;
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -41,6 +49,10 @@ function parseArgs(argv: string[]): CliArgs {
     verbose: false,
     pretty: true,
     skipGame: false,
+    count: 1,
+    userPrefix: 'fleet',
+    staggerMs: 0,
+    maxConcurrent: 0,
   };
   const positional: string[] = [];
   for (const a of argv) {
@@ -85,6 +97,18 @@ function parseArgs(argv: string[]): CliArgs {
         case 'skip-game':
           args.skipGame = val === 'true' || val === '';
           break;
+        case 'count':
+          args.count = Number.parseInt(val, 10);
+          break;
+        case 'user-prefix':
+          args.userPrefix = val;
+          break;
+        case 'stagger-ms':
+          args.staggerMs = Number.parseInt(val, 10);
+          break;
+        case 'max-concurrent':
+          args.maxConcurrent = Number.parseInt(val, 10);
+          break;
         case 'help':
           args.command = 'help';
           break;
@@ -96,7 +120,7 @@ function parseArgs(argv: string[]): CliArgs {
       positional.push(a);
     }
   }
-  if (positional[0] === 'zone' || positional[0] === 'help') {
+  if (positional[0] === 'zone' || positional[0] === 'swarm' || positional[0] === 'help') {
     args.command = positional[0];
   } else if (positional.length === 0) {
     args.command = 'help';
@@ -113,15 +137,20 @@ function printHelp(): void {
       'swg-ts-cli — headless SWG zone-in client',
       '',
       'Usage:',
-      '  swg-ts-cli zone --host=<host> [--port=44453] --user=<account>',
-      '                 [--character=<name>] [--cluster=swg] [--planet=tatooine]',
-      '                 [--profession=combat_brawler] [--hold-ms=5000]',
-      '                 [--verbose] [--no-pretty] [--skip-game]',
+      '  swg-ts-cli zone  --host=<host> [--port=44453] --user=<account>',
+      '                   [--character=<name>] [--cluster=swg] [--planet=tatooine]',
+      '                   [--profession=combat_brawler] [--hold-ms=5000]',
+      '                   [--verbose] [--no-pretty] [--skip-game]',
+      '  swg-ts-cli swarm --host=<host> [--port=44453] --count=<N>',
+      '                   [--user-prefix=fleet] [--stagger-ms=500]',
+      '                   [--max-concurrent=10] [--hold-ms=5000]',
+      '                   [--planet=mos_eisley] [--skip-game] [--verbose] [--no-pretty]',
       '  swg-ts-cli help',
       '',
       'Examples:',
       '  swg-ts-cli zone --host=10.254.0.253 --user=ci-test',
       '  swg-ts-cli zone --host=10.254.0.253 --user=ci-test --character=TsTest --hold-ms=10000',
+      '  swg-ts-cli swarm --host=10.254.0.253 --count=3 --user-prefix=fleet --stagger-ms=500',
       '',
       'Exits 0 on success, 1 on failure. Always emits JSON on stdout.',
       '',
@@ -129,11 +158,80 @@ function printHelp(): void {
   );
 }
 
+async function runSwarm(args: CliArgs): Promise<number> {
+  if (args.count <= 0) {
+    process.stderr.write('--count must be a positive integer\n');
+    return 2;
+  }
+  const fleet = new Fleet({ loginServer: { host: args.host, port: args.port } });
+
+  // Stamp the prefix so re-runs don't collide on existing accounts/characters.
+  // Account name capped server-side at 15 chars (MAX_ACCOUNT_NAME_LENGTH).
+  const runTag = (Date.now() / 1000) | 0;
+  const configs: FleetClientConfig[] = [];
+  for (let i = 0; i < args.count; i++) {
+    const account = `${args.userPrefix}${runTag.toString(36)}${i}`.slice(0, 15);
+    const characterName = `Fleet${args.userPrefix}${i}`;
+    configs.push({
+      account,
+      characterName,
+      planet: args.planet === 'tatooine' ? 'mos_eisley' : args.planet,
+      profession: args.profession,
+      holdZonedInMs: args.holdMs,
+      skipGameStage: args.skipGame,
+    });
+  }
+
+  if (args.verbose) {
+    process.stderr.write(
+      `[swarm] launching ${args.count} clients (stagger=${args.staggerMs}ms, ` +
+        `maxConcurrent=${args.maxConcurrent || 'unlimited'})\n`,
+    );
+  }
+
+  const runOpts: { staggerMs?: number; maxConcurrent?: number } = {};
+  if (args.staggerMs > 0) runOpts.staggerMs = args.staggerMs;
+  if (args.maxConcurrent > 0) runOpts.maxConcurrent = args.maxConcurrent;
+
+  try {
+    const result = await fleet.run(configs, runOpts);
+
+    // Don't dump per-client transcripts — they balloon fast. Just keep the
+    // summary plus per-outcome status + (when present) error.
+    const compact = {
+      summary: result.summary,
+      outcomes: result.outcomes.map((o) => ({
+        account: o.config.account,
+        characterName: o.config.characterName,
+        elapsedMs: o.elapsedMs,
+        ok: o.error === undefined,
+        error: o.error?.message,
+        baselineObjectCount: o.lifecycleResult?.baselineObjectCount,
+        zonedInAt: o.lifecycleResult?.zonedInAt?.toISOString(),
+      })),
+    };
+    process.stdout.write(
+      args.pretty ? `${JSON.stringify(compact, null, 2)}\n` : `${JSON.stringify(compact)}\n`,
+    );
+    return result.summary.failed === 0 ? 0 : 1;
+  } catch (err) {
+    const errorReport = {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+    process.stdout.write(`${JSON.stringify(errorReport, null, 2)}\n`);
+    return 1;
+  }
+}
+
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
   if (args.command === 'help') {
     printHelp();
     return 0;
+  }
+  if (args.command === 'swarm') {
+    return runSwarm(args);
   }
   if (args.command !== 'zone') {
     printHelp();

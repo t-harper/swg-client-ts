@@ -27,6 +27,8 @@ import { SwgClient } from '../../src/client/swg-client.js';
 import { BaselinesMessage } from '../../src/messages/game/baselines/baselines-message.js';
 import { BatchBaselinesMessage } from '../../src/messages/game/baselines/batch-baselines-message.js';
 import {
+  BuildingObjectSharedKind,
+  CellObjectSharedKind,
   type CreatureObjectSharedBaseline,
   CreatureObjectSharedKind,
   PlayerObjectSharedKind,
@@ -220,5 +222,45 @@ describe.skipIf(!LIVE)('live baseline decoding (Stages 1 → 2 → 3 → 4)', ()
     // posture should be a valid Postures::Enumerator value (-1..14)
     expect(data.posture).toBeGreaterThanOrEqual(-1);
     expect(data.posture).toBeLessThanOrEqual(14);
+  }, 60_000);
+
+  it('observes BUIO and SCLT baselines during a mos_eisley zone-in (soft)', async () => {
+    // Mos Eisley starting locations sit inside / near the cantina, which has
+    // many BuildingObjects and CellObjects in observer range. We expect at
+    // least one BUIO or SCLT baseline to flow during the zone-in window —
+    // but this is soft: the server may push only opaque pkg=4/6 envelopes,
+    // or filter out buildings until the player moves. We log diagnostics on
+    // either outcome rather than fail hard.
+    const { account, characterName } = liveCredentials('bs');
+    const client = new SwgClient({ loginServer: { host: HOST, port: PORT } });
+
+    const result = await client.fullLifecycle({
+      account,
+      characterName,
+      planet: 'mos_eisley',
+      holdZonedInMs: 5_000,
+    });
+
+    const buildings = findBaselinesByKind(result, BuildingObjectSharedKind);
+    const cells = findBaselinesByKind(result, CellObjectSharedKind);
+    console.log(
+      `[buio/sclt] BuildingObjectShared=${buildings.length} CellObjectShared=${cells.length}`,
+    );
+
+    // Any building / cell baselines that did arrive must have decoded
+    // cleanly. (If the wire format drifted, decode would throw and the
+    // registry would catch + null the decodedBaseline — so checking for
+    // non-null here surfaces silent drift too.)
+    for (const b of buildings) expect(b.decodedBaseline).not.toBeNull();
+    for (const b of cells) expect(b.decodedBaseline).not.toBeNull();
+
+    // Soft assertion via console: if zero of both, surface a warning so a
+    // future run can spot it without failing CI on transient world state.
+    if (buildings.length === 0 && cells.length === 0) {
+      console.warn(
+        '[buio/sclt] No BUIO or SCLT baselines observed during zone-in. ' +
+          'This is OK on an open desert spawn but unexpected near the cantina.',
+      );
+    }
   }, 60_000);
 });

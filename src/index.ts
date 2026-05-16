@@ -47,7 +47,7 @@ export type { GameStageResult, GameStageOptions, BaselineSummary } from './clien
 
 // Scripting engine
 export type { ScenarioFn, ScriptContext, ScriptResult } from './client/script/context.js';
-export type { WalkToOptions, CircleOptions } from './client/script/movement.js';
+export type { WalkToOptions, CircleOptions, WalkToCellOptions } from './client/script/movement.js';
 export type { ExpectOptions } from './client/script/expectations.js';
 export { scenarios } from './scenarios/index.js';
 export type { ScenarioFactory } from './scenarios/index.js';
@@ -102,6 +102,10 @@ export {
   TangibleObjectSharedKind,
   TangibleObjectSharedNpDecoder,
   TangibleObjectSharedNpKind,
+  BuildingObjectSharedDecoder,
+  BuildingObjectSharedKind,
+  CellObjectSharedDecoder,
+  CellObjectSharedKind,
   stringToTag,
   tagToString,
   tryDecodeBaseline,
@@ -119,6 +123,8 @@ export type {
   TangibleObjectEffect,
   TangibleObjectSharedBaseline,
   TangibleObjectSharedNpBaseline,
+  BuildingObjectSharedBaseline,
+  CellObjectSharedBaseline,
 } from './messages/game/baselines/index.js';
 
 // Baseline analysis helpers — scan a LifecycleResult's transcript for common

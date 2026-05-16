@@ -37,6 +37,7 @@ import { SceneCreateObjectByCrc } from './game/scene-create-object-by-crc.js';
 import { SceneCreateObjectByName } from './game/scene-create-object-by-name.js';
 import { SceneEndBaselines } from './game/scene-end-baselines.js';
 import { UpdateTransformMessage } from './game/update-transform-message.js';
+import { UpdateTransformWithParentMessage } from './game/update-transform-with-parent-message.js';
 import { messageRegistry } from './registry.js';
 
 const ALL_DECODERS = [
@@ -59,6 +60,7 @@ const ALL_DECODERS = [
   LogoutMessage,
   ObjControllerMessage,
   UpdateTransformMessage,
+  UpdateTransformWithParentMessage,
   AttributeListMessage,
   BaselinesMessage,
   BatchBaselinesMessage,
@@ -71,8 +73,8 @@ const ALL_DECODERS = [
 ];
 
 describe('message registration', () => {
-  it('exports 28 message classes', () => {
-    expect(ALL_DECODERS.length).toBe(28);
+  it('exports 29 message classes', () => {
+    expect(ALL_DECODERS.length).toBe(29);
   });
 
   it('every class has a non-empty messageName', () => {

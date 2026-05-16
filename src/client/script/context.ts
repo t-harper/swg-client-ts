@@ -50,9 +50,7 @@ import {
   type CraftingSlotEmptyData,
   CraftingSlotEmptyDecoder,
   ObjControllerSubtypeIds,
-  SpatialChatSendDecoder,
   SpatialChatType,
-  makeSpatialChatData,
 } from '../../messages/game/obj-controller/index.js';
 import { SurveyMessage, type SurveyPoint } from '../../messages/game/survey/index.js';
 import type { GameNetworkMessage } from '../../messages/interface.js';
@@ -245,15 +243,25 @@ export interface ScriptContext {
   /** Send in-game mail (persistent message) to `target`. */
   sendMail(target: string | ChatAvatarId, subject: string, body: string): number;
   /**
-   * Speak spatial chat (the wire path behind `/say`). Sends a single
-   * `ObjControllerMessage` whose `message = CM_spatialChatSend` and whose
-   * trailer is a `MessageQueueSpatialChat` (sourceId = player, targetId = 0,
-   * chatType = Say, all other fields default). Returns the chat-sequence id
-   * used so callers can correlate with any future sequence-based ack.
+   * Speak spatial chat (the wire path behind `/say`). Wraps a
+   * `MessageQueueCommandQueueEnqueue` for the server's `spatialChatInternal`
+   * command inside an `ObjControllerMessage(CM_commandQueueEnqueue=278)` —
+   * the same path the real Windows client uses, and the only one that
+   * passes the server's `ControllerMessageFactory::allowFromClient` gate
+   * (which has `CM_spatialChatSend=false` for non-admin clients).
+   *
+   * The server-side `commandFuncSpatialChatInternal` then builds the
+   * `MessageQueueSpatialChat`, looks up the volume from
+   * `chat/spatial_chat_types.iff`, runs the chat-spam limiter, and
+   * broadcasts `CM_spatialChatReceive(244)` to every observer in radius.
    *
    * For directed `/whisper`-style chat pass a non-zero `targetId` via the
    * `opts` argument; for `/shout` set `chatType`. Most callers want the
-   * defaults — say(text).
+   * defaults — `say(text)`.
+   *
+   * Returns the chat-sequence id used so callers can correlate this with
+   * subsequent chat events. Note: the command-queue sequence is internally
+   * also incremented — `ctx.nextCommandSequence()` will reflect this.
    */
   say(text: string, opts?: SayOptions): number;
   /** Request the server's chat-room list (server responds with ChatRoomList). */
@@ -687,31 +695,38 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     },
 
     say(text, sayOpts): number {
+      // Spatial chat travels through the server-side CommandQueue command
+      // `spatialChatInternal` rather than the direct `CM_spatialChatSend`
+      // ObjController subtype. Reason: the server's
+      // `ControllerMessageFactory::allowFromClient` registry has
+      // `CM_spatialChatSend=false` (see MessageQueueSpatialChat.cpp:26 — the
+      // 4th arg is left at its default of `false`). A direct
+      // `CM_spatialChatSend` from a non-admin client is logged as a
+      // HackAttempts entry and dropped (Client.cpp:972). The real Windows
+      // client uses the CommandQueue path, which goes through the standard
+      // command-allow-list (CommandTable says spatialChatInternal is fine)
+      // and then the server builds the `MessageQueueSpatialChat` itself,
+      // filling in volume from `chat/spatial_chat_types.iff` and running
+      // the chat-spam limiter (CommandCppFuncs.cpp:1693). The server then
+      // broadcasts a `CM_spatialChatReceive` (244) to every observer in
+      // radius — which our subtype registry decodes via
+      // `SpatialChatReceiveDecoder`.
+      //
+      // params format (whitespace-separated, then a Unicode::String tail):
+      //   "<targetId> <chatType> <mood> <flags> <language> <text>"
+      //
+      // We consume from the chat-sequence counter (the wire goes through
+      // useAbility, but the user-facing "chat sequence id" is what callers
+      // see). The internal command-queue sequence still increments —
+      // there's no harm in both ticking.
       const seq = ctx.nextChatSequence();
-      const playerId = opts.sceneStart.playerNetworkId;
-      const data = makeSpatialChatData(playerId, text, {
-        targetId: sayOpts?.targetId ?? 0n,
-        chatType: sayOpts?.chatType ?? SpatialChatType.Say,
-        moodType: sayOpts?.moodType ?? 0,
-        language: sayOpts?.language ?? 0,
-        flags: sayOpts?.flags ?? 0,
-        volume: sayOpts?.volume ?? 0,
-      });
-      // Pack the spatial-chat trailer
-      const stream = new ByteStream();
-      SpatialChatSendDecoder.encode(stream, data);
-      // Wrap in an ObjControllerMessage with message = CM_spatialChatSend.
-      // Pre-populate `decodedSubtype` so transcripts & test introspection
-      // see the structured data without round-tripping through the wire.
-      const wrapped = new ObjControllerMessage(
-        CLIENT_TO_AUTH_SERVER_FLAGS,
-        ObjControllerSubtypeIds.CM_spatialChatSend,
-        playerId,
-        0,
-        stream.toBytes(),
-        { kind: SpatialChatSendDecoder.kind, data },
-      );
-      ctx.send(wrapped);
+      const chatType = sayOpts?.chatType ?? SpatialChatType.Say;
+      const targetId = sayOpts?.targetId ?? 0n;
+      const moodType = sayOpts?.moodType ?? 0;
+      const flags = sayOpts?.flags ?? 0;
+      const language = sayOpts?.language ?? 0;
+      const params = `${targetId.toString()} ${chatType} ${moodType} ${flags} ${language} ${text}`;
+      ctx.useAbility('spatialChatInternal', 0n, params);
       return seq;
     },
 

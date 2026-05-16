@@ -78,6 +78,7 @@ export {
 export { SitOnObjectDecoder, SitOnObjectKind } from './sit-on-object.js';
 export type { SitOnObjectData } from './sit-on-object.js';
 export {
+  defaultVolumeForChatType,
   makeSpatialChatData,
   SpatialChatKind,
   SpatialChatReceiveDecoder,

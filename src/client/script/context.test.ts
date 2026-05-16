@@ -24,8 +24,6 @@ import {
   type CraftingSlotEmptyData,
   CraftingSlotEmptyDecoder,
   ObjControllerSubtypeIds,
-  type SpatialChatData,
-  SpatialChatSendKind,
   SpatialChatType,
 } from '../../messages/game/obj-controller/index.js';
 import { SurveyMessage } from '../../messages/game/survey/index.js';
@@ -252,7 +250,24 @@ describe('ScriptContext: chat primitives', () => {
     expect(result.sendsCount).toBe(3);
   });
 
-  it('say sends one ObjControllerMessage with CM_spatialChatSend and embedded text', () => {
+  // --- ctx.say(): real spatial chat via the CommandQueue spatialChatInternal path ---
+  //
+  // `ctx.say()` wraps a `CommandQueueEnqueue` for the server's
+  // `spatialChatInternal` command. We don't use the direct
+  // `CM_spatialChatSend` path because the server's
+  // `ControllerMessageFactory::allowFromClient` registry has
+  // CM_spatialChatSend=false for non-admin clients (the message is logged
+  // as a HackAttempts entry and dropped). The CommandQueue path passes
+  // through the standard command-allow-list and the server itself builds
+  // the MessageQueueSpatialChat (with the right volume, chat-spam limits,
+  // etc) before broadcasting CM_spatialChatReceive(244) to observers.
+  //
+  // Wire shape: ObjControllerMessage(CM_commandQueueEnqueue=278) with
+  //   flags=0x23, networkId=player, trailer = CommandQueueEnqueue with
+  //   commandHash=hashCommand('spatialChatInternal') and
+  //   params="<targetId> <chatType> <mood> <flags> <language> <text>".
+
+  it('say sends one ObjControllerMessage wrapping CommandQueueEnqueue(spatialChatInternal)', () => {
     const playerId = 0x501n;
     const { ctx, sent } = createFakeContext({ playerNetworkId: playerId });
     const seq = ctx.say('hello world');
@@ -261,34 +276,70 @@ describe('ScriptContext: chat primitives', () => {
     const wrapped = sent[0];
     expect(wrapped).toBeInstanceOf(ObjControllerMessage);
     const om = wrapped as ObjControllerMessage;
-    expect(om.message).toBe(ObjControllerSubtypeIds.CM_spatialChatSend);
+    // Wrapper is the standard CommandQueue ObjController, not the direct
+    // CM_spatialChatSend subtype (the latter is rejected server-side).
+    expect(om.message).toBe(CM_COMMAND_QUEUE_ENQUEUE);
+    expect(om.flags).toBe(CLIENT_TO_AUTH_SERVER_FLAGS);
+    expect(om.flags).toBe(0x23);
     expect(om.networkId).toBe(playerId);
-    // The decoded subtype should be SpatialChatSend (kind set on the
-    // send-side decoder) with our text and sane defaults.
-    expect(om.decodedSubtype?.kind).toBe(SpatialChatSendKind);
-    const data = om.decodedSubtype?.data as SpatialChatData;
-    expect(data.sourceId).toBe(playerId);
-    expect(data.targetId).toBe(0n);
-    expect(data.text).toBe('hello world');
-    expect(data.chatType).toBe(SpatialChatType.Say);
+    expect(om.value).toBe(0);
+
+    // Inner enqueue carries the server-side command + params.
+    const inner = CommandQueueEnqueue.unpack(new ReadIterator(om.data));
+    expect(inner.commandHash).toBe(hashCommand('spatialChatInternal'));
+    expect(inner.targetId).toBe(0n); // no target for the wrapper enqueue
+    // params: "<targetId> <chatType> <mood> <flags> <language> <text>"
+    //   defaults: "0 0 0 0 0 hello world"
+    expect(inner.params).toBe('0 0 0 0 0 hello world');
+
+    // Crucially: say() must NOT route through the tell-to-self placeholder.
+    // No ChatInstantMessageToCharacter should appear among the sent messages.
+    expect(sent.some((m) => m instanceof ChatInstantMessageToCharacter)).toBe(false);
+    // And it must NOT send a raw CM_spatialChatSend either (server rejects).
+    expect(om.message).not.toBe(ObjControllerSubtypeIds.CM_spatialChatSend);
   });
 
-  it('say with chatType=Shout overrides the default', () => {
-    const { ctx, sent } = createFakeContext({ playerNetworkId: 0x42n });
+  it('say with targetId+chatType encodes them as params for spatialChatInternal', () => {
+    const { ctx, sent } = createFakeContext({ playerNetworkId: 0x501n });
+    ctx.say('quiet', { chatType: SpatialChatType.Whisper, targetId: 0x42n });
+    expect(sent.length).toBe(1);
+    const om = sent[0] as ObjControllerMessage;
+    expect(om.message).toBe(CM_COMMAND_QUEUE_ENQUEUE);
+    const inner = CommandQueueEnqueue.unpack(new ReadIterator(om.data));
+    expect(inner.commandHash).toBe(hashCommand('spatialChatInternal'));
+    // Whisper chatType=2, target=0x42=66, defaults for mood/flags/language=0
+    expect(inner.params).toBe(`${(0x42).toString()} 2 0 0 0 quiet`);
+    expect(sent.some((m) => m instanceof ChatInstantMessageToCharacter)).toBe(false);
+  });
+
+  it('say with chatType=Shout puts the right chatType in params', () => {
+    const { ctx, sent } = createFakeContext();
     ctx.say('WHAT?!', { chatType: SpatialChatType.Shout });
-    const om = sent[0] as ObjControllerMessage;
-    const data = om.decodedSubtype?.data as SpatialChatData;
-    expect(data.chatType).toBe(SpatialChatType.Shout);
-    expect(data.text).toBe('WHAT?!');
+    const inner = CommandQueueEnqueue.unpack(
+      new ReadIterator((sent[0] as ObjControllerMessage).data),
+    );
+    expect(inner.params).toBe('0 1 0 0 0 WHAT?!');
   });
 
-  it('say with targetId issues a whisper-style directed chat', () => {
-    const { ctx, sent } = createFakeContext({ playerNetworkId: 0x42n });
-    ctx.say('psst', { targetId: 0x100n, chatType: SpatialChatType.Whisper });
-    const om = sent[0] as ObjControllerMessage;
-    const data = om.decodedSubtype?.data as SpatialChatData;
-    expect(data.targetId).toBe(0x100n);
-    expect(data.chatType).toBe(SpatialChatType.Whisper);
+  it('say with mood/flags/language overrides flows them into params', () => {
+    const { ctx, sent } = createFakeContext();
+    ctx.say('greet', { moodType: 7, flags: 0x10, language: 3 });
+    const inner = CommandQueueEnqueue.unpack(
+      new ReadIterator((sent[0] as ObjControllerMessage).data),
+    );
+    expect(inner.params).toBe('0 0 7 16 3 greet');
+  });
+
+  it('say preserves unicode text in the params string', () => {
+    const { ctx, sent } = createFakeContext();
+    ctx.say('héllo 世界');
+    const inner = CommandQueueEnqueue.unpack(
+      new ReadIterator((sent[0] as ObjControllerMessage).data),
+    );
+    // The text is passed through verbatim as the trailing tokens of the
+    // params string; the wire encoding (Unicode::String) is handled by
+    // CommandQueueEnqueue itself.
+    expect(inner.params.endsWith('héllo 世界')).toBe(true);
   });
 
   it('say uses the chat-sequence counter (shared with tell/sendToChannel)', () => {
@@ -298,8 +349,14 @@ describe('ScriptContext: chat primitives', () => {
     expect(ctx.say('c')).toBe(3);
   });
 
-  // ReadIterator is imported for parity with combat tests if future chat
-  // round-trips need it inline.
+  it('say also bumps the command-queue counter (since it routes through useAbility)', () => {
+    const { ctx } = createFakeContext();
+    expect(ctx.nextCommandSequence()).toBe(1); // 1 → 2 (used here)
+    ctx.say('hi'); // useAbility consumes 2 → 3
+    expect(ctx.nextCommandSequence()).toBe(3);
+  });
+
+  // ReadIterator is imported for use above (intentional).
   void ReadIterator;
 });
 

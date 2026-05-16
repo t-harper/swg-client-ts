@@ -63,7 +63,7 @@ Declared in `src/client/script/context.ts`.
 | `tell(target, text)` | Private message via `ChatInstantMessageToCharacter` |
 | `sendToChannel(channelId, text)` | Post via `ChatSendToRoom` |
 | `sendMail(target, subject, body)` | In-game mail via `ChatPersistentMessageToServer` |
-| `say(text)` | **Currently** tell-to-self; spatial chat is an undecoded ObjController subtype |
+| `say(text, opts?)` | Speak real spatial chat — uses the server-side `spatialChatInternal` CommandQueue command (the path the real Windows client uses; `CM_spatialChatSend=243` is `allowFromClient=false` server-side and would be dropped). Server-side: `commandFuncSpatialChatInternal` builds the `MessageQueueSpatialChat`, looks up the right volume from `chat/spatial_chat_types.iff`, runs the chat-spam limiter, and broadcasts `CM_spatialChatReceive(244)` to observers. Defaults to `/say`; pass `chatType: SpatialChatType.Shout`/`Whisper` or a `targetId` for directed chat. Inbound broadcasts arrive as `ObjControllerMessage` with `message=CM_spatialChatReceive`, decoded by `SpatialChatReceiveDecoder` |
 | `requestChannelList()` | Request `ChatRoomList` from server |
 | **Lifecycle** | |
 | `logout()` | Send `LogoutMessage` + brief settle |

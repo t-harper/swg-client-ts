@@ -365,12 +365,15 @@ is only the payload bytes.
 include 4 header fields + `value`, but the C++ `pack()` then writes
 arbitrary additional bytes (the controller-specific payload). The
 AutoByteStream `varCount` prefix says 5; the trailing bytes are
-"out-of-band" and the receiver knows their length from the message-type
-sub-dispatch.
+"out-of-band" and the receiver knows their length from the
+`message` field — a controller-type CRC that picks the subtype decoder.
 
-We model this by parsing the 5 normal fields, then capturing any
-remaining bytes as an opaque `data: Uint8Array`. See
-`src/messages/game/obj-controller-message.ts:71-78`.
+We parse the 5 normal fields, capture the trailer as `data: Uint8Array`,
+and dispatch it through `src/messages/game/obj-controller/registry.ts`.
+If a subtype decoder is registered for the `message` CRC, the result is
+attached as `decodedSubtype: { kind, ...fields }`. Unknown CRCs keep the
+opaque bytes plus a diagnostic `subtypeCrcHex`. See **Adding an
+ObjController subtype** below.
 
 ### 5. NetworkVersionId must match the server
 
@@ -386,6 +389,103 @@ a newer server.
 Adding a message with the same name as an existing one is caught at
 module-load time by `messageRegistry.register()` (throws on duplicate
 CRC). You should never have a real collision — the SOE CRC has a 32-bit
-output space and ~28 messages is nowhere near the birthday bound — but
+output space and ~30 messages is nowhere near the birthday bound — but
 if you typo the name, you'll get a hash that happens to collide. The
 fix is: re-check the C++ class name spelling.
+
+### 7. Unicode::String for chat (and some other messages)
+
+Chat messages and a few other UI-facing payloads use `Unicode::String`,
+not `std::string`. The wire is `[u32 LE char-count][UTF-16 LE bytes]` —
+the prefix is **character count**, not byte count. Use
+`writeUnicodeString` / `readUnicodeString` from
+`src/archive/unicode-string.ts`. Getting this wrong silently corrupts the
+payload — the server treats it as garbage and either drops the message
+or chokes on a subsequent length-prefix decode.
+
+---
+
+## Adding an ObjController subtype
+
+A subtype is **not** a top-level `GameNetworkMessage`. It's the
+variable-length payload inside an `ObjControllerMessage`, identified by
+the parent's `message` field (a controller-type CRC like
+`CM_combatAction = 204` or `CM_postureChange = 305`). The C++ source for
+these lives under
+`/home/tharper/code/swg-main/src/engine/shared/library/sharedNetworkMessages/src/shared/clientGameServer/MessageQueue*.cpp`
+and the associated archive helpers under `serverNetworkMessages/`.
+
+### Step 1. Find the controller-type id and the field layout
+
+```bash
+# Find the CM_* constant
+grep -rn 'CM_\<your-name\>' /home/tharper/code/swg-main/src/engine/server/library/serverGame/
+
+# Find the pack/unpack helpers
+grep -rln 'MessageQueueYourSubtype' /home/tharper/code/swg-main/src/engine/shared/library/sharedNetworkMessages/
+```
+
+### Step 2. Add the CM_* constant
+
+Append to `ObjControllerSubtypeIds` in
+`src/messages/game/obj-controller/registry.ts` using the C++ enum value
+(e.g. `CM_setPosture: 305`).
+
+### Step 3. Create the subtype file
+
+File: `src/messages/game/obj-controller/<kebab-name>.ts`. Follow
+`src/messages/game/obj-controller/posture-change.ts` for a template:
+
+```typescript
+import type { IByteStream, IReadIterator } from '../../../archive/interface.js';
+import { ObjControllerSubtypeIds, registerObjControllerSubtype } from './registry.js';
+
+export interface MySubtypeData {
+  posture: number;
+  isClientImmediate: boolean;
+}
+
+export const MySubtypeKind = 'MySubtype' as const;
+
+export const MySubtypeDecoder = registerObjControllerSubtype<MySubtypeData>({
+  kind: MySubtypeKind,
+  subtypeId: ObjControllerSubtypeIds.CM_mySubtype,
+  encode(stream: IByteStream, data: MySubtypeData): void {
+    stream.writeU8(data.posture);
+    stream.writeU8(data.isClientImmediate ? 1 : 0);
+  },
+  decode(iter: IReadIterator): MySubtypeData {
+    return {
+      posture: iter.readU8(),
+      isClientImmediate: iter.readU8() !== 0,
+    };
+  },
+});
+```
+
+The trailer-only wire layout — the 20-byte ObjControllerMessage header
+(flags + message + networkId + value) is already peeled off by the
+parent dispatcher.
+
+### Step 4. Wire up the barrel
+
+Append a side-effect import to `src/messages/game/obj-controller/index.ts`.
+The orchestrator's top-level
+`import '../messages/game/obj-controller/index.js'` in `swg-client.ts`
+picks it up automatically.
+
+### Step 5. Tests
+
+`src/messages/game/obj-controller/<kebab-name>.test.ts` — golden bytes
+round-trip via `MySubtypeDecoder.encode` and `MySubtypeDecoder.decode`.
+Then add a dispatch test in
+`src/messages/game/obj-controller/registry.test.ts`: build an
+`ObjControllerMessage` with `message = ObjControllerSubtypeIds.CM_mySubtype`
+and a hand-built trailer, decode via `parseHeader` + the registry, assert
+`decodedSubtype.kind === 'MySubtype'` and the data shape matches.
+
+### Step 6. Verify against the live server (optional)
+
+Subtypes are observed during the baseline flood. The soft assertion in
+`tests/integration/live-zone-in-and-logout.test.ts` surfaces malformed
+dispatches but doesn't require any specific subtype to be present.

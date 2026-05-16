@@ -52,10 +52,14 @@ ZoningIn                ─── Accumulating baseline flood:
    │   Received: SceneEndBaselines(playerNetworkId)
    │   Send CmdSceneReady()
    ▼
-ZonedIn                 ─── Holding position. Heartbeats every 30s.
-   │                        Holding for holdZonedInMs (default 5s).
+ZonedIn                 ─── If `opts.script` is set, the scenario function
+   │                        runs here (movement, combat, chat, inventory, ...).
+   │                        Otherwise / afterwards, hold for any remaining
+   │                        `holdZonedInMs` (default 5s). Heartbeats every 30s
+   │                        underneath. See docs/scripting.md.
    ▼
-LoggingOut              ─── Send LogoutMessage()
+LoggingOut              ─── Send LogoutMessage()  (suppressed if the script
+                            already called `ctx.logout()`)
    │                        Sleep 1s (let server commit save)
    ▼
 Disconnected            ─── Send SOE Terminate on socket #2
@@ -175,8 +179,8 @@ templates can be empty.
 | 1 | S→C | `CmdStartScene(playerId, scene, pos, yaw, template, ...)` | Y | "World init starts now" |
 | 2 | S→C | `SceneCreateObjectByCrc(networkId, transform, templateCrc, hyperspace)` | * | One per nearby object (terrain, NPCs, items). Can be hundreds. |
 | 3 | S→C | `SceneCreateObjectByName(networkId, transform, templateName, hyperspace)` | * | Same but template by path string |
-| 4 | S→C | `ObjControllerMessage(flags, msg, networkId, value, data)` | N | High-frequency gameplay traffic. We capture headers, discard `data` trailer. |
-| 5 | S→C | `UpdateTransformMessage(...)` | N | Movement updates for nearby objects. Header captured, payload discarded. |
+| 4 | S→C | `ObjControllerMessage(flags, msg, networkId, value, data)` | N | High-frequency gameplay traffic. Header always captured; the trailer is dispatched through `src/messages/game/obj-controller/` for 8 common subtypes (CombatAction, CombatSpam, PostureChange, AttributeChanged, SitOnObject, MoodChange, ObjectMenuRequest/Response) — unknowns keep an opaque `data: Uint8Array` plus a diagnostic `subtypeCrcHex`. |
+| 5 | S→C | `UpdateTransformMessage(...)` | N | Movement updates for nearby objects. Fully decoded. The same class is used client→server during scripted movement (`ctx.walkTo` / `ctx.walkCircle`). |
 | 6 | S→C | `AttributeListMessage(...)` | N | Examine-window content. Header captured, discarded. |
 | 7 | S→C | `SceneEndBaselines(playerNetworkId)` | Y | "Baseline phase is done" |
 | 8 | C→S | `CmdSceneReady()` | Y | "Client ready; I'm participating in the world now" |
@@ -196,6 +200,11 @@ the wait for SceneEndBaselines resolves.
 - `baseline.templateNames` — names from SceneCreateObjectByName
 - `zonedInAt` — `Date` of SceneEndBaselines
 - `logoutAt` — `Date` of LogoutMessage send
+- `scriptResult` — `{ elapsedMs, sendsCount, didLogout, error? }` if a script ran during the dwell
+
+#### Scripting hook
+
+If `FullLifecycleOptions.script` is set, the scenario function runs **after** `CmdSceneReady` is sent and **before** any remaining `holdZonedInMs` is awaited. Inside the script, primitives on the `ScriptContext` (movement, combat, chat, inventory) translate to the appropriate client→server `GameNetworkMessage`s. If the script calls `ctx.logout()`, the stage suppresses its own implicit `LogoutMessage` send so logout happens exactly once. See `docs/scripting.md`.
 
 ---
 

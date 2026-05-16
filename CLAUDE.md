@@ -67,7 +67,7 @@ pnpm cli zone --host=10.254.0.253 --user=ci-test --character=TsTest
                   constcrc.ts                  ← CrcConstexpr.hpp custom CRC, NOT standard CRC32
 ```
 
-81 test files, **419 tests (413 unit + 6 LIVE)**, all currently green.
+81 test files, **419 tests (413 unit + 6 LIVE)**, all currently green. (Real count is higher in latest worktrees as new features land — `pnpm test` to confirm.)
 
 ## High-level features
 
@@ -81,6 +81,7 @@ The client started as just `SwgClient.fullLifecycle()` and is now a small toolki
 | **Fleet (multi-client)** | `Fleet.run([cfgs], opts)` + CLI `swarm` | Run N independent clients in parallel with staggered launches + concurrency caps |
 | **Capture + replay** | `captureLifecycle()` / `replay()` + CLI `capture`/`replay` | Record a session as NDJSON; replay it to detect server-side wire-format drift |
 | **ObjController subtype decoder** | `src/messages/game/obj-controller/` | Decode the variable-length trailer based on `controllerType` — 8 most common subtypes covered |
+| **Character pool** | `CharacterPool` + CLI `pool` + `poolCredentials()` in `tests/integration/helpers.ts` | Persistent check-out database (JSON-backed, lockfile-coordinated) for pre-created characters. Pre-stock the cluster's character quota once via `pool stock`; tests `CI_USE_POOL=1` opt-in to lease from the pool instead of leaking new chars per run. |
 
 ## Five wire-format gotchas (memorize)
 
@@ -187,6 +188,8 @@ If THAT passes but `live-zone-in-and-logout.test.ts` fails, the issue is in Stag
 
 **Fleet** — `Fleet`, `FleetClientConfig`, `FleetOptions`, `FleetRunOptions`, `FleetOutcome`, `FleetResult`, `FleetSummary`, `FleetMessageCount`.
 
+**Character pool** — `CharacterPool`, `PooledCharacter`, `PoolOptions`, `CheckoutOptions`, `CheckoutResult`, `CheckoutManyResult`.
+
 **Capture + replay** — `captureLifecycle`, `replay`, `replayScenario`, `attachCapture`, `transcriptToNdjson`, `transcriptFromNdjson`, `readTranscript`, `writeTranscript`, `eventsFromTranscript`, plus `CapturedEvent`, `CaptureLifecycleOptions`, `CaptureLifecycleResult`, `ReplayOptions`, `ReplayResult`, `ReplayScenarioOptions`, `ReplayScriptContext`.
 
 **Chat message classes** — `ChatInstantMessageToCharacter`, `ChatInstantMessageToClient`, `ChatRequestRoomList`, `ChatRoomList`, `ChatSendToRoom`, `ChatPersistentMessageToServer`, plus `chatAvatarId` factory, `ChatRoomType`, `PERSISTENT_MESSAGE_MAX_SIZE`, and types `ChatAvatarId`, `ChatRoomData`.
@@ -207,6 +210,7 @@ Individual stage drivers and the `dispatcher` are also exported as types — use
 | Debug a live test failure | `src/client/swg-client.ts` — `transcript` field captures every send/recv |
 | Add a new live test | `tests/integration/live-*.test.ts` as template (LIVE=1 gated) |
 | Reuse a character across CI runs | Set `CI_REUSE_ACCOUNT` + `CI_REUSE_CHARACTER` (`tests/integration/helpers.ts`) |
+| Use a check-out pool (multi-account tests) | `swg-ts-cli pool stock --count=N` once → set `CI_USE_POOL=1` → tests call `poolCredentials(prefix, count)`. See `src/client/character-pool.ts`. |
 | Inspect captured wire | `tests/fixtures/{session-response-17b,login-enum-cluster-223b}.hex` |
 | Wire decryption sanity check | `src/soe/connection.test.ts` — feeds captured bytes through full pipeline |
 | Verify a constcrc value | `src/crc/constcrc.test.ts` — golden values from the C++ table |

@@ -41,4 +41,10 @@ describe('ServerNowEpochTime (INBOUND, GenericValueTypeMessage<int32>)', () => {
     const decoded = decodeMessageStrict(encodeMessage(msg));
     expect((decoded as InstanceType<typeof ServerNowEpochTime>).value).toBe(-1);
   });
+
+  it('decoded value is an instanceof ServerNowEpochTime', () => {
+    const msg = new ServerNowEpochTime(42);
+    const decoded = decodeMessageStrict(encodeMessage(msg));
+    expect(decoded).toBeInstanceOf(ServerNowEpochTime);
+  });
 });

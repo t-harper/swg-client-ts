@@ -118,6 +118,16 @@ describe('ByteStream + ReadIterator (LE primitives)', () => {
     expect(Array.from(out)).toEqual(Array.from(payload));
   });
 
+  it('viewBytes returns a zero-copy view that advances the cursor', () => {
+    const i = new ReadIterator(new Uint8Array([0x11, 0x22, 0x33, 0x44]));
+    const view = i.viewBytes(2);
+    expect(view.byteLength).toBe(2);
+    expect(view[0]).toBe(0x11);
+    expect(view[1]).toBe(0x22);
+    expect(i.position).toBe(2);
+    expect(i.readU8()).toBe(0x33);
+  });
+
   it('initializes from a Buffer slice with offset', () => {
     const buf = Buffer.from([0xaa, 0xbb, 0xcc, 0xdd, 0xee]);
     const i = new ReadIterator(buf, 1, 3);

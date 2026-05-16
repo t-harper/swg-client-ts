@@ -49,7 +49,7 @@ export type { GameStageResult, GameStageOptions, BaselineSummary } from './clien
 export type { ScenarioFn, ScriptContext, ScriptResult } from './client/script/context.js';
 export type { WalkToOptions, CircleOptions, WalkToCellOptions } from './client/script/movement.js';
 export type { ExpectOptions } from './client/script/expectations.js';
-export { scenarios } from './scenarios/index.js';
+export { groupTradeScenario, scenarios } from './scenarios/index.js';
 export type { ScenarioFactory } from './scenarios/index.js';
 
 // Fleet multi-client orchestrator

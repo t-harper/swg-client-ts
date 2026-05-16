@@ -15,11 +15,11 @@
  */
 
 import { ByteStream } from '../archive/byte-stream.js';
-import { ReadIterator } from '../archive/read-iterator.js';
 import { ReadException } from '../archive/interface.js';
 import type { IByteStream, ICodec, IReadIterator } from '../archive/interface.js';
-import type { GameNetworkMessage, MessageDecoder } from './interface.js';
+import { ReadIterator } from '../archive/read-iterator.js';
 import { constcrc } from '../crc/constcrc.js';
+import type { GameNetworkMessage, MessageDecoder } from './interface.js';
 
 /**
  * The on-wire NetworkVersionId string — must match the server's hardcoded
@@ -81,13 +81,11 @@ export function parseHeader(bytes: Uint8Array): { typeCrc: number; payload: Read
  * decoder interface only if we tighten the static side. This helper does
  * that.
  */
-export function asDecoder<T extends GameNetworkMessage>(
-  ctor: {
-    readonly messageName: string;
-    readonly typeCrc: number;
-    decodePayload(iter: IReadIterator): T;
-  },
-): MessageDecoder<T> {
+export function asDecoder<T extends GameNetworkMessage>(ctor: {
+  readonly messageName: string;
+  readonly typeCrc: number;
+  decodePayload(iter: IReadIterator): T;
+}): MessageDecoder<T> {
   return {
     messageName: ctor.messageName,
     typeCrc: ctor.typeCrc,

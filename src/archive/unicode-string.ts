@@ -40,12 +40,13 @@ export function readUnicodeString(iter: IReadIterator): string {
   if (count === 0) {
     return '';
   }
+  // Use a Buffer view so we can use readUInt16LE which is bounds-checked
+  // by Buffer itself — avoids the noUncheckedIndexedAccess `undefined` hop.
   const bytes = iter.readBytes(count * 2);
-  // Build the string from UTF-16 LE code units
+  const view = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let s = '';
   for (let i = 0; i < count; i++) {
-    const cu = bytes[i * 2]! | (bytes[i * 2 + 1]! << 8);
-    s += String.fromCharCode(cu);
+    s += String.fromCharCode(view.readUInt16LE(i * 2));
   }
   return s;
 }

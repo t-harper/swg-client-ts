@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { ByteStream } from './byte-stream.js';
 import {
   AutoArrayCodec,
   AutoVariableCodec,
@@ -7,9 +8,8 @@ import {
   SetCodec,
   VectorCodec,
 } from './containers.js';
-import { ByteStream } from './byte-stream.js';
-import { ReadIterator } from './read-iterator.js';
 import { I32, U16, U32 } from './primitives.js';
+import { ReadIterator } from './read-iterator.js';
 import { StringCodec } from './string.js';
 
 describe('AutoArrayCodec', () => {

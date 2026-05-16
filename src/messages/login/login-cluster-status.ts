@@ -28,9 +28,9 @@
 
 import type { IByteStream, IReadIterator } from '../../archive/interface.js';
 import { readStdString, writeStdString } from '../../archive/string.js';
+import type { ClusterStatus, PopulationStatus } from '../../types.js';
 import { GameNetworkMessage, asDecoder, defineMessageMeta } from '../base.js';
 import { registerMessage } from '../registry.js';
-import { ClusterStatus, PopulationStatus } from '../../types.js';
 
 const META = defineMessageMeta('LoginClusterStatus');
 

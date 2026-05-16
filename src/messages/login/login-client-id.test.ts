@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { describe, expect, it } from 'vitest';
-import { encodeMessage, parseHeader, NETWORK_VERSION_ID } from '../base.js';
+import { NETWORK_VERSION_ID, encodeMessage, parseHeader } from '../base.js';
 import { decodeMessageStrict } from '../registry.js';
 import { LoginClientId } from './login-client-id.js';
 

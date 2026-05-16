@@ -12,12 +12,15 @@
  *   value : std::set<std::string> = int32 LE count + N std::string
  */
 
-import { defineGenericValueTypeMessage } from '../base.js';
 import { SetCodec } from '../../archive/containers.js';
 import { StringCodec } from '../../archive/string.js';
+import { defineGenericValueTypeMessage } from '../base.js';
 import { registerMessage } from '../registry.js';
 
-const def = defineGenericValueTypeMessage<Set<string>>('CharacterCreationDisabled', SetCodec(StringCodec));
+const def = defineGenericValueTypeMessage<Set<string>>(
+  'CharacterCreationDisabled',
+  SetCodec(StringCodec),
+);
 
 export const CharacterCreationDisabled = def.Message;
 export const CharacterCreationDisabledDecoder = registerMessage(def.decoder);

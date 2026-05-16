@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ByteStream } from './byte-stream.js';
 import { ReadIterator } from './read-iterator.js';
-import { readStdString, writeStdString, StringCodec } from './string.js';
+import { StringCodec, readStdString, writeStdString } from './string.js';
 
 describe('std::string codec', () => {
   it('round-trips empty string', () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { ByteStream } from '../archive/byte-stream.js';
-import { encodeMessage, parseHeader, NETWORK_VERSION_ID } from './base.js';
+import type { ByteStream } from '../archive/byte-stream.js';
+import { NETWORK_VERSION_ID, encodeMessage, parseHeader } from './base.js';
 import { LoginClientId } from './login/login-client-id.js';
 
 describe('GameNetworkMessage framing', () => {

@@ -1,8 +1,8 @@
 import { Buffer } from 'node:buffer';
 import { describe, expect, it } from 'vitest';
 import { ByteStream } from './byte-stream.js';
-import { ReadIterator } from './read-iterator.js';
 import { ReadException } from './interface.js';
+import { ReadIterator } from './read-iterator.js';
 
 describe('ByteStream + ReadIterator (LE primitives)', () => {
   it('round-trips u8 / i8', () => {

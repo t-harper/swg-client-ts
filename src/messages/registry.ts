@@ -13,8 +13,8 @@
  * combat). Callers decide whether to log or ignore.
  */
 
-import type { GameNetworkMessage, IMessageRegistry, MessageDecoder } from './interface.js';
 import { parseHeader } from './base.js';
+import type { GameNetworkMessage, IMessageRegistry, MessageDecoder } from './interface.js';
 
 class MessageRegistry implements IMessageRegistry {
   private readonly byCrc = new Map<number, MessageDecoder>();
@@ -58,7 +58,9 @@ export const messageRegistry = new MessageRegistry();
  * Convenience: register a decoder and return it. Use in module-level
  * `const _ = registerMessage(asDecoder(MyMessage))`.
  */
-export function registerMessage<T extends GameNetworkMessage>(decoder: MessageDecoder<T>): MessageDecoder<T> {
+export function registerMessage<T extends GameNetworkMessage>(
+  decoder: MessageDecoder<T>,
+): MessageDecoder<T> {
   messageRegistry.register(decoder);
   return decoder;
 }

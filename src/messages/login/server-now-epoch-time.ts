@@ -15,8 +15,8 @@
  *   value : int32 LE
  */
 
-import { defineGenericValueTypeMessage } from '../base.js';
 import { I32 } from '../../archive/primitives.js';
+import { defineGenericValueTypeMessage } from '../base.js';
 import { registerMessage } from '../registry.js';
 
 const def = defineGenericValueTypeMessage<number>('ServerNowEpochTime', I32);

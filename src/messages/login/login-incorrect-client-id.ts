@@ -25,8 +25,8 @@ export class LoginIncorrectClientId extends GameNetworkMessage {
   static readonly typeCrc = META.typeCrc;
 
   constructor(
-    public serverId: string = '',
-    public serverApplicationVersion: string = '',
+    public serverId = '',
+    public serverApplicationVersion = '',
   ) {
     super();
   }

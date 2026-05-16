@@ -1,9 +1,9 @@
 import { Buffer } from 'node:buffer';
 import { describe, expect, it } from 'vitest';
+import { ClusterStatus, PopulationStatus } from '../../types.js';
 import { encodeMessage } from '../base.js';
 import { decodeMessageStrict } from '../registry.js';
 import { LoginClusterStatus } from './login-cluster-status.js';
-import { ClusterStatus, PopulationStatus } from '../../types.js';
 
 describe('LoginClusterStatus (INBOUND, 14-field post-2021 layout)', () => {
   it('has the expected constcrc identifier', () => {

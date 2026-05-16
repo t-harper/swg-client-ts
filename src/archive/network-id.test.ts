@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ByteStream } from './byte-stream.js';
-import { ReadIterator } from './read-iterator.js';
 import { NetworkIdCodec } from './network-id.js';
+import { ReadIterator } from './read-iterator.js';
 
 describe('NetworkId codec (int64 LE)', () => {
   it('round-trips zero', () => {

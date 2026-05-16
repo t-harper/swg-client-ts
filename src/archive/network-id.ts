@@ -13,8 +13,8 @@
  * The shared `NetworkId` type alias in `types.ts` is `bigint`.
  */
 
-import type { ICodec } from './interface.js';
 import type { NetworkId } from '../types.js';
+import type { ICodec } from './interface.js';
 
 export const NetworkIdCodec: ICodec<NetworkId> = {
   encode: (s, v) => s.writeI64(v),

@@ -16,8 +16,8 @@
  * helpful — see `quatToYaw`).
  */
 
-import type { IByteStream, ICodec, IReadIterator } from './interface.js';
 import type { Vector3 } from '../types.js';
+import type { IByteStream, ICodec, IReadIterator } from './interface.js';
 
 export interface Quaternion {
   x: number;

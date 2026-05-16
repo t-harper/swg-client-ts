@@ -26,7 +26,7 @@ export class LoginClientId extends GameNetworkMessage {
 
   constructor(
     public id: string,
-    public key: string = '',
+    public key = '',
     public version: string = NETWORK_VERSION_ID,
   ) {
     super();

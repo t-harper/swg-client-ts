@@ -130,6 +130,12 @@ export {
   findBaselinesByKind,
 } from './client/baseline-helpers.js';
 
+// Container inspection — walk the transcript and answer "what's inside the
+// inventory / backpack / bank / etc.?" Pair with extractInventoryContainerId
+// to ask the most common form of the question.
+export { ContainerView, containerView, buildContainerIndex } from './client/container-view.js';
+export type { ContainerItem } from './client/container-view.js';
+
 // Wire capture + replay harness
 export {
   attachCapture,

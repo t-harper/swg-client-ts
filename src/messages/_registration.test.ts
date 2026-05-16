@@ -36,6 +36,7 @@ import { ObjControllerMessage } from './game/obj-controller-message.js';
 import { SceneCreateObjectByCrc } from './game/scene-create-object-by-crc.js';
 import { SceneCreateObjectByName } from './game/scene-create-object-by-name.js';
 import { SceneEndBaselines } from './game/scene-end-baselines.js';
+import { UpdateContainmentMessage } from './game/update-containment-message.js';
 import { UpdateTransformMessage } from './game/update-transform-message.js';
 import { messageRegistry } from './registry.js';
 
@@ -58,6 +59,7 @@ const ALL_DECODERS = [
   HeartBeat,
   LogoutMessage,
   ObjControllerMessage,
+  UpdateContainmentMessage,
   UpdateTransformMessage,
   AttributeListMessage,
   BaselinesMessage,
@@ -71,8 +73,8 @@ const ALL_DECODERS = [
 ];
 
 describe('message registration', () => {
-  it('exports 28 message classes', () => {
-    expect(ALL_DECODERS.length).toBe(28);
+  it('exports 29 message classes', () => {
+    expect(ALL_DECODERS.length).toBe(29);
   });
 
   it('every class has a non-empty messageName', () => {

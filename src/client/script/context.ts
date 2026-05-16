@@ -50,9 +50,11 @@ import type { NetworkId, SceneStart, Vector3 } from '../../types.js';
 import type { MessageDispatcher } from '../dispatcher.js';
 import {
   type CircleOptions,
+  type WalkToCellOptions,
   type WalkToOptions,
   walkCircle as walkCircleImpl,
   walkTo as walkToImpl,
+  walkToCell as walkToCellImpl,
 } from './movement.js';
 
 /**
@@ -135,6 +137,37 @@ export interface ScriptContext {
   walkTo(target: { x: number; z: number; y?: number }, opts?: WalkToOptions): Promise<void>;
   /** Walk around a circle of given centre/radius/duration. */
   walkCircle(opts: CircleOptions): Promise<void>;
+  /**
+   * Walk in a straight line to (x, z) inside `parentId`'s cell-local
+   * coordinate frame. Uses `UpdateTransformWithParentMessage` (cell-relative,
+   * 0.125m wire resolution) instead of `UpdateTransformMessage`. The
+   * orchestrator's world cursor (`position()` / `setPose()`) is left alone;
+   * the cell cursor is tracked separately and queryable via
+   * `cellPosition()` + `parentCell()`.
+   */
+  walkToCell(
+    parentId: NetworkId,
+    target: { x: number; z: number; y?: number },
+    opts?: WalkToCellOptions,
+  ): Promise<void>;
+  /**
+   * Current best estimate of the player's cell-relative position. Only valid
+   * when `parentCell()` is non-zero; otherwise returns the last-known
+   * cell-relative pose or `{x:0, y:0, z:0}` if the player has never been
+   * cell-parented this session.
+   */
+  cellPosition(): Readonly<Vector3>;
+  /**
+   * NetworkId of the cell the player is currently parented to, or `0n` if
+   * the player is in the open world.
+   */
+  parentCell(): NetworkId;
+  /**
+   * Update the cell-relative pose cursor. Called automatically by
+   * `walkToCell`; rarely useful directly except to "enter" a known cell at a
+   * specific local position before the first walk.
+   */
+  setCellPose(parentId: NetworkId, position: Vector3, yaw: number): void;
   /** Open a container by its NetworkId (slot is "" by default; for inventory use openPlayerInventory). */
   openContainer(containerId: NetworkId, slot?: string): void;
   /** Open the player's own inventory (containerId = playerNetworkId, slot = "inventory"). */
@@ -260,6 +293,8 @@ interface InternalContext extends ScriptContext {
     sendsCount: number;
     didLogout: boolean;
     pose: { x: number; y: number; z: number; yaw: number };
+    /** Cell-relative pose cursor — separate from the world pose. */
+    cellPose: { parentId: NetworkId; x: number; y: number; z: number; yaw: number };
     sequenceNumber: number;
     commandSequence: number;
     chatSequence: number;
@@ -288,6 +323,13 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
       y: opts.sceneStart.startPosition.y,
       z: opts.sceneStart.startPosition.z,
       yaw: opts.sceneStart.startYaw,
+    },
+    cellPose: {
+      parentId: 0n as NetworkId,
+      x: 0,
+      y: 0,
+      z: 0,
+      yaw: 0,
     },
     sequenceNumber: opts.initialSequenceNumber ?? 1,
     commandSequence: opts.initialCommandSequence ?? 1,
@@ -336,6 +378,26 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
 
     walkCircle(circleOpts) {
       return walkCircleImpl(ctx, circleOpts);
+    },
+
+    walkToCell(parentId, target, walkOpts) {
+      return walkToCellImpl(ctx, parentId, target, walkOpts ?? {});
+    },
+
+    cellPosition(): Readonly<Vector3> {
+      return { x: state.cellPose.x, y: state.cellPose.y, z: state.cellPose.z };
+    },
+
+    parentCell(): NetworkId {
+      return state.cellPose.parentId;
+    },
+
+    setCellPose(parentId: NetworkId, position: Vector3, yaw: number): void {
+      state.cellPose.parentId = parentId;
+      state.cellPose.x = position.x;
+      state.cellPose.y = position.y;
+      state.cellPose.z = position.z;
+      state.cellPose.yaw = yaw;
     },
 
     openContainer(containerId, slot) {

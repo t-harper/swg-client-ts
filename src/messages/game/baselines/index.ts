@@ -15,6 +15,16 @@
 export { BaselinesMessage, BaselinesMessageDecoder } from './baselines-message.js';
 export { BatchBaselinesMessage, BatchBaselinesMessageDecoder } from './batch-baselines-message.js';
 export {
+  type BuildingObjectSharedBaseline,
+  BuildingObjectSharedDecoder,
+  BuildingObjectSharedKind,
+} from './building-object-baseline-3.js';
+export {
+  type CellObjectSharedBaseline,
+  CellObjectSharedDecoder,
+  CellObjectSharedKind,
+} from './cell-object-baseline-3.js';
+export {
   type BitArrayValue,
   type MapEntry,
   type MatchMakingIdValue,

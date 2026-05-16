@@ -88,6 +88,13 @@ export type {
   SurveyPoint,
 } from './messages/game/survey/index.js';
 
+// Radial-menu selection message — the trigger that the client uses to
+// activate a menu item (e.g. ITEM_USE) on an object's radial.
+export {
+  ObjectMenuSelectMessage,
+  RadialMenuTypes,
+} from './messages/game/object-menu-select-message.js';
+
 // Mission message classes — the top-level browser-populate message plus the
 // ObjController subtype decoders that drive the request/response flow.
 export {

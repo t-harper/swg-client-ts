@@ -128,24 +128,30 @@ export const postureCycle: ScenarioFactory = (args) => {
 };
 
 /**
- * Trigger a survey for `resourceClass` and dwell briefly for any response.
- *
- * Server-side this requires the actor to have an activated survey tool of
- * the matching type in inventory; a brand-new character probably doesn't,
- * so the SurveyMessage may never come back. The scenario exercises the
- * wire send unconditionally (useful as a regression check for the survey
- * command-hash and the ObjController envelope) and tolerates silence.
+ * Issue a survey command and dwell briefly for any response.
  *
  * Args:
- *   resourceClass (default 'mineral') the resource class to scan for
- *   waitMs        (default 2000) how long to dwell after the request
+ *   toolId            (required) hex (0x...) or decimal NetworkId of the survey tool
+ *   resourceTypeName  (required) the specific resource type name to survey for
+ *                     (e.g. "Resotine") — NOT a class name like "mineral"
+ *   waitMs            (default 2000) how long to dwell after the request
+ *
+ * Discover legal `resourceTypeName` values for a tool by calling
+ * `ctx.fetchSurveyResources(toolId)` first.
+ *
+ * The scenario fires the requestsurvey unconditionally (useful for wire
+ * regression coverage) and tolerates silence — if the server's TaskSurvey
+ * doesn't broadcast a SurveyMessage, the scenario still exits cleanly.
  */
 export const surveyScenario: ScenarioFactory = (args) => {
-  const resourceClass = args.resourceClass ?? 'mineral';
+  const toolId = networkIdArg(args, 'toolId');
+  const resourceTypeName = args.resourceTypeName;
+  if (resourceTypeName === undefined || resourceTypeName === '') {
+    throw new Error(`survey scenario: --script-arg=resourceTypeName=<name> is required (must be a specific resource type, not a class)`);
+  }
   const waitMs = numArg(args, 'waitMs', 2_000);
   return async (ctx) => {
-    ctx.survey(resourceClass);
-    // No assertion — server may not respond synchronously; just exercises the wire.
+    ctx.survey(toolId, resourceTypeName);
     if (waitMs > 0) await ctx.wait(waitMs);
   };
 };

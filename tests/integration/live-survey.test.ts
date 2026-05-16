@@ -1,16 +1,15 @@
 /**
  * Live integration test for the survey command.
  *
- * Runs a full lifecycle and triggers `ctx.survey('mineral')` during the
- * dwell. The server-side `requestSurvey` command requires the actor to
- * have an activated survey tool in inventory of the matching type. A
- * brand-new character does NOT have one, so we don't assert that a
- * `SurveyMessage` comes back — we only verify:
+ * Runs a full lifecycle and triggers `ctx.survey(0n, "Resotine")` during the
+ * dwell with a dummy tool NetworkId. The server's `commandFuncRequestSurvey`
+ * silently drops the request when the tool lookup returns null (which 0n
+ * guarantees), so no `SurveyMessage` is expected. We only verify:
  *   1. The wire send completed cleanly.
  *   2. The send was recorded in the transcript as a single
  *      ObjControllerMessage wrapping a CommandQueueEnqueue.
  *   3. No `ErrorMessage` arrived (an unrecognized command would surface
- *      one — confirms the constcrc of `requestSurvey` matches the server).
+ *      one — confirms the constcrc of `requestsurvey` matches the server).
  *
  * Gated on `LIVE=1`. Runs against the SWG server at 10.254.0.253.
  */
@@ -35,10 +34,10 @@ describe.skipIf(!LIVE)('live survey command', () => {
       planet: 'mos_eisley',
       holdZonedInMs: 0,
       script: async (ctx) => {
-        // Fire a survey trigger; tolerate a missing tool (no SurveyMessage expected).
-        ctx.survey('mineral');
-        // Give the server a moment to process and reply (if a tool is in
-        // inventory; otherwise it logs a script-side rejection and moves on).
+        // Dummy tool id (0n) and a placeholder resource type name. The
+        // server's tool lookup returns null → silent script bail. We're
+        // just testing wire-shape cleanliness, not the actual survey flow.
+        ctx.survey(0n, 'Resotine');
         await ctx.wait(2_000);
       },
     });

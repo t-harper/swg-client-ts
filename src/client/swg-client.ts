@@ -44,6 +44,7 @@ import '../messages/game/cmd-start-scene.js';
 import '../messages/game/heart-beat.js';
 import '../messages/game/logout-message.js';
 import '../messages/game/obj-controller-message.js';
+import '../messages/game/object-menu-select-message.js';
 // Sub-import: register the 8 ObjController subtype decoders so the
 // ObjControllerMessage trailer dispatch can resolve them.
 import '../messages/game/obj-controller/index.js';

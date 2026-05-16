@@ -33,6 +33,10 @@ import {
 } from '../../messages/game/command-queue/index.js';
 import { LogoutMessage } from '../../messages/game/logout-message.js';
 import {
+  ObjectMenuSelectMessage,
+  RadialMenuTypes,
+} from '../../messages/game/object-menu-select-message.js';
+import {
   type MissionAbortData,
   MissionAbortDecoder,
   MissionAcceptRequestDecoder,
@@ -42,6 +46,7 @@ import {
   MissionRemoveRequestDecoder,
 } from '../../messages/game/missions/index.js';
 import { ObjControllerMessage } from '../../messages/game/obj-controller-message.js';
+import { _encodeObjectMenu } from '../../messages/game/obj-controller/object-menu-request.js';
 import {
   type CraftingExperimentData,
   CraftingExperimentDecoder,
@@ -56,7 +61,12 @@ import {
   type TeleportAckData,
   TeleportAckDecoder,
 } from '../../messages/game/obj-controller/index.js';
-import { SurveyMessage, type SurveyPoint } from '../../messages/game/survey/index.js';
+import {
+  ResourceListForSurveyMessage,
+  type ResourceListItem,
+  SurveyMessage,
+  type SurveyPoint,
+} from '../../messages/game/survey/index.js';
 import type { GameNetworkMessage } from '../../messages/interface.js';
 import type { NetworkId, SceneStart, Vector3 } from '../../types.js';
 import type { MessageDispatcher } from '../dispatcher.js';
@@ -434,30 +444,57 @@ export interface ScriptContext {
   // --- Survey primitives ---
 
   /**
-   * Trigger a survey for `resourceClass` (e.g. `'mineral'`, `'flora'`,
-   * `'inorganic_chemical'`). Wraps the standard command-queue path
-   * (`useAbility('requestSurvey', 0n, resourceClass)`) — server-side this
-   * runs `commandFuncRequestSurvey` (CommandCppFuncs.cpp:2761) which
-   * dispatches to the `TRIG_REQUEST_SURVEY` script trigger on the active
-   * survey tool. Requires the player to have a matching survey tool of the
-   * correct type in inventory and to have called `radial-menu-activate`
-   * on it first — otherwise the server emits a chat-system error.
+   * Trigger a survey for a SPECIFIC `resourceTypeName` (e.g. `"Resotine"`,
+   * `"Yponaco"` — an actual spawned resource type name, NOT a class name like
+   * `"mineral"`). Wraps `useAbility('requestsurvey', toolId, resourceTypeName)`.
    *
-   * Returns the command-queue sequence id used (same counter as `useAbility`).
+   * Server-side this runs `commandFuncRequestSurvey` (CommandCppFuncs.cpp:2761)
+   * → `survey_tool_script.OnRequestSurvey` → `requestSurvey` JNI →
+   * `SurveySystem::TaskSurvey` which looks the type up by exact name. Passing
+   * a class name like `"mineral"` causes the type lookup to fail silently and
+   * no `SurveyMessage` is ever broadcast.
+   *
+   * To discover the legal `resourceTypeName` values for a tool's class, call
+   * `fetchSurveyResources(toolId)` first — it returns the
+   * `ResourceListForSurveyMessage.data` array of currently-spawned types.
+   *
+   * Returns the command-queue sequence id used.
    */
-  survey(resourceClass: string): number;
+  survey(toolId: NetworkId, resourceTypeName: string): number;
+
+  /**
+   * Fetch the list of currently-spawned resource types this `toolId` can
+   * survey. Drives the radial-menu "Use" flow end-to-end:
+   *
+   *   1. `ObjControllerMessage(CM_objectMenuRequest=326, target=toolId)`
+   *   2. wait for `ObjControllerMessage(CM_objectMenuResponse=327)`
+   *   3. `ObjectMenuSelectMessage(targetId=toolId, itemId=ITEM_USE=21)`
+   *   4. wait for `ResourceListForSurveyMessage`
+   *
+   * Server-side step 3 triggers `survey_tool_script.OnObjectMenuSelect`,
+   * which calls `requestResourceListForSurvey(player, tool, resource_class)`
+   * — but only if the tool's `VAR_SURVEY_CLASS` objvar is set (crafted tools
+   * have it; raw-spawned templates may not). If the objvar is missing the
+   * server silently returns and this promise rejects with a timeout.
+   *
+   * Returns the `data` array of {resourceName, resourceId, parentClassName}.
+   * Default timeout 8_000ms.
+   */
+  fetchSurveyResources(
+    toolId: NetworkId,
+    opts?: { timeoutMs?: number },
+  ): Promise<ResourceListItem[]>;
 
   /**
    * Wait for the next `SurveyMessage` radial response within `timeoutMs`.
-   * Returns the parsed sample points; `resourceClass` is included for
-   * convenience but is only populated if you set it (the wire SurveyMessage
-   * itself does not carry the resource class — that round-trips via the
-   * `ResourceListForSurveyMessage` issued before the survey window opens).
-   * Default timeout is 5_000ms.
+   * Returns the parsed sample points. The wire `SurveyMessage` does NOT
+   * carry the resource type name (the server assumes the client is tracking
+   * the in-flight survey state from the prior `requestsurvey` issue).
+   * Default timeout 60_000ms — real surveys take ~5-10s but the server may
+   * delay during heavy load.
    */
   waitForSurvey(opts?: { timeoutMs?: number }): Promise<{
     points: SurveyPoint[];
-    resourceClass?: string;
   }>;
 
   // --- Mission primitives ---
@@ -991,20 +1028,67 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
 
     // --- Survey primitives ---
 
-    survey(resourceClass: string): number {
-      // The actual server command name is `requestSurvey` (camelCase) —
-      // verified in command_table.tab:927 and CommandCppFuncs.cpp:2761.
-      // `useAbility` lowercases for the constcrc lookup (CommandTable is
-      // case-insensitive), so 'requestsurvey' would also hash identically,
-      // but we keep the canonical camelCase here for grep-readability.
-      return ctx.useAbility('requestSurvey', 0n, resourceClass);
+    survey(toolId: NetworkId, resourceTypeName: string): number {
+      // Server-side commandFuncRequestSurvey (CommandCppFuncs.cpp:2761) takes
+      // the survey tool's NetworkId as `target` and the resource TYPE NAME
+      // (not class) as `params`. The script trigger
+      // `survey_tool_script.OnRequestSurvey` then calls `requestSurvey` JNI
+      // → SurveySystem::TaskSurvey which looks the type up by exact name.
+      return ctx.useAbility('requestsurvey', toolId, resourceTypeName);
     },
 
-    async waitForSurvey(surveyOpts): Promise<{
-      points: SurveyPoint[];
-      resourceClass?: string;
-    }> {
-      const timeoutMs = surveyOpts?.timeoutMs ?? 5_000;
+    async fetchSurveyResources(
+      toolId: NetworkId,
+      fetchOpts?: { timeoutMs?: number },
+    ): Promise<ResourceListItem[]> {
+      const timeoutMs = fetchOpts?.timeoutMs ?? 8_000;
+      const playerId = opts.sceneStart.playerNetworkId;
+
+      // Set up the response waiter BEFORE sending, so a fast server reply
+      // can't slip past us.
+      const listPromise = opts.dispatcher.waitFor(ResourceListForSurveyMessage, {
+        timeoutMs,
+        predicate: (m) => m.surveyToolId === toolId,
+      });
+
+      // Step 1: ObjControllerMessage(CM_objectMenuRequest=326) with an empty
+      // items list — the server populates the radial.
+      const reqStream = new ByteStream();
+      _encodeObjectMenu(reqStream, {
+        targetId: toolId,
+        requestorId: playerId,
+        items: [],
+        sequence: 1,
+      });
+      const reqData = reqStream.toBytes();
+      ctx.send(
+        new ObjControllerMessage(
+          CLIENT_TO_AUTH_SERVER_FLAGS,
+          ObjControllerSubtypeIds.CM_objectMenuRequest,
+          playerId,
+          0,
+          reqData,
+        ),
+      );
+
+      // We don't strictly need the menu response — the server triggers
+      // OnObjectMenuRequest in survey_tool_script which calls
+      // requestResourceListForSurvey directly. But sending the request is
+      // what kicks the script. Some clients also send ObjectMenuSelectMessage
+      // explicitly after picking; we do that as a defensive belt-and-suspenders.
+
+      // Step 2: ObjectMenuSelectMessage(target=tool, itemId=ITEM_USE) — the
+      // selection trigger that directly fires OnObjectMenuSelect. This is
+      // what kicks the resource-list send server-side per pcap analysis.
+      ctx.send(new ObjectMenuSelectMessage(toolId, RadialMenuTypes.ITEM_USE));
+
+      // Step 3: wait for the resource list to arrive.
+      const msg = await listPromise;
+      return msg.data;
+    },
+
+    async waitForSurvey(surveyOpts): Promise<{ points: SurveyPoint[] }> {
+      const timeoutMs = surveyOpts?.timeoutMs ?? 60_000;
       const msg = await opts.dispatcher.waitFor(SurveyMessage, { timeoutMs });
       return { points: msg.data };
     },

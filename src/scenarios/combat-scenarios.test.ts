@@ -126,11 +126,10 @@ describe('survey scenario', () => {
     expect(scenarios.survey).toBeDefined();
   });
 
-  it('defaults to resourceClass="mineral" and emits one ObjController wrapping requestSurvey', async () => {
+  it('requires toolId and resourceTypeName args, emits one CommandQueueEnqueue with requestsurvey', async () => {
     const factory = scenarios.survey;
     if (!factory) throw new Error('survey not registered');
-    // Tiny waitMs so the test doesn't actually idle.
-    const fn = factory({ waitMs: '0' });
+    const fn = factory({ toolId: '0x17354b8b', resourceTypeName: 'Resotine', waitMs: '0' });
     const { ctx, sent } = createFakeContext();
     const result = await runScript(fn, ctx);
     expect(result.error).toBeUndefined();
@@ -139,19 +138,20 @@ describe('survey scenario', () => {
     expect(obj).toBeInstanceOf(ObjControllerMessage);
     expect(obj.message).toBe(CM_COMMAND_QUEUE_ENQUEUE);
     const inner = CommandQueueEnqueue.unpack(new ReadIterator(obj.data));
-    expect(inner.commandHash).toBe(hashCommand('requestSurvey'));
-    expect(inner.params).toBe('mineral');
+    expect(inner.commandHash).toBe(hashCommand('requestsurvey'));
+    expect(inner.targetId).toBe(0x17354b8bn);
+    expect(inner.params).toBe('Resotine');
   });
 
-  it('respects an explicit resourceClass arg', async () => {
+  it('throws if resourceTypeName is missing', () => {
     const factory = scenarios.survey;
     if (!factory) throw new Error('survey not registered');
-    const fn = factory({ resourceClass: 'flora', waitMs: '0' });
-    const { ctx, sent } = createFakeContext();
-    await runScript(fn, ctx);
-    const inner = CommandQueueEnqueue.unpack(
-      new ReadIterator((sent[0] as ObjControllerMessage).data),
-    );
-    expect(inner.params).toBe('flora');
+    expect(() => factory({ toolId: '0x42' })).toThrow(/resourceTypeName/);
+  });
+
+  it('throws if toolId is missing', () => {
+    const factory = scenarios.survey;
+    if (!factory) throw new Error('survey not registered');
+    expect(() => factory({ resourceTypeName: 'Resotine' })).toThrow(/toolId/);
   });
 });

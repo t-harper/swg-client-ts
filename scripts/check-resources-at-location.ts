@@ -238,7 +238,9 @@ interface PerClassResult {
   maxPct: number;
   avgPct: number;
   topAt: { x: number; y: number; z: number } | null;
-  status: 'ok' | 'timeout' | 'no-tool';
+  status: 'ok' | 'timeout' | 'no-tool' | 'no-list';
+  /** The specific spawned resource types surveyed for this class, with their best efficiency. */
+  resourceTypes?: Array<{ name: string; maxPct: number; samples: number }>;
 }
 
 function makeScenario(args: Args, results: Map<string, PerClassResult>, target: { x: number; z: number } | null): ScenarioFn {
@@ -276,13 +278,18 @@ function makeScenario(args: Args, results: Map<string, PerClassResult>, target: 
     }
     log(`surveying at (${here.x.toFixed(1)}, ${here.z.toFixed(1)}); ${args.classes.length} classes to check`);
 
-    // Survey each class in sequence via the native flow: useAbility(
-    // 'requestsurvey', toolId, resourceClass) → commandFuncRequestSurvey
-    // → toolObj.trigAllScripts(TRIG_REQUEST_SURVEY) → OnRequestSurvey
-    // (survey_tool_script.java) → requestSurvey JNI → SurveySystem →
-    // broadcast SurveyMessage. The server-side script will silently
-    // bail (no SurveyMessage) if the player is inside a structure or
-    // standing on a building surface — so walk to OPEN TERRAIN first.
+    // Two-step survey flow:
+    //   1. fetchSurveyResources(tool) → server replies with the list of
+    //      SPECIFIC resource type names currently spawned for that tool's class.
+    //   2. For each resource type, ctx.survey(tool, typeName) → server's
+    //      TaskSurvey looks the type up by exact name and broadcasts a
+    //      SurveyMessage with 9 sample points around the player's location.
+    //
+    // The server silently bails at OnObjectMenuSelect if the tool's
+    // VAR_SURVEY_CLASS objvar is missing (crafted tools have it; raw-spawned
+    // templates may not), or at OnRequestSurvey if the player is inside a
+    // structure or on a non-terrain surface — those failure modes manifest
+    // here as fetchSurveyResources timeout or waitForSurvey timeout.
     for (const cls of args.classes) {
       const toolId = toolFor(tools, cls);
       if (toolId === undefined) {
@@ -291,46 +298,66 @@ function makeScenario(args: Args, results: Map<string, PerClassResult>, target: 
         continue;
       }
       log(`survey: ${cls} (tool ${toolId})`);
-      ctx.useAbility('requestsurvey', toolId, cls);
+
+      // Step 1: fetch the list of available resource types for this tool.
+      let resourceList;
       try {
-        const result = await ctx.waitForSurvey({ timeoutMs: args.perClassTimeoutMs });
-        const points = result.points;
-        if (points.length === 0) {
-          results.set(cls, { samples: 0, maxPct: 0, avgPct: 0, topAt: null, status: 'ok' });
-          log(`  → ok, 0 samples (server responded but radial is empty)`);
-          continue;
-        }
-        let max = 0;
-        let sum = 0;
-        let top: { x: number; y: number; z: number } | null = null;
-        for (const p of points) {
-          const pct = p.efficiency * 100;
-          sum += pct;
-          if (pct > max) {
-            max = pct;
-            top = { x: p.location.x, y: p.location.y, z: p.location.z };
-          }
-        }
-        results.set(cls, {
-          samples: points.length,
-          maxPct: Math.round(max * 10) / 10,
-          avgPct: Math.round((sum / points.length) * 10) / 10,
-          topAt: top,
-          status: 'ok',
-        });
-        log(`  → ${points.length} samples, max ${max.toFixed(1)}%, avg ${(sum / points.length).toFixed(1)}%`);
+        resourceList = await ctx.fetchSurveyResources(toolId, { timeoutMs: 8_000 });
       } catch (err) {
-        // Timeout — server didn't respond (likely no tool for this class).
-        const isTimeout = err instanceof Error && /Timed out/.test(err.message);
-        results.set(cls, {
-          samples: 0,
-          maxPct: 0,
-          avgPct: 0,
-          topAt: null,
-          status: isTimeout ? 'no-tool' : 'timeout',
-        });
-        log(`  → no response (${isTimeout ? 'no tool for this class' : 'error: ' + (err instanceof Error ? err.message : String(err))})`);
+        log(`  → resource-list timeout (tool likely lacks VAR_SURVEY_CLASS objvar)`);
+        results.set(cls, { samples: 0, maxPct: 0, avgPct: 0, topAt: null, status: 'no-list' });
+        continue;
       }
+      log(`  → resource list: ${resourceList.length} types (${resourceList.slice(0, 3).map((r) => r.resourceName).join(', ')}${resourceList.length > 3 ? '...' : ''})`);
+
+      if (resourceList.length === 0) {
+        results.set(cls, { samples: 0, maxPct: 0, avgPct: 0, topAt: null, status: 'ok', resourceTypes: [] });
+        continue;
+      }
+
+      // Step 2: survey each resource type and aggregate the best efficiency.
+      let classMax = 0;
+      let classSum = 0;
+      let classSamples = 0;
+      let classTop: { x: number; y: number; z: number } | null = null;
+      const typeResults: Array<{ name: string; maxPct: number; samples: number }> = [];
+
+      for (const resType of resourceList) {
+        ctx.survey(toolId, resType.resourceName);
+        try {
+          const survey = await ctx.waitForSurvey({ timeoutMs: args.perClassTimeoutMs });
+          const points = survey.points;
+          let typeMax = 0;
+          for (const p of points) {
+            const pct = p.efficiency * 100;
+            classSum += pct;
+            classSamples++;
+            if (pct > typeMax) typeMax = pct;
+            if (pct > classMax) {
+              classMax = pct;
+              classTop = { x: p.location.x, y: p.location.y, z: p.location.z };
+            }
+          }
+          typeResults.push({
+            name: resType.resourceName,
+            maxPct: Math.round(typeMax * 10) / 10,
+            samples: points.length,
+          });
+          log(`    ${resType.resourceName}: ${points.length} samples, max ${typeMax.toFixed(1)}%`);
+        } catch (err) {
+          log(`    ${resType.resourceName}: no response (${err instanceof Error ? err.message : String(err)})`);
+          typeResults.push({ name: resType.resourceName, maxPct: 0, samples: 0 });
+        }
+      }
+
+      results.set(cls, {
+        samples: classSamples,
+        maxPct: Math.round(classMax * 10) / 10,
+        avgPct: classSamples > 0 ? Math.round((classSum / classSamples) * 10) / 10 : 0,
+        topAt: classTop,
+        status: 'ok',
+        resourceTypes: typeResults,
+      });
     }
   };
 }

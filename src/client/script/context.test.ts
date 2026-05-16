@@ -361,10 +361,12 @@ describe('ScriptContext: chat primitives', () => {
 });
 
 describe('ScriptContext: survey primitives', () => {
-  it('survey() sends one ObjControllerMessage wrapping CommandQueueEnqueue with requestSurvey + resourceClass param', () => {
+  const TOOL_ID = 0x389671787n;
+
+  it('survey() sends one ObjControllerMessage wrapping CommandQueueEnqueue with requestsurvey + (toolId target, resource type name params)', () => {
     const playerId = 0x501n;
     const { ctx, sent } = createFakeContext({ playerNetworkId: playerId });
-    const seq = ctx.survey('mineral');
+    const seq = ctx.survey(TOOL_ID, 'Resotine');
     expect(seq).toBe(1);
     expect(sent.length).toBe(1);
 
@@ -377,34 +379,24 @@ describe('ScriptContext: survey primitives', () => {
 
     const inner = CommandQueueEnqueue.unpack(new ReadIterator(obj.data));
     expect(inner.sequenceId).toBe(1);
-    expect(inner.commandHash).toBe(hashCommand('requestSurvey'));
-    expect(inner.targetId).toBe(0n);
-    expect(inner.params).toBe('mineral');
+    expect(inner.commandHash).toBe(hashCommand('requestsurvey'));
+    // CRITICAL: target is the TOOL's NetworkId, not 0n, and params is a
+    // SPECIFIC RESOURCE TYPE NAME (e.g. "Resotine"), not a class like
+    // "mineral" — server's TaskSurvey looks up the type by exact name.
+    expect(inner.targetId).toBe(TOOL_ID);
+    expect(inner.params).toBe('Resotine');
   });
 
   it('survey() consumes from the command-queue sequence counter', () => {
     const { ctx } = createFakeContext();
-    expect(ctx.survey('mineral')).toBe(1);
-    expect(ctx.survey('flora')).toBe(2);
+    expect(ctx.survey(TOOL_ID, 'Resotine')).toBe(1);
+    expect(ctx.survey(TOOL_ID, 'Yponaco')).toBe(2);
     expect(ctx.useAbility('attack', 0x42n)).toBe(3);
   });
 
-  it('survey() with different resourceClass strings is reflected on the wire', () => {
+  it('survey() command name hashes case-insensitively to requestsurvey', () => {
     const { ctx, sent } = createFakeContext();
-    ctx.survey('inorganic_chemical');
-    const inner = CommandQueueEnqueue.unpack(
-      new ReadIterator((sent[0] as ObjControllerMessage).data),
-    );
-    expect(inner.params).toBe('inorganic_chemical');
-  });
-
-  it('survey() command name hashes to the same value the server expects', () => {
-    // `requestSurvey` (camelCase) is the canonical form (command_table.tab:927).
-    // hashCommand lowercases internally, so the wire hash matches
-    // constcrc('requestsurvey') exactly. Guard against accidentally
-    // case-sensitive refactors.
-    const { ctx, sent } = createFakeContext();
-    ctx.survey('mineral');
+    ctx.survey(TOOL_ID, 'Resotine');
     const inner = CommandQueueEnqueue.unpack(
       new ReadIterator((sent[0] as ObjControllerMessage).data),
     );
@@ -415,7 +407,6 @@ describe('ScriptContext: survey primitives', () => {
   it('waitForSurvey() resolves with the parsed sample points when SurveyMessage arrives', async () => {
     const { ctx, simulateRecv } = createFakeContext();
     const pending = ctx.waitForSurvey({ timeoutMs: 1_000 });
-    // Inject the server response.
     simulateRecv(
       new SurveyMessage([
         { location: { x: 1, y: 2, z: 3 }, efficiency: 0.5 },
@@ -440,10 +431,68 @@ describe('ScriptContext: survey primitives', () => {
   it('survey() sends count toward sendsCount', async () => {
     const { ctx } = createFakeContext();
     const result = await runScript(async (c) => {
-      c.survey('mineral');
-      c.survey('flora');
+      c.survey(TOOL_ID, 'Resotine');
+      c.survey(TOOL_ID, 'Yponaco');
     }, ctx);
     expect(result.sendsCount).toBe(2);
+  });
+
+  it('fetchSurveyResources() sends ObjectMenuRequest + ObjectMenuSelectMessage and resolves with the list', async () => {
+    const { ctx, sent, simulateRecv } = createFakeContext();
+    const promise = ctx.fetchSurveyResources(TOOL_ID, { timeoutMs: 1_000 });
+
+    // After the two sends, simulate the server response.
+    // Two sends: CM_objectMenuRequest (ObjControllerMessage), then top-level
+    // ObjectMenuSelectMessage.
+    expect(sent.length).toBe(2);
+    expect(sent[0]).toBeInstanceOf(ObjControllerMessage);
+    const objReq = sent[0] as ObjControllerMessage;
+    expect(objReq.message).toBe(326); // CM_objectMenuRequest
+
+    const objSelect = sent[1] as { targetId?: bigint; selectedItemId?: number };
+    expect(objSelect.targetId).toBe(TOOL_ID);
+    expect(objSelect.selectedItemId).toBe(21); // ITEM_USE
+
+    // Simulate the server's ResourceListForSurveyMessage response.
+    const { ResourceListForSurveyMessage } = await import(
+      '../../messages/game/survey/resource-list-for-survey-message.js'
+    );
+    simulateRecv(
+      new ResourceListForSurveyMessage(
+        [
+          { resourceName: 'Resotine', resourceId: 1n, parentClassName: 'iron_class_3' },
+          { resourceName: 'Yponaco', resourceId: 2n, parentClassName: 'iron_class_4' },
+        ],
+        'inorganic_mineral_metal_ferrous_iron',
+        TOOL_ID,
+      ),
+    );
+
+    const list = await promise;
+    expect(list).toHaveLength(2);
+    expect(list[0]?.resourceName).toBe('Resotine');
+    expect(list[1]?.resourceName).toBe('Yponaco');
+  });
+
+  it('fetchSurveyResources() filters by surveyToolId — ignores responses for a different tool', async () => {
+    const OTHER_TOOL = 0x999n;
+    const { ctx, simulateRecv } = createFakeContext();
+    const promise = ctx.fetchSurveyResources(TOOL_ID, { timeoutMs: 200 });
+
+    const { ResourceListForSurveyMessage } = await import(
+      '../../messages/game/survey/resource-list-for-survey-message.js'
+    );
+    // Response for the OTHER tool — should be ignored.
+    simulateRecv(
+      new ResourceListForSurveyMessage(
+        [{ resourceName: 'Wrong', resourceId: 99n, parentClassName: 'foo' }],
+        'foo',
+        OTHER_TOOL,
+      ),
+    );
+
+    // Promise should still be pending → time out.
+    await expect(promise).rejects.toThrow(/Timed out/);
   });
 });
 describe('ScriptContext: crafting primitives', () => {

@@ -231,6 +231,14 @@ export class IncomingSequence {
   get expectedNext(): number {
     return this.expectedId;
   }
+
+  /**
+   * Skip ahead to the given seq value. Used for testing with a captured packet
+   * that has a non-zero starting seq, where the prior seqs weren't captured.
+   */
+  testForceExpectedId(value: number): void {
+    this.expectedId = value;
+  }
 }
 
 export type ReliableReceiveResult =

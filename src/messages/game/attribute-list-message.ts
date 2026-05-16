@@ -16,14 +16,6 @@
  *   /home/tharper/code/swg-main/src/engine/shared/library/sharedNetworkMessages/src/shared/clientGameServer/AttributeListMessage.{h,cpp}
  */
 
-import type { NetworkId } from '../../types.js';
-import {
-  GameNetworkMessage,
-  constcrc,
-  registerMessage,
-  type IByteStream,
-  type IReadIterator,
-} from '../_stub-base.js';
 import {
   readArray,
   readNetworkId,
@@ -34,6 +26,14 @@ import {
   writeString,
   writeUnicodeString,
 } from '../../archive/_stub-byte-stream.js';
+import type { NetworkId } from '../../types.js';
+import {
+  GameNetworkMessage,
+  type IByteStream,
+  type IReadIterator,
+  constcrc,
+  registerMessage,
+} from '../_stub-base.js';
 
 /** (attributeKey, localizedDisplayValue) — one entry in the attribute list. */
 export interface AttributePair {

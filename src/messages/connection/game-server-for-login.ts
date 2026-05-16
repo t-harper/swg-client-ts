@@ -28,15 +28,15 @@
  *   /home/tharper/code/swg-main/src/engine/server/library/serverNetworkMessages/src/shared/centralPlanetServer/GameServerForLoginMessage.h
  */
 
+import { readNetworkId, writeNetworkId } from '../../archive/_stub-byte-stream.js';
 import type { NetworkId } from '../../types.js';
 import {
   GameNetworkMessage,
-  constcrc,
-  registerMessage,
   type IByteStream,
   type IReadIterator,
+  constcrc,
+  registerMessage,
 } from '../_stub-base.js';
-import { readNetworkId, writeNetworkId } from '../../archive/_stub-byte-stream.js';
 
 export class GameServerForLoginMessage extends GameNetworkMessage {
   static override readonly messageName = 'GameServerForLoginMessage';

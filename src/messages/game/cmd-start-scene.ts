@@ -18,14 +18,6 @@
  *   /home/tharper/code/swg-main/src/engine/shared/library/sharedNetworkMessages/src/shared/clientGameServer/CommandChannelMessages.{h,cpp}
  */
 
-import type { NetworkId, Vector3 } from '../../types.js';
-import {
-  GameNetworkMessage,
-  constcrc,
-  registerMessage,
-  type IByteStream,
-  type IReadIterator,
-} from '../_stub-base.js';
 import {
   readNetworkId,
   readString,
@@ -34,6 +26,14 @@ import {
   writeString,
   writeVector3,
 } from '../../archive/_stub-byte-stream.js';
+import type { NetworkId, Vector3 } from '../../types.js';
+import {
+  GameNetworkMessage,
+  type IByteStream,
+  type IReadIterator,
+  constcrc,
+  registerMessage,
+} from '../_stub-base.js';
 
 export interface CmdStartSceneParams {
   playerNetworkId: NetworkId;

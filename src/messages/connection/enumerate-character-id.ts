@@ -17,15 +17,6 @@
  *     EnumerateCharacterId class + EnumerateCharacterId_Chardata struct
  */
 
-import type { CharacterInfo, NetworkId } from '../../types.js';
-import { CharacterType } from '../../types.js';
-import {
-  GameNetworkMessage,
-  constcrc,
-  registerMessage,
-  type IByteStream,
-  type IReadIterator,
-} from '../_stub-base.js';
 import {
   readArray,
   readNetworkId,
@@ -34,6 +25,15 @@ import {
   writeNetworkId,
   writeUnicodeString,
 } from '../../archive/_stub-byte-stream.js';
+import type { CharacterInfo, NetworkId } from '../../types.js';
+import type { CharacterType } from '../../types.js';
+import {
+  GameNetworkMessage,
+  type IByteStream,
+  type IReadIterator,
+  constcrc,
+  registerMessage,
+} from '../_stub-base.js';
 
 /** Single chardata row as it appears on the wire. */
 export interface CharacterRow {

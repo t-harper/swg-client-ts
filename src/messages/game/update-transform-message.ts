@@ -22,15 +22,15 @@
  *   /home/tharper/code/swg-main/src/engine/shared/library/sharedNetworkMessages/src/shared/clientGameServer/UpdateTransformMessage.{h,cpp}
  */
 
+import { readNetworkId, writeNetworkId } from '../../archive/_stub-byte-stream.js';
 import type { NetworkId } from '../../types.js';
 import {
   GameNetworkMessage,
-  constcrc,
-  registerMessage,
   type IByteStream,
   type IReadIterator,
+  constcrc,
+  registerMessage,
 } from '../_stub-base.js';
-import { readNetworkId, writeNetworkId } from '../../archive/_stub-byte-stream.js';
 
 export class UpdateTransformMessage extends GameNetworkMessage {
   static override readonly messageName = 'UpdateTransformMessage';

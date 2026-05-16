@@ -16,14 +16,14 @@
  *   /home/tharper/code/swg-main/src/engine/shared/library/sharedNetworkMessages/src/shared/common/ErrorMessage.{h,cpp}
  */
 
+import { readString, writeString } from '../../archive/_stub-byte-stream.js';
 import {
   GameNetworkMessage,
-  constcrc,
-  registerMessage,
   type IByteStream,
   type IReadIterator,
+  constcrc,
+  registerMessage,
 } from '../_stub-base.js';
-import { readString, writeString } from '../../archive/_stub-byte-stream.js';
 
 export class ErrorMessage extends GameNetworkMessage {
   static override readonly messageName = 'ErrorMessage';

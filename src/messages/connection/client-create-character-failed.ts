@@ -14,18 +14,18 @@
  */
 
 import {
-  GameNetworkMessage,
-  constcrc,
-  registerMessage,
-  type IByteStream,
-  type IReadIterator,
-} from '../_stub-base.js';
-import {
   readString,
   readUnicodeString,
   writeString,
   writeUnicodeString,
 } from '../../archive/_stub-byte-stream.js';
+import {
+  GameNetworkMessage,
+  type IByteStream,
+  type IReadIterator,
+  constcrc,
+  registerMessage,
+} from '../_stub-base.js';
 
 /** SWG StringId — `(table, textIndex, name)` triple referenced by clients. */
 export interface StringId {

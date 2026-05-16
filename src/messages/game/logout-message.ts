@@ -12,10 +12,10 @@
 
 import {
   GameNetworkMessage,
-  constcrc,
-  registerMessage,
   type IByteStream,
   type IReadIterator,
+  constcrc,
+  registerMessage,
 } from '../_stub-base.js';
 
 export class LogoutMessage extends GameNetworkMessage {

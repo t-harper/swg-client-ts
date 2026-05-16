@@ -12,14 +12,14 @@
  *     ClientIdMsg::ClientIdMsg constructor
  */
 
+import { readString, writeString } from '../../archive/_stub-byte-stream.js';
 import {
   GameNetworkMessage,
-  constcrc,
-  registerMessage,
   type IByteStream,
   type IReadIterator,
+  constcrc,
+  registerMessage,
 } from '../_stub-base.js';
-import { writeString, readString } from '../../archive/_stub-byte-stream.js';
 
 /** SWG client-version string the server expects (default.cfg / NetworkVersionId). */
 export const DEFAULT_CLIENT_VERSION = '20100225-17:43';

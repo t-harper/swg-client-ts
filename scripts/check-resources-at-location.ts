@@ -37,6 +37,9 @@
  * That's diagnostic, not a script failure.
  */
 
+import { ByteStream } from '../src/archive/byte-stream.js';
+import { TransformCodec, type Transform } from '../src/archive/transform.js';
+import { ObjControllerMessage } from '../src/messages/game/obj-controller-message.js';
 import {
   buildContainerIndex,
   type ContainerItem,
@@ -47,6 +50,73 @@ import {
   SwgClient,
 } from '../src/index.js';
 
+const CM_NET_UPDATE_TRANSFORM = 113;
+const CLIENT_TO_AUTH_SERVER_FLAGS = 0x23;
+
+/**
+ * Encode the MessageQueueDataTransform trailer used inside an
+ * ObjControllerMessage(message=CM_netUpdateTransform). Wire layout per
+ * /home/tharper/code/swg-main/src/engine/shared/library/sharedNetworkMessages/src/shared/clientGameServer/MessageQueueDataTransform.cpp:45-55
+ */
+function packDataTransform(syncStamp: number, seq: number, x: number, y: number, z: number, speed: number): Uint8Array {
+  const s = new ByteStream();
+  s.writeU32(syncStamp >>> 0);
+  s.writeI32(seq);
+  const transform: Transform = { rotation: { w: 1, x: 0, y: 0, z: 0 }, position: { x, y, z } };
+  TransformCodec.encode(s, transform);
+  s.writeF32(speed);
+  s.writeF32(0); // lookAtYaw
+  s.writeU8(0); // useLookAtYaw
+  return s.toBytes();
+}
+
+/**
+ * Walk to (targetX, targetZ) at `speed` m/s by sending repeated
+ * ObjControllerMessage(CM_netUpdateTransform) packets. The standard
+ * ctx.walkTo() sends top-level UpdateTransformMessage which the SERVER
+ * IGNORES — see CLAUDE.md / Client.cpp's dispatch table; client→server
+ * movement only flows through the CM_netUpdateTransform controller
+ * subtype.
+ */
+async function nativeWalkTo(
+  ctx: ScriptContext,
+  startX: number,
+  startY: number,
+  startZ: number,
+  targetX: number,
+  targetZ: number,
+  speed: number,
+  startTimeMs: number,
+): Promise<{ x: number; y: number; z: number }> {
+  const tickMs = 200;
+  const tickSec = tickMs / 1000;
+  const stepLen = speed * tickSec;
+  const dx = targetX - startX;
+  const dz = targetZ - startZ;
+  const dist = Math.hypot(dx, dz);
+  const ticks = Math.max(1, Math.ceil(dist / stepLen));
+  const ux = dx / dist;
+  const uz = dz / dist;
+  let seq = 1;
+  let x = startX;
+  let z = startZ;
+  for (let i = 1; i <= ticks; i++) {
+    const isLast = i === ticks;
+    if (isLast) {
+      x = targetX;
+      z = targetZ;
+    } else {
+      x = startX + ux * stepLen * i;
+      z = startZ + uz * stepLen * i;
+    }
+    const syncStamp = Date.now() - startTimeMs;
+    const trailer = packDataTransform(syncStamp, seq++, x, startY, z, speed);
+    ctx.send(new ObjControllerMessage(CLIENT_TO_AUTH_SERVER_FLAGS, CM_NET_UPDATE_TRANSFORM, ctx.sceneStart.playerNetworkId, 0, trailer));
+    if (!isLast) await ctx.wait(tickMs);
+  }
+  return { x, y: startY, z };
+}
+
 /**
  * Server-side: the `requestSurvey` command takes a TOOL NetworkId as its
  * `target` (see commandFuncRequestSurvey in CommandCppFuncs.cpp). Each
@@ -54,18 +124,21 @@ import {
  * stock SWG tools shipped with the artisan starter kit + later survey-tool
  * crafts.
  */
+// Template short-names that come back over the wire are truncated (e.g.
+// `survey_tool_geo_n` rather than `survey_tool_geo_thermal`). Patterns use
+// the leading prefix that fits inside the truncated form.
 const TOOL_TEMPLATE_TO_CLASSES: Array<{ pattern: RegExp; classes: string[] }> = [
-  { pattern: /survey_tool_all(_s\d+)?\b/, classes: ['*'] }, // universal — handles ALL classes
-  { pattern: /survey_tool_mineral(_noob)?\b/, classes: ['mineral'] },
-  { pattern: /survey_tool_inorganic\b/, classes: ['inorganic_chemical'] },
-  { pattern: /survey_tool_organic\b/, classes: ['organic_chemical'] },
-  { pattern: /survey_tool_lumber\b/, classes: ['flora_resources'] },
-  { pattern: /survey_tool_gas\b/, classes: ['gas'] },
-  { pattern: /survey_tool_liquid\b/, classes: ['water'] },
-  { pattern: /survey_tool_moisture\b/, classes: ['water'] },
-  { pattern: /survey_tool_geo_thermal\b/, classes: ['geothermal_energy'] },
-  { pattern: /survey_tool_solar\b/, classes: ['solar_energy'] },
-  { pattern: /survey_tool_wind\b/, classes: ['wind_energy'] },
+  { pattern: /survey_tool_all\b/, classes: ['*'] }, // universal — handles every class
+  { pattern: /survey_tool_mineral/, classes: ['mineral'] }, // also matches _noob
+  { pattern: /survey_tool_inorganic/, classes: ['inorganic_chemical'] },
+  { pattern: /survey_tool_organic/, classes: ['organic_chemical'] },
+  { pattern: /survey_tool_lumber/, classes: ['flora_resources'] },
+  { pattern: /survey_tool_gas/, classes: ['gas'] },
+  { pattern: /survey_tool_liquid/, classes: ['water'] },
+  { pattern: /survey_tool_moisture/, classes: ['water'] },
+  { pattern: /survey_tool_geo/, classes: ['geothermal_energy'] }, // truncated form: survey_tool_geo_n
+  { pattern: /survey_tool_solar/, classes: ['solar_energy'] },
+  { pattern: /survey_tool_wind/, classes: ['wind_energy'] },
 ];
 
 /** Find all survey tools in any container reachable from the player's networkId (recursive). */
@@ -85,15 +158,24 @@ function findSurveyTools(
     visited.add(key);
     const children = index.get(parent) ?? [];
     for (const child of children) {
-      // Match by templateName (may be null if the server sent only Crc).
-      const name = child.templateName ?? '';
-      for (const { pattern, classes } of TOOL_TEMPLATE_TO_CLASSES) {
-        if (pattern.test(name)) {
-          for (const cls of classes) {
-            if (!result.has(cls)) result.set(cls, child.networkId);
+      // Match by templateName (full path; may be null if only CRC is known)
+      // OR by the short display name from the SHARED baseline (this is
+      // what the server actually sends for GM-spawned items — see the
+      // truncation note above).
+      const candidates = [child.templateName ?? '', child.name ?? ''];
+      for (const text of candidates) {
+        if (text === '') continue;
+        let matched = false;
+        for (const { pattern, classes } of TOOL_TEMPLATE_TO_CLASSES) {
+          if (pattern.test(text)) {
+            for (const cls of classes) {
+              if (!result.has(cls)) result.set(cls, child.networkId);
+            }
+            matched = true;
+            break;
           }
-          break;
         }
+        if (matched) break;
       }
       // Recurse into containers (e.g. inventory → bag → tool).
       queue.push(child.networkId);
@@ -248,19 +330,30 @@ function makeScenario(args: Args, results: Map<string, PerClassResult>, target: 
       }`,
     );
 
-    // Walk to target if one was supplied.
+    // Walk to target via the SERVER-ACCEPTED wire path (CM_netUpdateTransform
+    // wrapped in ObjControllerMessage). The default ctx.walkTo() sends
+    // top-level UpdateTransformMessage which the server silently drops —
+    // confirmed against engine/server/.../core/Client.cpp's dispatch table.
+    let here: { x: number; y: number; z: number };
     if (target !== null) {
       log(`walking to (${target.x.toFixed(1)}, ${target.z.toFixed(1)}) at speed ${args.walkSpeed}`);
-      await ctx.walkTo(target, { speed: args.walkSpeed });
-      await ctx.wait(500); // brief settle so the server registers the new position
+      const spawn = ctx.sceneStart.startPosition;
+      const sessionStart = Date.now();
+      here = await nativeWalkTo(ctx, spawn.x, spawn.y, spawn.z, target.x, target.z, args.walkSpeed, sessionStart);
+      await ctx.wait(1_500); // server-side settle so position reads catch up
+    } else {
+      const cur = ctx.position();
+      here = { x: cur.x, y: cur.y, z: cur.z };
     }
-
-    const here = ctx.position();
     log(`surveying at (${here.x.toFixed(1)}, ${here.z.toFixed(1)}); ${args.classes.length} classes to check`);
 
-    // Survey each class in sequence. Uses the resolved tool's NetworkId so
-    // the server's commandFuncRequestSurvey actually fires (rather than
-    // silently dropping when tool=0n).
+    // Survey each class in sequence via the native flow: useAbility(
+    // 'requestsurvey', toolId, resourceClass) → commandFuncRequestSurvey
+    // → toolObj.trigAllScripts(TRIG_REQUEST_SURVEY) → OnRequestSurvey
+    // (survey_tool_script.java) → requestSurvey JNI → SurveySystem →
+    // broadcast SurveyMessage. The server-side script will silently
+    // bail (no SurveyMessage) if the player is inside a structure or
+    // standing on a building surface — so walk to OPEN TERRAIN first.
     for (const cls of args.classes) {
       const toolId = toolFor(tools, cls);
       if (toolId === undefined) {

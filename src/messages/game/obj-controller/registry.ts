@@ -137,6 +137,32 @@ export const ObjControllerSubtypeIds = {
   CM_combatAction: 204,
   CM_spatialChatSend: 243,
   CM_spatialChatReceive: 244,
+  /** Server → client. Player's known draft schematics (after requestCraftingSession). */
+  CM_draftSchematicsMessage: 258,
+  /** Server → client. The slots / ingredient layout of the in-flight manufacture schematic. */
+  CM_draftSlotsMessage: 259,
+  /** Client → server. Experiment attempt: { sequenceId, [{attribute, points}], coreLevel }. */
+  CM_experimentMessage: 262,
+  /** Client → server. Assign an ingredient to a schematic slot. */
+  CM_fillSchematicSlotMessage: 263,
+  /** Client → server. Clear / return an ingredient from a schematic slot. */
+  CM_emptySchematicSlotMessage: 264,
+  /**
+   * Client → server. Finalize the active schematic into a prototype.
+   * Wire payload is the MessageQueueGeneric form: just `[u8 sequenceId]`.
+   * The same wire layout is shared (via `MessageQueueGeneric::install`) by
+   * `CM_nextCraftingStage` (265), `CM_createManfSchematic` (267),
+   * `CM_cancelCraftingSession` (272), and `CM_restartCraftingSession` (273).
+   * We only register a decoder under `CM_createPrototype`; consumers who
+   * need to decode the others can reuse `CraftingFinishDecoder.decode`.
+   */
+  CM_createPrototype: 266,
+  /** Server → client. Response wrapper for {requestId, response, sequenceId} — used by CM_craftingResult and friends. */
+  CM_craftingResult: 268,
+  /** Client → server. Select a draft schematic from the list (carries schematicIndex). */
+  CM_selectDraftSchematic: 270,
+  /** Client → server. Request a crafting session against a tool / station NetworkId. */
+  CM_requestCraftingSession: 271,
   CM_secureTrade: 277,
   CM_setPosture: 305,
   CM_combatSpam: 308,

@@ -47,6 +47,10 @@ import '../messages/game/obj-controller-message.js';
 // Sub-import: register the 8 ObjController subtype decoders so the
 // ObjControllerMessage trailer dispatch can resolve them.
 import '../messages/game/obj-controller/index.js';
+// Sub-import: register the crafting-session subtype decoders
+// (DraftSchematics, ManufactureSchematic) — they live in their own folder
+// for organization but register through the ObjController subtype registry.
+import '../messages/game/crafting/index.js';
 import '../messages/game/scene-create-object-by-crc.js';
 import '../messages/game/scene-create-object-by-name.js';
 import '../messages/game/scene-end-baselines.js';

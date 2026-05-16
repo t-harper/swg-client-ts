@@ -16,12 +16,6 @@
 
 import { ByteStream } from '../../archive/byte-stream.js';
 import {
-  type ExpectOptions,
-  expectAbsent as expectAbsentImpl,
-  expectAfter as expectAfterImpl,
-  expectWithin as expectWithinImpl,
-} from './expectations.js';
-import {
   type ChatAvatarId,
   ChatInstantMessageToCharacter,
   ChatPersistentMessageToServer,
@@ -40,6 +34,12 @@ import {
 import { LogoutMessage } from '../../messages/game/logout-message.js';
 import { ObjControllerMessage } from '../../messages/game/obj-controller-message.js';
 import {
+  type CraftingExperimentData,
+  CraftingExperimentDecoder,
+  type CraftingSlotAssignData,
+  CraftingSlotAssignDecoder,
+  type CraftingSlotEmptyData,
+  CraftingSlotEmptyDecoder,
   ObjControllerSubtypeIds,
   SpatialChatSendDecoder,
   SpatialChatType,
@@ -49,12 +49,18 @@ import type { GameNetworkMessage } from '../../messages/interface.js';
 import type { NetworkId, SceneStart, Vector3 } from '../../types.js';
 import type { MessageDispatcher } from '../dispatcher.js';
 import {
+  type ExpectOptions,
+  expectAbsent as expectAbsentImpl,
+  expectAfter as expectAfterImpl,
+  expectWithin as expectWithinImpl,
+} from './expectations.js';
+import {
   type CircleOptions,
   type WalkToCellOptions,
   type WalkToOptions,
   walkCircle as walkCircleImpl,
-  walkTo as walkToImpl,
   walkToCell as walkToCellImpl,
+  walkTo as walkToImpl,
 } from './movement.js';
 
 /**
@@ -243,6 +249,98 @@ export interface ScriptContext {
   /** Request the server's chat-room list (server responds with ChatRoomList). */
   requestChannelList(): void;
 
+  // --- Crafting primitives ---
+
+  /**
+   * Open a crafting session against the given tool / station. Sends
+   * `useAbility('requestCraftingSession', toolId, params)` via the command
+   * queue — the server's `commandFuncRequestCraftingSession` then opens
+   * the session and replies via `CM_craftingResult` followed by
+   * `CM_draftSchematicsMessage` with the player's known schematics. The
+   * optional `schematicCrc` is forwarded as the `params` payload as a hint
+   * (the server currently ignores it for this command but consumers may
+   * still want it logged in the transcript).
+   *
+   * Returns the command-queue sequenceId so callers can correlate with the
+   * inbound CommandQueueRemove.
+   */
+  beginCrafting(toolId: NetworkId, schematicCrc?: number): number;
+
+  /**
+   * Select a draft schematic from the list returned in `DraftSchematics`.
+   * Sends `useAbility('selectDraftSchematic', 0n, String(schematicIndex))`
+   * via the command queue — the server's
+   * `commandFuncSelectDraftSchematic` then instantiates a fresh
+   * ManufactureSchematic and pushes `CM_draftSlotsMessage`.
+   *
+   * Returns the command-queue sequenceId.
+   */
+  selectCraftingSchematic(schematicIndex: number): number;
+
+  /**
+   * Assign an ingredient (item or resource container) to a schematic slot.
+   * Sends a bare `ObjControllerMessage(CM_fillSchematicSlotMessage)` with
+   * the `MessageQueueCraftFillSlot` payload — bypasses the command queue.
+   * The server responds via `CM_craftingResult` with `requestId =
+   * CM_fillSchematicSlotMessage`.
+   *
+   * `optionIndex` (default 0) tells the server which of the slot's
+   * accepted-ingredient options this satisfies (resource class / item /
+   * template — see `ManufactureSchematicSlotOption`). The optional
+   * `quantity` argument is accepted for forward-compatibility but is not
+   * carried on this wire subtype — the server infers the quantity from
+   * the ingredient container (it's checked against `amountNeeded` on the
+   * slot's option).
+   *
+   * Returns the per-crafting-session sequenceId.
+   */
+  assignCraftingSlot(
+    slotIndex: number,
+    ingredientId: NetworkId,
+    options?: { optionIndex?: number; quantity?: number },
+  ): number;
+
+  /**
+   * Clear an ingredient out of a schematic slot. Sends a bare
+   * `ObjControllerMessage(CM_emptySchematicSlotMessage)` with the
+   * `MessageQueueCraftEmptySlot` payload. The returned ingredient is
+   * moved to `targetContainer` (defaults to the player's NetworkId —
+   * which the server interprets as the player's inventory).
+   *
+   * Returns the per-crafting-session sequenceId.
+   */
+  clearCraftingSlot(slotIndex: number, targetContainer?: NetworkId): number;
+
+  /**
+   * Run an experimentation attempt on the active schematic. Sends a bare
+   * `ObjControllerMessage(CM_experimentMessage)` with the
+   * `MessageQueueCraftExperiment` payload. Each `experiments` entry says
+   * "spend N points on attribute index X". The server's response carries a
+   * `MessageQueueGenericIntResponse` under `CM_experimentResult` (= 275)
+   * — note that's a *different* subtype id than `CM_craftingResult`.
+   *
+   * `coreLevel` defaults to 0 (no experimentation tool / device bonus).
+   *
+   * Returns the per-crafting-session sequenceId.
+   */
+  craftExperiment(
+    experiments: Array<{ attribute: number; points: number }>,
+    options?: { coreLevel?: number },
+  ): number;
+
+  /**
+   * Finalize the active schematic into a prototype. Sends
+   * `useAbility('createPrototype', toolId, '<seq> <realPrototype>')` via
+   * the command queue — the server's `commandFuncCreatePrototype` then
+   * calls `player->createPrototype(realPrototype)` and replies via
+   * `CM_craftingResult`. Pair `realPrototype=true` (default) with
+   * `createPrototype` to actually spawn the item, or `false` for the
+   * legacy "practice" mode.
+   *
+   * Returns the command-queue sequenceId.
+   */
+  finishCrafting(toolId: NetworkId, options?: { realPrototype?: boolean }): number;
+
   // --- Expectation / assertion primitives ---
 
   /**
@@ -298,6 +396,14 @@ interface InternalContext extends ScriptContext {
     sequenceNumber: number;
     commandSequence: number;
     chatSequence: number;
+    /**
+     * Per-crafting-session sequence id. Counts up across every
+     * `assignCraftingSlot` / `clearCraftingSlot` / `craftExperiment` call.
+     * The server echoes it back in `CM_craftingResult` so the client can
+     * correlate request → reply. Reset would happen at end-of-session in a
+     * stateful orchestrator; we just let it monotonically grow.
+     */
+    craftSequence: number;
     assertionFailures: string[];
   };
 }
@@ -312,6 +418,8 @@ export interface CreateScriptContextOptions {
   initialCommandSequence?: number;
   /** Initial sequence number for chat messages. Default 1. */
   initialChatSequence?: number;
+  /** Initial sequence number for crafting-session messages. Default 1. */
+  initialCraftSequence?: number;
 }
 
 export function createScriptContext(opts: CreateScriptContextOptions): ScriptContext {
@@ -334,6 +442,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     sequenceNumber: opts.initialSequenceNumber ?? 1,
     commandSequence: opts.initialCommandSequence ?? 1,
     chatSequence: opts.initialChatSequence ?? 1,
+    craftSequence: opts.initialCraftSequence ?? 1,
     assertionFailures: [] as string[],
   };
 
@@ -504,6 +613,105 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
 
     requestChannelList(): void {
       ctx.send(new ChatRequestRoomList());
+    },
+
+    // --- Crafting primitives ---
+
+    beginCrafting(toolId: NetworkId, schematicCrc?: number): number {
+      // Wrap as a command-queue request — the server's
+      // `commandFuncRequestCraftingSession` then opens the session and
+      // replies via CM_craftingResult + DraftSchematicsMessage.
+      const params = schematicCrc !== undefined ? String(schematicCrc) : '';
+      return ctx.useAbility('requestCraftingSession', toolId, params);
+    },
+
+    selectCraftingSchematic(schematicIndex: number): number {
+      // commandFuncSelectDraftSchematic parses params as the integer index.
+      return ctx.useAbility('selectDraftSchematic', 0n, String(schematicIndex));
+    },
+
+    assignCraftingSlot(
+      slotIndex: number,
+      ingredientId: NetworkId,
+      assignOpts?: { optionIndex?: number; quantity?: number },
+    ): number {
+      const seq = state.craftSequence++ & 0xff; // u8 on the wire
+      const data: CraftingSlotAssignData = {
+        ingredientId,
+        slotIndex,
+        optionIndex: assignOpts?.optionIndex ?? 0,
+        sequenceId: seq,
+      };
+      const stream = new ByteStream();
+      CraftingSlotAssignDecoder.encode(stream, data);
+      const wrapped = new ObjControllerMessage(
+        CLIENT_TO_AUTH_SERVER_FLAGS,
+        ObjControllerSubtypeIds.CM_fillSchematicSlotMessage,
+        opts.sceneStart.playerNetworkId,
+        0,
+        stream.toBytes(),
+        { kind: CraftingSlotAssignDecoder.kind, data },
+      );
+      ctx.send(wrapped);
+      return seq;
+    },
+
+    clearCraftingSlot(slotIndex: number, targetContainer?: NetworkId): number {
+      const seq = state.craftSequence++ & 0xff;
+      const data: CraftingSlotEmptyData = {
+        slotIndex,
+        targetContainer: targetContainer ?? opts.sceneStart.playerNetworkId,
+        sequenceId: seq,
+      };
+      const stream = new ByteStream();
+      CraftingSlotEmptyDecoder.encode(stream, data);
+      const wrapped = new ObjControllerMessage(
+        CLIENT_TO_AUTH_SERVER_FLAGS,
+        ObjControllerSubtypeIds.CM_emptySchematicSlotMessage,
+        opts.sceneStart.playerNetworkId,
+        0,
+        stream.toBytes(),
+        { kind: CraftingSlotEmptyDecoder.kind, data },
+      );
+      ctx.send(wrapped);
+      return seq;
+    },
+
+    craftExperiment(
+      experiments: Array<{ attribute: number; points: number }>,
+      experimentOpts?: { coreLevel?: number },
+    ): number {
+      const seq = state.craftSequence++ & 0xff;
+      const data: CraftingExperimentData = {
+        sequenceId: seq,
+        experiments: experiments.map((e) => ({
+          attributeIndex: e.attribute,
+          experimentPoints: e.points,
+        })),
+        coreLevel: experimentOpts?.coreLevel ?? 0,
+      };
+      const stream = new ByteStream();
+      CraftingExperimentDecoder.encode(stream, data);
+      const wrapped = new ObjControllerMessage(
+        CLIENT_TO_AUTH_SERVER_FLAGS,
+        ObjControllerSubtypeIds.CM_experimentMessage,
+        opts.sceneStart.playerNetworkId,
+        0,
+        stream.toBytes(),
+        { kind: CraftingExperimentDecoder.kind, data },
+      );
+      ctx.send(wrapped);
+      return seq;
+    },
+
+    finishCrafting(toolId: NetworkId, finishOpts?: { realPrototype?: boolean }): number {
+      // Command-queue path — the server's commandFuncCreatePrototype parses
+      // params as "<sequenceId> <realPrototype>" and uses
+      // player->createPrototype to spawn the item.
+      const seqForServer = state.craftSequence++ & 0xff;
+      const realProto = (finishOpts?.realPrototype ?? true) ? '1' : '0';
+      const params = `${seqForServer} ${realProto}`;
+      return ctx.useAbility('createPrototype', toolId, params);
     },
 
     // --- Expectation primitives ---

@@ -27,6 +27,29 @@ export type {
   CombatSpamMissDetails,
   StringIdValue,
 } from './combat-spam.js';
+export {
+  CraftingExperimentDecoder,
+  CraftingExperimentKind,
+} from './crafting-experiment.js';
+export type {
+  CraftingExperimentData,
+  CraftingExperimentEntry,
+} from './crafting-experiment.js';
+export { CraftingFinishDecoder, CraftingFinishKind } from './crafting-finish.js';
+export type { CraftingFinishData } from './crafting-finish.js';
+export { CraftingResultDecoder, CraftingResultKind } from './crafting-result.js';
+export type { CraftingResultData } from './crafting-result.js';
+export {
+  CraftSelectSchematicDecoder,
+  CraftSelectSchematicKind,
+} from './crafting-select-schematic.js';
+export type { CraftSelectSchematicData } from './crafting-select-schematic.js';
+export { CraftingSlotAssignDecoder, CraftingSlotAssignKind } from './crafting-slot-assign.js';
+export type { CraftingSlotAssignData } from './crafting-slot-assign.js';
+export { CraftingSlotEmptyDecoder, CraftingSlotEmptyKind } from './crafting-slot-empty.js';
+export type { CraftingSlotEmptyData } from './crafting-slot-empty.js';
+export { CraftingStartDecoder, CraftingStartKind } from './crafting-start.js';
+export type { CraftingStartData } from './crafting-start.js';
 export { DefenderStatusDecoder, DefenderStatusKind } from './defender-status.js';
 export type { DefenderStatusData } from './defender-status.js';
 export { GroupAcceptDecoder, GroupAcceptKind } from './group-accept.js';

@@ -16,6 +16,12 @@
 
 import { ByteStream } from '../../archive/byte-stream.js';
 import {
+  type ExpectOptions,
+  expectAbsent as expectAbsentImpl,
+  expectAfter as expectAfterImpl,
+  expectWithin as expectWithinImpl,
+} from './expectations.js';
+import {
   type ChatAvatarId,
   ChatInstantMessageToCharacter,
   ChatPersistentMessageToServer,
@@ -90,6 +96,12 @@ export interface ScriptResult {
   error?: string;
   /** True if the scenario called `ctx.logout()`. */
   didLogout: boolean;
+  /**
+   * Soft-assertion failure messages collected during the run. Populated by
+   * `ctx.fail(reason)` and by soft `ctx.expectWithin(..., { soft: true })`
+   * timeouts. Always present; empty array when nothing failed.
+   */
+  assertionFailures: string[];
 }
 
 type MessageClassRef<T extends GameNetworkMessage> = {
@@ -197,6 +209,49 @@ export interface ScriptContext {
   say(text: string, opts?: SayOptions): number;
   /** Request the server's chat-room list (server responds with ChatRoomList). */
   requestChannelList(): void;
+
+  // --- Expectation / assertion primitives ---
+
+  /**
+   * Wait for a message of `ctor` to arrive within `timeoutMs`. Hard mode
+   * (default) throws on timeout; soft mode (`{ soft: true }`) resolves to
+   * `undefined` and records a failure into `assertionFailures`.
+   */
+  expectWithin<T extends GameNetworkMessage>(
+    ctor: MessageClassRef<T>,
+    timeoutMs: number,
+    opts: ExpectOptions<T> & { soft: true },
+  ): Promise<T | undefined>;
+  expectWithin<T extends GameNetworkMessage>(
+    ctor: MessageClassRef<T>,
+    timeoutMs: number,
+    opts?: ExpectOptions<T>,
+  ): Promise<T>;
+
+  /** Assert NO matching message arrives in `windowMs`. Throws if one does. */
+  expectAbsent<T extends GameNetworkMessage>(
+    ctor: MessageClassRef<T>,
+    windowMs: number,
+    opts?: { predicate?: (m: T) => boolean },
+  ): Promise<void>;
+
+  /** Run `trigger`, then expect a matching message within `withinMs`. */
+  expectAfter<T extends GameNetworkMessage>(
+    trigger: () => void | Promise<void>,
+    ctor: MessageClassRef<T>,
+    opts: { withinMs: number; predicate?: (m: T) => boolean; soft: true },
+  ): Promise<T | undefined>;
+  expectAfter<T extends GameNetworkMessage>(
+    trigger: () => void | Promise<void>,
+    ctor: MessageClassRef<T>,
+    opts: { withinMs: number; predicate?: (m: T) => boolean },
+  ): Promise<T>;
+
+  /** Record a soft failure; does NOT throw. */
+  fail(reason: string): void;
+
+  /** Read the current list of soft-assertion failures. */
+  assertionFailures(): readonly string[];
 }
 
 interface InternalContext extends ScriptContext {
@@ -208,6 +263,7 @@ interface InternalContext extends ScriptContext {
     sequenceNumber: number;
     commandSequence: number;
     chatSequence: number;
+    assertionFailures: string[];
   };
 }
 
@@ -236,6 +292,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     sequenceNumber: opts.initialSequenceNumber ?? 1,
     commandSequence: opts.initialCommandSequence ?? 1,
     chatSequence: opts.initialChatSequence ?? 1,
+    assertionFailures: [] as string[],
   };
 
   const ctx: InternalContext = {
@@ -386,6 +443,58 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     requestChannelList(): void {
       ctx.send(new ChatRequestRoomList());
     },
+
+    // --- Expectation primitives ---
+
+    expectWithin(ctor, timeoutMs, expectOpts) {
+      if (expectOpts?.soft === true) {
+        return expectWithinImpl(opts.dispatcher, ctor, timeoutMs, {
+          ...expectOpts,
+          soft: true,
+        }).then((m) => {
+          if (m === undefined) {
+            state.assertionFailures.push(
+              `Timed out after ${timeoutMs}ms waiting for ${ctor.messageName}`,
+            );
+          }
+          return m;
+        });
+      }
+      return expectWithinImpl(opts.dispatcher, ctor, timeoutMs, expectOpts);
+    },
+
+    expectAbsent(ctor, windowMs, expectOpts) {
+      return expectAbsentImpl(opts.dispatcher, ctor, windowMs, expectOpts);
+    },
+
+    expectAfter(trigger, ctor, expectOpts) {
+      const soft = (expectOpts as { soft?: boolean }).soft === true;
+      if (soft) {
+        return expectAfterImpl(opts.dispatcher, trigger, ctor, {
+          ...expectOpts,
+          soft: true,
+        }).then((m) => {
+          if (m === undefined) {
+            state.assertionFailures.push(
+              `Timed out after ${expectOpts.withinMs}ms waiting for ${ctor.messageName} after trigger`,
+            );
+          }
+          return m;
+        });
+      }
+      return expectAfterImpl(opts.dispatcher, trigger, ctor, {
+        ...expectOpts,
+        soft: false,
+      });
+    },
+
+    fail(reason: string): void {
+      state.assertionFailures.push(reason);
+    },
+
+    assertionFailures(): readonly string[] {
+      return state.assertionFailures;
+    },
   };
 
   return ctx;
@@ -405,6 +514,7 @@ export async function runScript(fn: ScenarioFn, ctx: ScriptContext): Promise<Scr
     elapsedMs: Date.now() - t0,
     sendsCount: internal._state.sendsCount,
     didLogout: internal._state.didLogout,
+    assertionFailures: [...internal._state.assertionFailures],
     ...(error !== undefined ? { error } : {}),
   };
 }

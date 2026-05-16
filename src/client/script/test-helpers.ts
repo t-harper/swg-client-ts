@@ -1,13 +1,24 @@
 /**
  * Test helpers — a minimal fake dispatcher that records sends without
  * touching a real UDP socket, plus a `createFakeContext()` shortcut.
+ *
+ * The fake dispatcher also supports `simulateRecv(msg)` so tests can
+ * inject inbound messages and exercise the assertion helpers
+ * (`expectWithin` / `expectAbsent` / `expectAfter`) without a real
+ * SOE connection.
  */
 
 import { encodeMessage } from '../../messages/base.js';
 import type { GameNetworkMessage } from '../../messages/interface.js';
 import type { NetworkId, SceneStart, Vector3 } from '../../types.js';
-import type { MessageDispatcher } from '../dispatcher.js';
+import type { MessageDispatcher, TranscriptEvent } from '../dispatcher.js';
 import { type ScriptContext, createScriptContext } from './context.js';
+
+type MessageClassRef<T extends GameNetworkMessage> = {
+  readonly messageName: string;
+  readonly typeCrc: number;
+  readonly prototype: T;
+};
 
 export interface FakeContext {
   ctx: ScriptContext;
@@ -17,6 +28,12 @@ export interface FakeContext {
   sentBytes: Uint8Array[];
   /** Abort the script context's signal (for cancellation tests). */
   abort: () => void;
+  /**
+   * Inject an inbound message: fulfills any matching `waitFor` waiter and
+   * fires any `onMessage` listener. Use this in tests to simulate server
+   * responses for assertion helpers.
+   */
+  simulateRecv: (msg: GameNetworkMessage) => void;
 }
 
 interface FakeContextOptions {
@@ -25,35 +42,89 @@ interface FakeContextOptions {
   playerNetworkId?: NetworkId;
 }
 
+type WaiterRecord = {
+  typeCrc: number;
+  predicate: (msg: GameNetworkMessage) => boolean;
+  resolve: (msg: GameNetworkMessage) => void;
+  reject: (err: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
+
+type ListenerRecord = {
+  typeCrc: number;
+  handler: (msg: GameNetworkMessage) => void;
+};
+
 export function createFakeContext(opts: FakeContextOptions = {}): FakeContext {
   const sent: GameNetworkMessage[] = [];
   const sentBytes: Uint8Array[] = [];
+  const waiters: WaiterRecord[] = [];
+  const listeners: ListenerRecord[] = [];
+  const anyListeners: ((event: TranscriptEvent) => void)[] = [];
 
   const fakeDispatcher = {
     send(msg: GameNetworkMessage): void {
       sent.push(msg);
       sentBytes.push(encodeMessage(msg));
     },
-    waitFor<T extends GameNetworkMessage>(): Promise<T> {
-      return new Promise(() => {
-        // never resolves — tests that need waitFor should mock it separately
+    waitFor<T extends GameNetworkMessage>(
+      ctor: MessageClassRef<T>,
+      waitOpts: { timeoutMs?: number; predicate?: (msg: T) => boolean } = {},
+    ): Promise<T> {
+      const timeoutMs = waitOpts.timeoutMs ?? 15_000;
+      const predicate = (waitOpts.predicate ?? (() => true)) as (
+        msg: GameNetworkMessage,
+      ) => boolean;
+      return new Promise<T>((resolve, reject) => {
+        const record: WaiterRecord = {
+          typeCrc: ctor.typeCrc,
+          predicate,
+          resolve: resolve as (msg: GameNetworkMessage) => void,
+          reject,
+          timer: setTimeout(() => {
+            const idx = waiters.indexOf(record);
+            if (idx >= 0) waiters.splice(idx, 1);
+            reject(
+              new Error(
+                `Timed out after ${timeoutMs}ms waiting for ${ctor.messageName} (stage=test)`,
+              ),
+            );
+          }, timeoutMs),
+        };
+        record.timer.unref?.();
+        waiters.push(record);
       });
     },
-    onMessage(): () => void {
+    onMessage<T extends GameNetworkMessage>(
+      ctor: MessageClassRef<T>,
+      handler: (msg: T) => void,
+    ): () => void {
+      const record: ListenerRecord = {
+        typeCrc: ctor.typeCrc,
+        handler: handler as (msg: GameNetworkMessage) => void,
+      };
+      listeners.push(record);
       return () => {
-        // no-op
+        const idx = listeners.indexOf(record);
+        if (idx >= 0) listeners.splice(idx, 1);
       };
     },
-    onAny(): () => void {
+    onAny(handler: (event: TranscriptEvent) => void): () => void {
+      anyListeners.push(handler);
       return () => {
-        // no-op
+        const idx = anyListeners.indexOf(handler);
+        if (idx >= 0) anyListeners.splice(idx, 1);
       };
     },
     handleAppMessage(): void {
       // no-op
     },
-    cancelAllWaiters(): void {
-      // no-op
+    cancelAllWaiters(reason: string): void {
+      const drained = waiters.splice(0);
+      for (const w of drained) {
+        clearTimeout(w.timer);
+        w.reject(new Error(reason));
+      }
     },
     transcript: [],
     stageLabel: 'test',
@@ -77,10 +148,62 @@ export function createFakeContext(opts: FakeContextOptions = {}): FakeContext {
     signal: abortController.signal,
   });
 
+  const simulateRecv = (msg: GameNetworkMessage): void => {
+    const ctor = msg.constructor as unknown as { typeCrc: number };
+    // Fire any-listeners (mostly unused in fake tests, but kept for parity).
+    if (anyListeners.length > 0) {
+      const ev = {
+        direction: 'recv' as const,
+        messageName: (msg.constructor as unknown as { messageName: string }).messageName,
+        typeCrc: ctor.typeCrc,
+        bytes: 0,
+        at: Date.now(),
+        decoded: msg,
+      };
+      for (const h of anyListeners.slice()) {
+        try {
+          h(ev);
+        } catch {
+          // swallow
+        }
+      }
+    }
+    // Fire matching listeners.
+    for (const listener of listeners.slice()) {
+      if (listener.typeCrc !== ctor.typeCrc) continue;
+      try {
+        listener.handler(msg);
+      } catch {
+        // swallow
+      }
+    }
+    // Fulfill any matching waiter (walk back-to-front so splice is safe).
+    for (let i = waiters.length - 1; i >= 0; i--) {
+      const w = waiters[i];
+      if (w === undefined) continue;
+      if (w.typeCrc !== ctor.typeCrc) continue;
+      let matched = false;
+      try {
+        matched = w.predicate(msg);
+      } catch (err) {
+        waiters.splice(i, 1);
+        clearTimeout(w.timer);
+        w.reject(err instanceof Error ? err : new Error(String(err)));
+        continue;
+      }
+      if (matched) {
+        waiters.splice(i, 1);
+        clearTimeout(w.timer);
+        w.resolve(msg);
+      }
+    }
+  };
+
   return {
     ctx,
     sent,
     sentBytes,
     abort: () => abortController.abort(),
+    simulateRecv,
   };
 }

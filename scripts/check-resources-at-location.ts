@@ -38,11 +38,77 @@
  */
 
 import {
+  buildContainerIndex,
+  type ContainerItem,
   type LifecycleResult,
+  type NetworkId,
   type ScenarioFn,
   type ScriptContext,
   SwgClient,
 } from '../src/index.js';
+
+/**
+ * Server-side: the `requestSurvey` command takes a TOOL NetworkId as its
+ * `target` (see commandFuncRequestSurvey in CommandCppFuncs.cpp). Each
+ * tool template only handles certain resource classes. This map covers the
+ * stock SWG tools shipped with the artisan starter kit + later survey-tool
+ * crafts.
+ */
+const TOOL_TEMPLATE_TO_CLASSES: Array<{ pattern: RegExp; classes: string[] }> = [
+  { pattern: /survey_tool_all(_s\d+)?\b/, classes: ['*'] }, // universal — handles ALL classes
+  { pattern: /survey_tool_mineral(_noob)?\b/, classes: ['mineral'] },
+  { pattern: /survey_tool_inorganic\b/, classes: ['inorganic_chemical'] },
+  { pattern: /survey_tool_organic\b/, classes: ['organic_chemical'] },
+  { pattern: /survey_tool_lumber\b/, classes: ['flora_resources'] },
+  { pattern: /survey_tool_gas\b/, classes: ['gas'] },
+  { pattern: /survey_tool_liquid\b/, classes: ['water'] },
+  { pattern: /survey_tool_moisture\b/, classes: ['water'] },
+  { pattern: /survey_tool_geo_thermal\b/, classes: ['geothermal_energy'] },
+  { pattern: /survey_tool_solar\b/, classes: ['solar_energy'] },
+  { pattern: /survey_tool_wind\b/, classes: ['wind_energy'] },
+];
+
+/** Find all survey tools in any container reachable from the player's networkId (recursive). */
+function findSurveyTools(
+  transcript: { transcript: import('../src/client/dispatcher.js').TranscriptEvent[] } | import('../src/client/dispatcher.js').TranscriptEvent[],
+  playerNetworkId: NetworkId,
+): Map<string, NetworkId> {
+  const result = new Map<string, NetworkId>();
+  const index = buildContainerIndex(transcript);
+  const visited = new Set<string>();
+  const queue: NetworkId[] = [playerNetworkId];
+  while (queue.length > 0) {
+    const parent = queue.shift();
+    if (parent === undefined) continue;
+    const key = parent.toString();
+    if (visited.has(key)) continue;
+    visited.add(key);
+    const children = index.get(parent) ?? [];
+    for (const child of children) {
+      // Match by templateName (may be null if the server sent only Crc).
+      const name = child.templateName ?? '';
+      for (const { pattern, classes } of TOOL_TEMPLATE_TO_CLASSES) {
+        if (pattern.test(name)) {
+          for (const cls of classes) {
+            if (!result.has(cls)) result.set(cls, child.networkId);
+          }
+          break;
+        }
+      }
+      // Recurse into containers (e.g. inventory → bag → tool).
+      queue.push(child.networkId);
+    }
+  }
+  return result;
+}
+
+/** Get the survey-tool NetworkId for a given resource class. Returns undefined if no matching tool. */
+function toolFor(map: Map<string, NetworkId>, resourceClass: string): NetworkId | undefined {
+  const exact = map.get(resourceClass);
+  if (exact !== undefined) return exact;
+  // Universal tool ('*') handles every class.
+  return map.get('*');
+}
 
 interface Args {
   host: string;
@@ -169,8 +235,18 @@ function makeScenario(args: Args, results: Map<string, PerClassResult>, target: 
     : () => {};
 
   return async (ctx: ScriptContext) => {
-    // Settle for a moment so baselines finish.
-    await ctx.wait(1_500);
+    // Settle for a moment so baselines + containment messages finish.
+    await ctx.wait(2_500);
+
+    // Scan the player's containers for survey tools. Server-side
+    // commandFuncRequestSurvey requires the TOOL networkId as the
+    // command's target — passing 0n is a silent no-op.
+    const tools = findSurveyTools(ctx.dispatcher.transcript, ctx.sceneStart.playerNetworkId);
+    log(
+      `found ${tools.size} survey tool(s) in inventory: ${
+        [...tools.entries()].map(([cls, id]) => `${cls}=${id}`).join(', ') || '(none)'
+      }`,
+    );
 
     // Walk to target if one was supplied.
     if (target !== null) {
@@ -182,11 +258,18 @@ function makeScenario(args: Args, results: Map<string, PerClassResult>, target: 
     const here = ctx.position();
     log(`surveying at (${here.x.toFixed(1)}, ${here.z.toFixed(1)}); ${args.classes.length} classes to check`);
 
-    // Survey each class in sequence. The server only responds for classes
-    // where the player holds a matching tool; everything else times out.
+    // Survey each class in sequence. Uses the resolved tool's NetworkId so
+    // the server's commandFuncRequestSurvey actually fires (rather than
+    // silently dropping when tool=0n).
     for (const cls of args.classes) {
-      log(`survey: ${cls}`);
-      ctx.survey(cls);
+      const toolId = toolFor(tools, cls);
+      if (toolId === undefined) {
+        log(`survey: ${cls} → no tool in inventory, skipping`);
+        results.set(cls, { samples: 0, maxPct: 0, avgPct: 0, topAt: null, status: 'no-tool' });
+        continue;
+      }
+      log(`survey: ${cls} (tool ${toolId})`);
+      ctx.useAbility('requestsurvey', toolId, cls);
       try {
         const result = await ctx.waitForSurvey({ timeoutMs: args.perClassTimeoutMs });
         const points = result.points;

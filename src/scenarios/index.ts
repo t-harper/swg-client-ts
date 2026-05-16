@@ -9,7 +9,8 @@
  *   3. Document its args.
  */
 
-import type { ScenarioFn } from '../client/script/context.js';
+import type { Posture, ScenarioFn } from '../client/script/context.js';
+import type { NetworkId } from '../types.js';
 
 export type ScenarioFactory = (args: Record<string, string>) => ScenarioFn;
 
@@ -64,10 +65,65 @@ export const dwell: ScenarioFactory = (args) => {
   };
 };
 
+/**
+ * Queue `attack` against a fixed target every ~tickMs for durationMs.
+ *
+ * Args:
+ *   targetId   (required) hex (0x...) or decimal NetworkId of the victim
+ *   durationMs (default 5000) total attack window
+ *   tickMs     (default 1000) cadence between enqueues
+ */
+export const combatAttack: ScenarioFactory = (args) => {
+  const targetId = networkIdArg(args, 'targetId');
+  const durationMs = numArg(args, 'durationMs', 5000);
+  const tickMs = numArg(args, 'tickMs', 1000);
+  if (tickMs <= 0) {
+    throw new Error(`combat-attack: tickMs must be > 0 (got ${tickMs})`);
+  }
+  return async (ctx) => {
+    const deadline = Date.now() + durationMs;
+    // Emit one immediately, then re-queue every tickMs until durationMs elapses.
+    ctx.attackTarget(targetId);
+    while (Date.now() + tickMs <= deadline) {
+      await ctx.wait(tickMs);
+      ctx.attackTarget(targetId);
+    }
+  };
+};
+
+/**
+ * Cycle through postures (standing → crouched → prone → standing) every
+ * `tickMs` for `durationMs`. Useful as a visual smoke test that the
+ * combat-engine wiring round-trips end to end.
+ *
+ * Args:
+ *   durationMs (default 5000)
+ *   tickMs     (default 1000) ms between posture changes
+ */
+export const postureCycle: ScenarioFactory = (args) => {
+  const durationMs = numArg(args, 'durationMs', 5000);
+  const tickMs = numArg(args, 'tickMs', 1000);
+  if (tickMs <= 0) {
+    throw new Error(`posture-cycle: tickMs must be > 0 (got ${tickMs})`);
+  }
+  const sequence: Posture[] = ['standing', 'crouched', 'prone', 'standing'];
+  return async (ctx) => {
+    const deadline = Date.now() + durationMs;
+    let i = 0;
+    ctx.changePosture(sequence[i++ % sequence.length] as Posture);
+    while (Date.now() + tickMs <= deadline) {
+      await ctx.wait(tickMs);
+      ctx.changePosture(sequence[i++ % sequence.length] as Posture);
+    }
+  };
+};
+
 export const scenarios: Record<string, ScenarioFactory> = {
   'walk-line': walkLine,
   'walk-circle': walkCircle,
   'open-inventory': openInventory,
+  'combat-attack': combatAttack,
+  'posture-cycle': postureCycle,
   dwell,
 };
 
@@ -79,4 +135,24 @@ function numArg(args: Record<string, string>, key: string, defaultValue: number)
     throw new Error(`scenario arg --script-arg=${key}=${raw} is not a number`);
   }
   return n;
-};
+}
+
+/**
+ * Parse a required NetworkId from `args[key]`. Accepts:
+ *   - hex literal:  "0xdeadbeef"  / "0xDEADBEEF"
+ *   - decimal:      "16039260784"
+ *
+ * Throws with a clear error if the arg is missing or unparseable.
+ */
+function networkIdArg(args: Record<string, string>, key: string): NetworkId {
+  const raw = args[key];
+  if (raw === undefined || raw === '') {
+    throw new Error(`missing required scenario arg --script-arg=${key}=<NetworkId>`);
+  }
+  try {
+    return BigInt(raw);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`scenario arg --script-arg=${key}=${raw} is not a valid NetworkId (${reason})`);
+  }
+}

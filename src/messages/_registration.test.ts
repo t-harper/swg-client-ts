@@ -36,6 +36,8 @@ import { ObjControllerMessage } from './game/obj-controller-message.js';
 import { SceneCreateObjectByCrc } from './game/scene-create-object-by-crc.js';
 import { SceneCreateObjectByName } from './game/scene-create-object-by-name.js';
 import { SceneEndBaselines } from './game/scene-end-baselines.js';
+import { ResourceListForSurveyMessage } from './game/survey/resource-list-for-survey-message.js';
+import { SurveyMessage } from './game/survey/survey-message.js';
 import { UpdateContainmentMessage } from './game/update-containment-message.js';
 import { UpdateTransformMessage } from './game/update-transform-message.js';
 import { UpdateTransformWithParentMessage } from './game/update-transform-with-parent-message.js';
@@ -72,11 +74,13 @@ const ALL_DECODERS = [
   ChatRoomList,
   ChatSendToRoom,
   ChatPersistentMessageToServer,
+  SurveyMessage,
+  ResourceListForSurveyMessage,
 ];
 
 describe('message registration', () => {
-  it('exports 30 message classes', () => {
-    expect(ALL_DECODERS.length).toBe(30);
+  it('exports 32 message classes', () => {
+    expect(ALL_DECODERS.length).toBe(32);
   });
 
   it('every class has a non-empty messageName', () => {

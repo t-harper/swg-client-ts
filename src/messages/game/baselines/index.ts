@@ -110,6 +110,11 @@ export {
   tagToString,
   tryDecodeBaseline,
 } from './registry.js';
+export {
+  type ResourceContainerObjectSharedBaseline,
+  ResourceContainerObjectSharedDecoder,
+  ResourceContainerObjectSharedKind,
+} from './resource-container-object-baseline-3.js';
 export { type StringIdValue, EMPTY_STRING_ID, StringIdCodec } from './string-id.js';
 export {
   type TangibleObjectClientServerBaseline,

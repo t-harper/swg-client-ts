@@ -64,6 +64,17 @@ export type {
   FleetSummary,
 } from './client/fleet.js';
 
+// Survey message classes — for receiving the survey-tool radial result and
+// the available-resources list.
+export {
+  ResourceListForSurveyMessage,
+  SurveyMessage,
+} from './messages/game/survey/index.js';
+export type {
+  ResourceListItem,
+  SurveyPoint,
+} from './messages/game/survey/index.js';
+
 // Chat message primitives — useful for consumers that want to send tells,
 // post in chat rooms, or send in-game mail without going through the
 // scripting engine.
@@ -98,6 +109,8 @@ export {
   PlayerObjectSharedKind,
   PlayerObjectSharedNpDecoder,
   PlayerObjectSharedNpKind,
+  ResourceContainerObjectSharedDecoder,
+  ResourceContainerObjectSharedKind,
   TangibleObjectSharedDecoder,
   TangibleObjectSharedKind,
   TangibleObjectSharedNpDecoder,
@@ -119,6 +132,7 @@ export type {
   MatchMakingIdValue,
   PlayerObjectSharedBaseline,
   PlayerObjectSharedNpBaseline,
+  ResourceContainerObjectSharedBaseline,
   StringIdValue,
   TangibleObjectEffect,
   TangibleObjectSharedBaseline,

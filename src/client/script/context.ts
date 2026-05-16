@@ -16,12 +16,6 @@
 
 import { ByteStream } from '../../archive/byte-stream.js';
 import {
-  type ExpectOptions,
-  expectAbsent as expectAbsentImpl,
-  expectAfter as expectAfterImpl,
-  expectWithin as expectWithinImpl,
-} from './expectations.js';
-import {
   type ChatAvatarId,
   ChatInstantMessageToCharacter,
   ChatPersistentMessageToServer,
@@ -45,16 +39,23 @@ import {
   SpatialChatType,
   makeSpatialChatData,
 } from '../../messages/game/obj-controller/index.js';
+import { SurveyMessage, type SurveyPoint } from '../../messages/game/survey/index.js';
 import type { GameNetworkMessage } from '../../messages/interface.js';
 import type { NetworkId, SceneStart, Vector3 } from '../../types.js';
 import type { MessageDispatcher } from '../dispatcher.js';
+import {
+  type ExpectOptions,
+  expectAbsent as expectAbsentImpl,
+  expectAfter as expectAfterImpl,
+  expectWithin as expectWithinImpl,
+} from './expectations.js';
 import {
   type CircleOptions,
   type WalkToCellOptions,
   type WalkToOptions,
   walkCircle as walkCircleImpl,
-  walkTo as walkToImpl,
   walkToCell as walkToCellImpl,
+  walkTo as walkToImpl,
 } from './movement.js';
 
 /**
@@ -285,6 +286,35 @@ export interface ScriptContext {
 
   /** Read the current list of soft-assertion failures. */
   assertionFailures(): readonly string[];
+
+  // --- Survey primitives ---
+
+  /**
+   * Trigger a survey for `resourceClass` (e.g. `'mineral'`, `'flora'`,
+   * `'inorganic_chemical'`). Wraps the standard command-queue path
+   * (`useAbility('requestSurvey', 0n, resourceClass)`) — server-side this
+   * runs `commandFuncRequestSurvey` (CommandCppFuncs.cpp:2761) which
+   * dispatches to the `TRIG_REQUEST_SURVEY` script trigger on the active
+   * survey tool. Requires the player to have a matching survey tool of the
+   * correct type in inventory and to have called `radial-menu-activate`
+   * on it first — otherwise the server emits a chat-system error.
+   *
+   * Returns the command-queue sequence id used (same counter as `useAbility`).
+   */
+  survey(resourceClass: string): number;
+
+  /**
+   * Wait for the next `SurveyMessage` radial response within `timeoutMs`.
+   * Returns the parsed sample points; `resourceClass` is included for
+   * convenience but is only populated if you set it (the wire SurveyMessage
+   * itself does not carry the resource class — that round-trips via the
+   * `ResourceListForSurveyMessage` issued before the survey window opens).
+   * Default timeout is 5_000ms.
+   */
+  waitForSurvey(opts?: { timeoutMs?: number }): Promise<{
+    points: SurveyPoint[];
+    resourceClass?: string;
+  }>;
 }
 
 interface InternalContext extends ScriptContext {
@@ -556,6 +586,26 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
 
     assertionFailures(): readonly string[] {
       return state.assertionFailures;
+    },
+
+    // --- Survey primitives ---
+
+    survey(resourceClass: string): number {
+      // The actual server command name is `requestSurvey` (camelCase) —
+      // verified in command_table.tab:927 and CommandCppFuncs.cpp:2761.
+      // `useAbility` lowercases for the constcrc lookup (CommandTable is
+      // case-insensitive), so 'requestsurvey' would also hash identically,
+      // but we keep the canonical camelCase here for grep-readability.
+      return ctx.useAbility('requestSurvey', 0n, resourceClass);
+    },
+
+    async waitForSurvey(surveyOpts): Promise<{
+      points: SurveyPoint[];
+      resourceClass?: string;
+    }> {
+      const timeoutMs = surveyOpts?.timeoutMs ?? 5_000;
+      const msg = await opts.dispatcher.waitFor(SurveyMessage, { timeoutMs });
+      return { points: msg.data };
     },
   };
 

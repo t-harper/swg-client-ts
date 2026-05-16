@@ -91,6 +91,8 @@ export const ObjectTypeTags = {
   SCLT: stringToTag('SCLT'),
   /** ServerStaticObjectTemplate — TAG(S,T,A,O). */
   STAO: stringToTag('STAO'),
+  /** ServerResourceContainerObjectTemplate — TAG(R,C,N,O). */
+  RCNO: stringToTag('RCNO'),
 } as const;
 
 /**

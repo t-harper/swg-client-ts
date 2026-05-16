@@ -36,11 +36,53 @@ instantly on any submodule bump.
 # Requires Node 24 (see .nvmrc) and pnpm
 nvm use
 pnpm install
-pnpm test             # unit tests against captured wire fixtures
-LIVE=1 pnpm test      # integration tests against the live swg-server at 10.254.0.253
+pnpm test                                              # unit tests (no server needed)
+LIVE=1 pnpm test tests/integration/live-login.test.ts  # one live test
+LIVE=1 pnpm test                                       # all unit + live tests
 
 # CLI: do a full zone-in lifecycle and dump JSON event log
-pnpm cli zone --host=10.254.0.253 --user=ci-test --planet=tatooine
+pnpm cli zone --host=10.254.0.253 --user=ci-test --character=TsTest --planet=mos_eisley
+```
+
+## CLI flags
+
+| Flag | Default | Notes |
+|------|---------|-------|
+| `--host` | `127.0.0.1` | LoginServer UDP address |
+| `--port` | `44453` | LoginServer UDP port |
+| `--user` | (required) | Account name. Max 15 chars (server limit). |
+| `--character` | optional | Character name. If supplied and the account has no characters, one is created. |
+| `--cluster` | first | Cluster name to attach to (typically `swg`). |
+| `--planet` | `mos_eisley` | `starting_locations.iff` key (NOT a planet name); for character creation only |
+| `--profession` | `combat_brawler` | for character creation only |
+| `--hold-ms` | `5000` | Time to dwell in the zoned-in state before logging out |
+| `--verbose` | off | Stream message names + state transitions to stderr |
+| `--skip-game` | off | Stop after `SelectCharacter` (skip zone-in + logout) |
+| `--no-pretty` | off | Single-line JSON instead of pretty-printed |
+
+Exit code: 0 on success, 1 on failure. JSON always goes to stdout; logs
+to stderr.
+
+## Programmatic use
+
+```typescript
+import { SwgClient } from '@swg/ts-client';
+
+const client = new SwgClient({
+  loginServer: { host: '10.254.0.253', port: 44453 },
+});
+
+const result = await client.fullLifecycle({
+  account: 'ci-test',
+  characterName: 'TsTest',        // created if not in avatar list
+  planet: 'mos_eisley',           // starting_locations.iff key
+  holdZonedInMs: 5000,
+  onTranscript: (event) => console.log(event.direction, event.messageName),
+  onStateChange: (state) => console.log('->', state),
+});
+
+// result.baselineObjectCount > 0 means we zoned in successfully
+// result.transcript[] is the full send + recv trace
 ```
 
 ## Architecture

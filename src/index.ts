@@ -203,6 +203,16 @@ export {
 export { ContainerView, containerView, buildContainerIndex } from './client/container-view.js';
 export type { ContainerItem } from './client/container-view.js';
 
+// Character snapshot + diff — hashable, deterministic projection of the
+// persisted character state from a LifecycleResult. Used by the reconnect
+// regression test to validate the DB save/load pipeline end-to-end.
+export { snapshot, diffSnapshots } from './client/snapshot.js';
+export type {
+  CharacterSnapshot,
+  SnapshotDiff,
+  SnapshotInventoryItem,
+} from './client/snapshot.js';
+
 // Wire capture + replay harness
 export {
   attachCapture,

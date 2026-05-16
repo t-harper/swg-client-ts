@@ -51,6 +51,7 @@ import '../messages/game/obj-controller/index.js';
 // (DraftSchematics, ManufactureSchematic) — they live in their own folder
 // for organization but register through the ObjController subtype registry.
 import '../messages/game/crafting/index.js';
+import '../messages/game/missions/index.js';
 import '../messages/game/scene-create-object-by-crc.js';
 import '../messages/game/scene-create-object-by-name.js';
 import '../messages/game/scene-end-baselines.js';

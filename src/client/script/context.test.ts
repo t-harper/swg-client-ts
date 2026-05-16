@@ -559,3 +559,120 @@ describe('ScriptContext: crafting primitives', () => {
     expect(result.sendsCount).toBe(5);
   });
 });
+
+describe('ScriptContext: mission primitives', () => {
+  it('requestMissionList sends one ObjControllerMessage(CM_missionListRequest)', () => {
+    const playerId = 0x100n;
+    const terminalId = 0x4321n;
+    const { ctx, sent } = createFakeContext({ playerNetworkId: playerId });
+    const seq = ctx.requestMissionList(terminalId);
+    expect(seq).toBe(1);
+    expect(sent.length).toBe(1);
+
+    const wrapped = sent[0];
+    expect(wrapped).toBeInstanceOf(ObjControllerMessage);
+    const obj = wrapped as ObjControllerMessage;
+    expect(obj.message).toBe(ObjControllerSubtypeIds.CM_missionListRequest);
+    expect(obj.flags).toBe(CLIENT_TO_AUTH_SERVER_FLAGS);
+    expect(obj.networkId).toBe(playerId);
+
+    // The trailer is a 10-byte MissionListRequest payload.
+    const trailer = obj.data;
+    expect(trailer.length).toBe(10);
+    expect(trailer[0]).toBe(0x00); // flags=0
+    expect(trailer[1]).toBe(0x01); // sequenceId=1
+    expect(trailer[2]).toBe(0x21); // terminalId LSB (0x4321 & 0xff)
+    expect(trailer[3]).toBe(0x43); // terminalId next byte
+  });
+
+  it('requestMissionList honors the flags option (MineOnly)', () => {
+    const { ctx, sent } = createFakeContext();
+    ctx.requestMissionList(0x42n, { flags: 0x01 });
+    const obj = sent[0] as ObjControllerMessage;
+    expect(obj.data[0]).toBe(0x01); // flags = MineOnly
+  });
+
+  it('requestMissionList consumes from the mission-sequence counter', () => {
+    const { ctx } = createFakeContext();
+    expect(ctx.requestMissionList(0x10n)).toBe(1);
+    expect(ctx.requestMissionList(0x20n)).toBe(2);
+    expect(ctx.acceptMission(0x30n, 0x10n)).toBe(3);
+  });
+
+  it('acceptMission sends one ObjControllerMessage(CM_missionAcceptRequest)', () => {
+    const playerId = 0x100n;
+    const missionId = 0xabc1n;
+    const terminalId = 0x4321n;
+    const { ctx, sent } = createFakeContext({ playerNetworkId: playerId });
+    const seq = ctx.acceptMission(missionId, terminalId);
+    expect(seq).toBe(1);
+    expect(sent.length).toBe(1);
+
+    const obj = sent[0] as ObjControllerMessage;
+    expect(obj.message).toBe(ObjControllerSubtypeIds.CM_missionAcceptRequest);
+    expect(obj.flags).toBe(CLIENT_TO_AUTH_SERVER_FLAGS);
+    expect(obj.networkId).toBe(playerId);
+
+    // Trailer = NetworkId(8) + NetworkId(8) + u8 = 17 bytes
+    expect(obj.data.length).toBe(17);
+    expect(obj.data[0]).toBe(0xc1); // missionId LSB
+    expect(obj.data[1]).toBe(0xab);
+    expect(obj.data[8]).toBe(0x21); // terminalId LSB
+    expect(obj.data[9]).toBe(0x43);
+    expect(obj.data[16]).toBe(0x01); // sequenceId
+  });
+
+  it('removeMission shares wire layout with acceptMission but uses CM_missionRemoveRequest', () => {
+    const playerId = 0x100n;
+    const missionId = 0xabc1n;
+    const terminalId = 0x4321n;
+    const { ctx, sent } = createFakeContext({ playerNetworkId: playerId });
+    const seq = ctx.removeMission(missionId, terminalId);
+    expect(seq).toBe(1);
+    const obj = sent[0] as ObjControllerMessage;
+    expect(obj.message).toBe(ObjControllerSubtypeIds.CM_missionRemoveRequest);
+    expect(obj.data.length).toBe(17);
+  });
+
+  it('abortMission sends ObjControllerMessage(CM_missionAbort) with just a NetworkId trailer', () => {
+    const missionId = 0xfeedn;
+    const { ctx, sent } = createFakeContext();
+    ctx.abortMission(missionId);
+    expect(sent.length).toBe(1);
+    const obj = sent[0] as ObjControllerMessage;
+    expect(obj.message).toBe(ObjControllerSubtypeIds.CM_missionAbort);
+    expect(obj.flags).toBe(CLIENT_TO_AUTH_SERVER_FLAGS);
+    // Trailer is just a NetworkId.
+    expect(obj.data.length).toBe(8);
+    expect(obj.data[0]).toBe(0xed); // missionId LSB
+    expect(obj.data[1]).toBe(0xfe);
+    for (let i = 2; i < 8; i++) expect(obj.data[i]).toBe(0x00);
+  });
+
+  it('abortMission does NOT consume from the mission sequence counter', () => {
+    const { ctx, sent } = createFakeContext();
+    ctx.abortMission(0xfeedn);
+    expect(sent.length).toBe(1);
+    // The next acceptMission gets seq=1 (abort did not touch the counter).
+    expect(ctx.acceptMission(0x10n, 0x20n)).toBe(1);
+  });
+
+  it('mission sends count toward sendsCount', async () => {
+    const { ctx } = createFakeContext();
+    const result = await runScript(async (c) => {
+      const seq = c.requestMissionList(0x10n);
+      void seq;
+      c.acceptMission(0x20n, 0x10n);
+      c.abortMission(0x20n);
+    }, ctx);
+    expect(result.sendsCount).toBe(3);
+  });
+
+  it('decoder is registered so a round-trip parse identifies the kind', () => {
+    const { ctx, sent } = createFakeContext();
+    ctx.acceptMission(0x42n, 0x101n);
+    const obj = sent[0] as ObjControllerMessage;
+    // The decoder we set the inline preview to wins:
+    expect(obj.decodedSubtype?.kind).toBe('MissionAcceptRequest');
+  });
+});

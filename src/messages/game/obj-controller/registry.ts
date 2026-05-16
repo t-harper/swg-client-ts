@@ -137,6 +137,18 @@ export const ObjControllerSubtypeIds = {
   CM_combatAction: 204,
   CM_spatialChatSend: 243,
   CM_spatialChatReceive: 244,
+  /** Client → server. Request the mission list from a terminal: { flags, sequenceId, terminalId }. */
+  CM_missionListRequest: 245,
+  /** Client → server. Request to accept a mission: { missionObjectId, terminalId, sequenceId }. */
+  CM_missionAcceptRequest: 249,
+  /** Server → client. Mission accept/remove/create ack: { missionObjectId, success, sequenceId }. */
+  CM_missionAcceptResponse: 250,
+  /** Client → server. Request to remove (abandon) a mission: { missionObjectId, terminalId, sequenceId }. */
+  CM_missionRemoveRequest: 251,
+  /** Server → client. Mission remove ack: { missionObjectId, success, sequenceId }. Same wire layout as CM_missionAcceptResponse. */
+  CM_missionRemoveResponse: 252,
+  /** Server → client. Mission create ack: { missionObjectId, success, sequenceId }. Same wire layout as CM_missionAcceptResponse. */
+  CM_missionCreateResponse: 256,
   /** Server → client. Player's known draft schematics (after requestCraftingSession). */
   CM_draftSchematicsMessage: 258,
   /** Server → client. The slots / ingredient layout of the in-flight manufacture schematic. */
@@ -167,6 +179,12 @@ export const ObjControllerSubtypeIds = {
   CM_setPosture: 305,
   CM_combatSpam: 308,
   CM_sitOnObject: 315,
+  /**
+   * Bidirectional. Player-initiated mission abort: trailer is a plain `[NetworkId]`
+   * (the MissionObject id). The server echoes the same id back as confirmation.
+   * Uses the shared `MessageQueueNetworkId` archive.
+   */
+  CM_missionAbort: 322,
   CM_objectMenuRequest: 326,
   CM_objectMenuResponse: 327,
   CM_setGroupInviter: 351,

@@ -93,6 +93,8 @@ export const ObjectTypeTags = {
   STAO: stringToTag('STAO'),
   /** ServerResourceContainerObjectTemplate — TAG(R,C,N,O). */
   RCNO: stringToTag('RCNO'),
+  /** ServerMissionObjectTemplate — TAG(M,I,S,O). MissionObject extends IntangibleObject. */
+  MISO: stringToTag('MISO'),
 } as const;
 
 /**

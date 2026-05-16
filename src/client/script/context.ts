@@ -32,6 +32,15 @@ import {
   wrapAsObjControllerMessage,
 } from '../../messages/game/command-queue/index.js';
 import { LogoutMessage } from '../../messages/game/logout-message.js';
+import {
+  type MissionAbortData,
+  MissionAbortDecoder,
+  MissionAcceptRequestDecoder,
+  type MissionGenericRequestData,
+  type MissionListRequestData,
+  MissionListRequestDecoder,
+  MissionRemoveRequestDecoder,
+} from '../../messages/game/missions/index.js';
 import { ObjControllerMessage } from '../../messages/game/obj-controller-message.js';
 import {
   type CraftingExperimentData,
@@ -413,6 +422,61 @@ export interface ScriptContext {
     points: SurveyPoint[];
     resourceClass?: string;
   }>;
+
+  // --- Mission primitives ---
+
+  /**
+   * Next per-player mission-flow sequence id (auto-incremented; separate
+   * from movement/command/chat/craft). Returned values are wrapped to u8
+   * by the request primitives (the wire field is `uint8`).
+   */
+  nextMissionSequence(): number;
+
+  /**
+   * Request the mission list from `terminalId`. Sends a bare
+   * `ObjControllerMessage(CM_missionListRequest)` whose trailer is a
+   * `MessageQueueMissionListRequest` payload. The server responds by
+   * pushing one or more `MissionObject` SHARED baselines into the player's
+   * mission bag, followed by a `PopulateMissionBrowserMessage` carrying
+   * the NetworkIds of the MissionObjects the terminal generated.
+   *
+   * Returns the sequenceId used so callers can correlate inbound traffic.
+   *
+   * `flags` defaults to 0; pass `MissionListRequestFlags.MineOnly` (0x01)
+   * to filter for missions previously claimed by this player.
+   */
+  requestMissionList(terminalId: NetworkId, opts?: { flags?: number }): number;
+
+  /**
+   * Accept the named mission from the named terminal. Sends a bare
+   * `ObjControllerMessage(CM_missionAcceptRequest)` whose trailer is a
+   * `MessageQueueMissionGenericRequest` payload. The server responds with
+   * a `MessageQueueMissionGenericResponse` under `CM_missionAcceptResponse`
+   * carrying the success bit.
+   *
+   * Returns the sequenceId used so callers can correlate the response.
+   */
+  acceptMission(missionId: NetworkId, terminalId: NetworkId): number;
+
+  /**
+   * Remove (abandon) a mission. Sends a bare
+   * `ObjControllerMessage(CM_missionRemoveRequest)` with the same
+   * `MessageQueueMissionGenericRequest` trailer shape as
+   * `acceptMission`. The server responds with
+   * `MessageQueueMissionGenericResponse` under `CM_missionRemoveResponse`.
+   *
+   * Returns the sequenceId used so callers can correlate the response.
+   */
+  removeMission(missionId: NetworkId, terminalId: NetworkId): number;
+
+  /**
+   * Abort the named mission (player-initiated, no terminal required).
+   * Sends a bare `ObjControllerMessage(CM_missionAbort)` with a
+   * `MessageQueueNetworkId` trailer carrying just the mission's NetworkId.
+   * The server echoes the same NetworkId back under `CM_missionAbort` as
+   * confirmation.
+   */
+  abortMission(missionId: NetworkId): void;
 }
 
 interface InternalContext extends ScriptContext {
@@ -434,6 +498,13 @@ interface InternalContext extends ScriptContext {
      * stateful orchestrator; we just let it monotonically grow.
      */
     craftSequence: number;
+    /**
+     * Per-player mission-flow sequence id. Counts up across every
+     * `requestMissionList` / `acceptMission` / `removeMission` call.
+     * The server echoes it back in `MessageQueueMissionGenericResponse`
+     * so the client can correlate request → reply. Wraps to u8 on the wire.
+     */
+    missionSequence: number;
     assertionFailures: string[];
   };
 }
@@ -450,6 +521,8 @@ export interface CreateScriptContextOptions {
   initialChatSequence?: number;
   /** Initial sequence number for crafting-session messages. Default 1. */
   initialCraftSequence?: number;
+  /** Initial sequence number for mission-flow messages. Default 1. */
+  initialMissionSequence?: number;
 }
 
 export function createScriptContext(opts: CreateScriptContextOptions): ScriptContext {
@@ -473,6 +546,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     commandSequence: opts.initialCommandSequence ?? 1,
     chatSequence: opts.initialChatSequence ?? 1,
     craftSequence: opts.initialCraftSequence ?? 1,
+    missionSequence: opts.initialMissionSequence ?? 1,
     assertionFailures: [] as string[],
   };
 
@@ -814,6 +888,90 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
       const timeoutMs = surveyOpts?.timeoutMs ?? 5_000;
       const msg = await opts.dispatcher.waitFor(SurveyMessage, { timeoutMs });
       return { points: msg.data };
+    },
+
+    // --- Mission primitives ---
+
+    nextMissionSequence(): number {
+      return state.missionSequence++;
+    },
+
+    requestMissionList(terminalId: NetworkId, requestOpts?: { flags?: number }): number {
+      const seq = ctx.nextMissionSequence() & 0xff; // u8 on the wire
+      const data: MissionListRequestData = {
+        flags: requestOpts?.flags ?? 0,
+        sequenceId: seq,
+        terminalId,
+      };
+      const stream = new ByteStream();
+      MissionListRequestDecoder.encode(stream, data);
+      const wrapped = new ObjControllerMessage(
+        CLIENT_TO_AUTH_SERVER_FLAGS,
+        ObjControllerSubtypeIds.CM_missionListRequest,
+        opts.sceneStart.playerNetworkId,
+        0,
+        stream.toBytes(),
+        { kind: MissionListRequestDecoder.kind, data },
+      );
+      ctx.send(wrapped);
+      return seq;
+    },
+
+    acceptMission(missionId: NetworkId, terminalId: NetworkId): number {
+      const seq = ctx.nextMissionSequence() & 0xff;
+      const data: MissionGenericRequestData = {
+        missionObjectId: missionId,
+        terminalId,
+        sequenceId: seq,
+      };
+      const stream = new ByteStream();
+      MissionAcceptRequestDecoder.encode(stream, data);
+      const wrapped = new ObjControllerMessage(
+        CLIENT_TO_AUTH_SERVER_FLAGS,
+        ObjControllerSubtypeIds.CM_missionAcceptRequest,
+        opts.sceneStart.playerNetworkId,
+        0,
+        stream.toBytes(),
+        { kind: MissionAcceptRequestDecoder.kind, data },
+      );
+      ctx.send(wrapped);
+      return seq;
+    },
+
+    removeMission(missionId: NetworkId, terminalId: NetworkId): number {
+      const seq = ctx.nextMissionSequence() & 0xff;
+      const data: MissionGenericRequestData = {
+        missionObjectId: missionId,
+        terminalId,
+        sequenceId: seq,
+      };
+      const stream = new ByteStream();
+      MissionRemoveRequestDecoder.encode(stream, data);
+      const wrapped = new ObjControllerMessage(
+        CLIENT_TO_AUTH_SERVER_FLAGS,
+        ObjControllerSubtypeIds.CM_missionRemoveRequest,
+        opts.sceneStart.playerNetworkId,
+        0,
+        stream.toBytes(),
+        { kind: MissionRemoveRequestDecoder.kind, data },
+      );
+      ctx.send(wrapped);
+      return seq;
+    },
+
+    abortMission(missionId: NetworkId): void {
+      const data: MissionAbortData = { missionObjectId: missionId };
+      const stream = new ByteStream();
+      MissionAbortDecoder.encode(stream, data);
+      const wrapped = new ObjControllerMessage(
+        CLIENT_TO_AUTH_SERVER_FLAGS,
+        ObjControllerSubtypeIds.CM_missionAbort,
+        opts.sceneStart.playerNetworkId,
+        0,
+        stream.toBytes(),
+        { kind: MissionAbortDecoder.kind, data },
+      );
+      ctx.send(wrapped);
     },
   };
 

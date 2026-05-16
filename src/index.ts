@@ -75,6 +75,33 @@ export type {
   SurveyPoint,
 } from './messages/game/survey/index.js';
 
+// Mission message classes — the top-level browser-populate message plus the
+// ObjController subtype decoders that drive the request/response flow.
+export {
+  MissionAbortDecoder,
+  MissionAbortKind,
+  MissionAcceptRequestDecoder,
+  MissionAcceptRequestKind,
+  MissionAcceptResponseDecoder,
+  MissionAcceptResponseKind,
+  MissionCreateResponseDecoder,
+  MissionCreateResponseKind,
+  MissionListRequestDecoder,
+  MissionListRequestFlags,
+  MissionListRequestKind,
+  MissionRemoveRequestDecoder,
+  MissionRemoveRequestKind,
+  MissionRemoveResponseDecoder,
+  MissionRemoveResponseKind,
+  PopulateMissionBrowserMessage,
+} from './messages/game/missions/index.js';
+export type {
+  MissionAbortData,
+  MissionGenericRequestData,
+  MissionGenericResponseData,
+  MissionListRequestData,
+} from './messages/game/missions/index.js';
+
 // Chat message primitives — useful for consumers that want to send tells,
 // post in chat rooms, or send in-game mail without going through the
 // scripting engine.
@@ -156,8 +183,13 @@ export {
   PlayerObjectSharedKind,
   PlayerObjectSharedNpDecoder,
   PlayerObjectSharedNpKind,
+  LocationCodec,
+  MissionObjectSharedDecoder,
+  MissionObjectSharedKind,
   ResourceContainerObjectSharedDecoder,
   ResourceContainerObjectSharedKind,
+  WaypointCodec,
+  WaypointColor,
   TangibleObjectSharedDecoder,
   TangibleObjectSharedKind,
   TangibleObjectSharedNpDecoder,
@@ -176,7 +208,10 @@ export type {
   BitArrayValue,
   DecodedBaseline,
   GcwDefenderRegion,
+  LocationValue,
   MatchMakingIdValue,
+  MissionObjectSharedBaseline,
+  WaypointValue,
   PlayerObjectSharedBaseline,
   PlayerObjectSharedNpBaseline,
   ResourceContainerObjectSharedBaseline,

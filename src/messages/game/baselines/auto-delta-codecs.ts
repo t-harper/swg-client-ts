@@ -62,6 +62,37 @@ export function readAutoDeltaSetString(iter: IReadIterator): string[] {
 }
 
 /**
+ * Specialization: `AutoDeltaSet<std::pair<NetworkId, NetworkId>>`.
+ *
+ * Used for things like `m_groupMissionCriticalObjectSet` where each entry is
+ * an (owner, object) tuple. Wire format is the standard AutoDeltaSet header
+ * plus each value as `[NetworkId][NetworkId]`.
+ */
+export function readAutoDeltaSetNetworkIdPair(
+  iter: IReadIterator,
+): { first: NetworkId; second: NetworkId }[] {
+  return readAutoDeltaSet(iter, (i) => ({
+    first: NetworkIdCodec.decode(i),
+    second: NetworkIdCodec.decode(i),
+  }));
+}
+
+/**
+ * Specialization: `AutoDeltaSet<std::pair<std::string, std::string>>`.
+ *
+ * Used for things like `m_notifyRegions` where each entry is a
+ * (planet, region) tuple.
+ */
+export function readAutoDeltaSetStringPair(
+  iter: IReadIterator,
+): { first: string; second: string }[] {
+  return readAutoDeltaSet(iter, (i) => ({
+    first: readStdString(i),
+    second: readStdString(i),
+  }));
+}
+
+/**
  * Generic AutoDeltaVector<T> reader. Same wire format as AutoDeltaSet but the
  * underlying container is `std::vector` (preserves insertion order, no sort).
  */
@@ -76,6 +107,21 @@ export function readAutoDeltaVector<T>(
 /** Specialization: `AutoDeltaVector<std::string>`. */
 export function readAutoDeltaVectorString(iter: IReadIterator): string[] {
   return readAutoDeltaVector(iter, readStdString);
+}
+
+/** Specialization: `AutoDeltaVector<int>`. */
+export function readAutoDeltaVectorI32(iter: IReadIterator): number[] {
+  return readAutoDeltaVector(iter, (i) => i.readI32());
+}
+
+/** Specialization: `AutoDeltaVector<float>`. */
+export function readAutoDeltaVectorF32(iter: IReadIterator): number[] {
+  return readAutoDeltaVector(iter, (i) => i.readF32());
+}
+
+/** Specialization: `AutoDeltaVector<uint32>`. */
+export function readAutoDeltaVectorU32(iter: IReadIterator): number[] {
+  return readAutoDeltaVector(iter, (i) => i.readU32());
 }
 
 /** An entry in a decoded AutoDeltaMap. */

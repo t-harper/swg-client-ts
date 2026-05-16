@@ -27,6 +27,8 @@ import { SwgClient } from '../../src/client/swg-client.js';
 import { BaselinesMessage } from '../../src/messages/game/baselines/baselines-message.js';
 import { BatchBaselinesMessage } from '../../src/messages/game/baselines/batch-baselines-message.js';
 import {
+  type CreatureObjectSharedBaseline,
+  CreatureObjectSharedKind,
   PlayerObjectSharedKind,
   TangibleObjectSharedKind,
 } from '../../src/messages/game/baselines/index.js';
@@ -55,7 +57,8 @@ describe.skipIf(!LIVE)('live baseline decoding (Stages 1 → 2 → 3 → 4)', ()
     for (const e of result.transcript) {
       if (e.direction !== 'recv') continue;
       if (e.decoded instanceof BaselinesMessage) allBaselines.push(e.decoded);
-      else if (e.decoded instanceof BatchBaselinesMessage) allBaselines.push(...e.decoded.baselines);
+      else if (e.decoded instanceof BatchBaselinesMessage)
+        allBaselines.push(...e.decoded.baselines);
     }
     expect(
       allBaselines.length,
@@ -66,15 +69,24 @@ describe.skipIf(!LIVE)('live baseline decoding (Stages 1 → 2 → 3 → 4)', ()
     // count of decoded vs opaque. Useful when diagnosing wire-format drift
     // after a server bump. We log BEFORE asserting so failures are
     // self-diagnosing.
-    const summary = new Map<string, number>();
+    const summary = new Map<string, { total: number; decoded: number }>();
     for (const b of allBaselines) {
       const key = `${b.typeIdString}/p${b.packageId}`;
-      summary.set(key, (summary.get(key) ?? 0) + 1);
+      let entry = summary.get(key);
+      if (!entry) {
+        entry = { total: 0, decoded: 0 };
+        summary.set(key, entry);
+      }
+      entry.total++;
+      if (b.decodedBaseline) entry.decoded++;
     }
     const decoded = allBaselines.filter((b) => b.decodedBaseline !== null);
+    const sortedSummary = Object.fromEntries(
+      [...summary.entries()].sort().map(([k, v]) => [k, `${v.decoded}/${v.total}`] as const),
+    );
     console.log(
       `[baselines] count=${allBaselines.length} decoded=${decoded.length} pairs=`,
-      Object.fromEntries(summary),
+      sortedSummary,
     );
 
     // We model 4 (typeId, packageId) pairs covering TANO + PLAY x
@@ -169,5 +181,44 @@ describe.skipIf(!LIVE)('live baseline decoding (Stages 1 → 2 → 3 → 4)', ()
     for (const b of playerShared) {
       expect(b.decodedBaseline).not.toBeNull();
     }
+  }, 60_000);
+
+  it("decodes the player's own CREO SHARED baseline (CreatureObject p3)", async () => {
+    const { account, characterName } = liveCredentials('bcr');
+    const client = new SwgClient({ loginServer: { host: HOST, port: PORT } });
+
+    const result = await client.fullLifecycle({
+      account,
+      characterName,
+      planet: 'mos_eisley',
+      holdZonedInMs: 3_000,
+    });
+    expect(result.zonedInAt, 'zonedInAt present').not.toBeNull();
+
+    // The live diagnostic shows ~43 CREO/p3 baselines per zone-in (the local
+    // creature + every nearby creature observable on the cell). We assert at
+    // least one decoded successfully.
+    const creo = findBaselinesByKind(result, CreatureObjectSharedKind);
+    console.log(`[live-baseline-decoder] CREO p3 decoded count: ${creo.length}`);
+    expect(
+      creo.length,
+      'expected at least 1 decoded CreatureObjectShared baseline during zone-in',
+    ).toBeGreaterThan(0);
+
+    // Sanity-check the shape of one decoded baseline. The C++ field types
+    // map deterministically to TS — verify a few invariants:
+    const first = creo[0];
+    expect(first).toBeDefined();
+    if (!first || !first.decodedBaseline) return;
+    const data = first.decodedBaseline.data as CreatureObjectSharedBaseline;
+    expect(typeof data.posture).toBe('number'); // Postures::Enumerator (i8)
+    expect(typeof data.scaleFactor).toBe('number'); // f32
+    expect(typeof data.states).toBe('bigint'); // u64
+    expect(typeof data.visible).toBe('boolean');
+    expect(typeof data.complexity).toBe('number');
+    expect(typeof data.objectName).toBe('string');
+    // posture should be a valid Postures::Enumerator value (-1..14)
+    expect(data.posture).toBeGreaterThanOrEqual(-1);
+    expect(data.posture).toBeLessThanOrEqual(14);
   }, 60_000);
 });

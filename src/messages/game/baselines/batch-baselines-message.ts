@@ -75,7 +75,9 @@ export class BatchBaselinesMessage extends GameNetworkMessage {
         packageBytes,
         (bytes) => new ReadIterator(bytes),
       );
-      baselines.push(new BaselinesMessage(target, typeId, packageId, packageBytes, decodedBaseline));
+      baselines.push(
+        new BaselinesMessage(target, typeId, packageId, packageBytes, decodedBaseline),
+      );
     }
     return new BatchBaselinesMessage(baselines);
   }

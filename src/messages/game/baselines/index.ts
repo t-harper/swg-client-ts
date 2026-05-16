@@ -24,13 +24,59 @@ export {
   readAutoDeltaSet,
   readAutoDeltaSetI32,
   readAutoDeltaSetNetworkId,
+  readAutoDeltaSetNetworkIdPair,
   readAutoDeltaSetString,
+  readAutoDeltaSetStringPair,
   readAutoDeltaVector,
+  readAutoDeltaVectorF32,
+  readAutoDeltaVectorI32,
   readAutoDeltaVectorString,
+  readAutoDeltaVectorU32,
   readBitArray,
   readMatchMakingId,
 } from './auto-delta-codecs.js';
 export { readAndCheckMemberCount, writeMemberCount } from './auto-byte-stream.js';
+export {
+  type CreatureObjectClientServerBaseline,
+  CreatureObjectClientServerDecoder,
+  CreatureObjectClientServerKind,
+} from './creature-object-baseline-1.js';
+export {
+  type CreatureObjectSharedBaseline,
+  CreatureObjectSharedDecoder,
+  CreatureObjectSharedKind,
+} from './creature-object-baseline-3.js';
+export {
+  type CreatureObjectSharedNpBaseline,
+  type CreatureObjectEffect,
+  type PlayerAndShipPair,
+  CreatureObjectSharedNpDecoder,
+  CreatureObjectSharedNpKind,
+} from './creature-object-baseline-6.js';
+export {
+  type CreatureObjectFirstParentClientServerBaseline,
+  CreatureObjectFirstParentClientServerDecoder,
+  CreatureObjectFirstParentClientServerKind,
+} from './creature-object-baseline-8.js';
+export {
+  type CreatureObjectFirstParentClientServerNpBaseline,
+  CreatureObjectFirstParentClientServerNpDecoder,
+  CreatureObjectFirstParentClientServerNpKind,
+} from './creature-object-baseline-9.js';
+export {
+  type PackedBuffValue,
+  PackedBuffCodec,
+} from './packed-buff.js';
+export {
+  type PlayerObjectClientServerBaseline,
+  PlayerObjectClientServerDecoder,
+  PlayerObjectClientServerKind,
+} from './player-object-baseline-1.js';
+export {
+  type PlayerObjectClientServerNpBaseline,
+  PlayerObjectClientServerNpDecoder,
+  PlayerObjectClientServerNpKind,
+} from './player-object-baseline-4.js';
 export {
   type PlayerObjectSharedBaseline,
   PlayerObjectSharedDecoder,
@@ -56,13 +102,27 @@ export {
 } from './registry.js';
 export { type StringIdValue, EMPTY_STRING_ID, StringIdCodec } from './string-id.js';
 export {
+  type TangibleObjectClientServerBaseline,
+  TangibleObjectClientServerDecoder,
+  TangibleObjectClientServerKind,
+} from './tangible-object-baseline-1.js';
+export {
   type TangibleObjectSharedBaseline,
   TangibleObjectSharedDecoder,
   TangibleObjectSharedKind,
 } from './tangible-object-baseline-3.js';
+export {
+  type TangibleObjectClientServerNpBaseline,
+  TangibleObjectClientServerNpDecoder,
+  TangibleObjectClientServerNpKind,
+} from './tangible-object-baseline-4.js';
 export {
   type TangibleObjectEffect,
   type TangibleObjectSharedNpBaseline,
   TangibleObjectSharedNpDecoder,
   TangibleObjectSharedNpKind,
 } from './tangible-object-baseline-6.js';
+export {
+  type WearableEntryValue,
+  readWearableEntry,
+} from './wearable-entry.js';

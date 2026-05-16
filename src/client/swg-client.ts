@@ -36,6 +36,7 @@ import '../messages/connection/game-server-for-login.js';
 import '../messages/connection/select-character.js';
 import '../messages/connection/station-id-has-jedi-slot.js';
 import '../messages/game/attribute-list-message.js';
+import '../messages/game/baselines/index.js';
 import '../messages/game/chat/index.js';
 import '../messages/game/client-open-container.js';
 import '../messages/game/cmd-scene-ready.js';

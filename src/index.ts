@@ -82,6 +82,53 @@ export type {
   ChatRoomData,
 } from './messages/game/chat/index.js';
 
+// Baseline decoders — for inspecting per-object state pushed during zone-in.
+// The `BaselinesMessage` envelope wraps the variable-length package payload;
+// once decoded, `decodedBaseline.data` is one of the per-type interfaces below.
+export {
+  BaselinesMessage,
+  BaselinePackageIds,
+  ObjectTypeTags,
+  baselineRegistry,
+  EMPTY_BIT_ARRAY,
+  EMPTY_MATCH_MAKING_ID,
+  EMPTY_STRING_ID,
+  PlayerObjectSharedDecoder,
+  PlayerObjectSharedKind,
+  PlayerObjectSharedNpDecoder,
+  PlayerObjectSharedNpKind,
+  TangibleObjectSharedDecoder,
+  TangibleObjectSharedKind,
+  TangibleObjectSharedNpDecoder,
+  TangibleObjectSharedNpKind,
+  stringToTag,
+  tagToString,
+  tryDecodeBaseline,
+} from './messages/game/baselines/index.js';
+export type {
+  BaselineDecoder,
+  BaselinePackageId,
+  BitArrayValue,
+  DecodedBaseline,
+  GcwDefenderRegion,
+  MatchMakingIdValue,
+  PlayerObjectSharedBaseline,
+  PlayerObjectSharedNpBaseline,
+  StringIdValue,
+  TangibleObjectEffect,
+  TangibleObjectSharedBaseline,
+  TangibleObjectSharedNpBaseline,
+} from './messages/game/baselines/index.js';
+
+// Baseline analysis helpers — scan a LifecycleResult's transcript for common
+// findings (e.g. the player's inventory container's NetworkId).
+export {
+  extractBaselinesForObject,
+  extractInventoryContainerId,
+  extractPlayerObjectBaseline,
+  findBaselinesByKind,
+} from './client/baseline-helpers.js';
+
 // Wire capture + replay harness
 export {
   attachCapture,

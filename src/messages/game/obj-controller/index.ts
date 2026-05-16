@@ -50,8 +50,20 @@ export { CraftingSlotEmptyDecoder, CraftingSlotEmptyKind } from './crafting-slot
 export type { CraftingSlotEmptyData } from './crafting-slot-empty.js';
 export { CraftingStartDecoder, CraftingStartKind } from './crafting-start.js';
 export type { CraftingStartData } from './crafting-start.js';
+export {
+  NetUpdateTransformDecoder,
+  NetUpdateTransformKind,
+} from './data-transform.js';
+export type { NetUpdateTransformData } from './data-transform.js';
+export {
+  NetUpdateTransformWithParentDecoder,
+  NetUpdateTransformWithParentKind,
+} from './data-transform-with-parent.js';
+export type { NetUpdateTransformWithParentData } from './data-transform-with-parent.js';
 export { DefenderStatusDecoder, DefenderStatusKind } from './defender-status.js';
 export type { DefenderStatusData } from './defender-status.js';
+export { TeleportAckDecoder, TeleportAckKind } from './teleport-ack.js';
+export type { TeleportAckData } from './teleport-ack.js';
 export { GroupAcceptDecoder, GroupAcceptKind } from './group-accept.js';
 export type { GroupAcceptData } from './group-accept.js';
 export { GroupInviteDecoder, GroupInviteKind } from './group-invite.js';

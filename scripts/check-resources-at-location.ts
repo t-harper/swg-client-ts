@@ -37,9 +37,6 @@
  * That's diagnostic, not a script failure.
  */
 
-import { ByteStream } from '../src/archive/byte-stream.js';
-import { TransformCodec, type Transform } from '../src/archive/transform.js';
-import { ObjControllerMessage } from '../src/messages/game/obj-controller-message.js';
 import {
   buildContainerIndex,
   type ContainerItem,
@@ -49,73 +46,6 @@ import {
   type ScriptContext,
   SwgClient,
 } from '../src/index.js';
-
-const CM_NET_UPDATE_TRANSFORM = 113;
-const CLIENT_TO_AUTH_SERVER_FLAGS = 0x23;
-
-/**
- * Encode the MessageQueueDataTransform trailer used inside an
- * ObjControllerMessage(message=CM_netUpdateTransform). Wire layout per
- * /home/tharper/code/swg-main/src/engine/shared/library/sharedNetworkMessages/src/shared/clientGameServer/MessageQueueDataTransform.cpp:45-55
- */
-function packDataTransform(syncStamp: number, seq: number, x: number, y: number, z: number, speed: number): Uint8Array {
-  const s = new ByteStream();
-  s.writeU32(syncStamp >>> 0);
-  s.writeI32(seq);
-  const transform: Transform = { rotation: { w: 1, x: 0, y: 0, z: 0 }, position: { x, y, z } };
-  TransformCodec.encode(s, transform);
-  s.writeF32(speed);
-  s.writeF32(0); // lookAtYaw
-  s.writeU8(0); // useLookAtYaw
-  return s.toBytes();
-}
-
-/**
- * Walk to (targetX, targetZ) at `speed` m/s by sending repeated
- * ObjControllerMessage(CM_netUpdateTransform) packets. The standard
- * ctx.walkTo() sends top-level UpdateTransformMessage which the SERVER
- * IGNORES — see CLAUDE.md / Client.cpp's dispatch table; client→server
- * movement only flows through the CM_netUpdateTransform controller
- * subtype.
- */
-async function nativeWalkTo(
-  ctx: ScriptContext,
-  startX: number,
-  startY: number,
-  startZ: number,
-  targetX: number,
-  targetZ: number,
-  speed: number,
-  startTimeMs: number,
-): Promise<{ x: number; y: number; z: number }> {
-  const tickMs = 200;
-  const tickSec = tickMs / 1000;
-  const stepLen = speed * tickSec;
-  const dx = targetX - startX;
-  const dz = targetZ - startZ;
-  const dist = Math.hypot(dx, dz);
-  const ticks = Math.max(1, Math.ceil(dist / stepLen));
-  const ux = dx / dist;
-  const uz = dz / dist;
-  let seq = 1;
-  let x = startX;
-  let z = startZ;
-  for (let i = 1; i <= ticks; i++) {
-    const isLast = i === ticks;
-    if (isLast) {
-      x = targetX;
-      z = targetZ;
-    } else {
-      x = startX + ux * stepLen * i;
-      z = startZ + uz * stepLen * i;
-    }
-    const syncStamp = Date.now() - startTimeMs;
-    const trailer = packDataTransform(syncStamp, seq++, x, startY, z, speed);
-    ctx.send(new ObjControllerMessage(CLIENT_TO_AUTH_SERVER_FLAGS, CM_NET_UPDATE_TRANSFORM, ctx.sceneStart.playerNetworkId, 0, trailer));
-    if (!isLast) await ctx.wait(tickMs);
-  }
-  return { x, y: startY, z };
-}
 
 /**
  * Server-side: the `requestSurvey` command takes a TOOL NetworkId as its
@@ -330,17 +260,16 @@ function makeScenario(args: Args, results: Map<string, PerClassResult>, target: 
       }`,
     );
 
-    // Walk to target via the SERVER-ACCEPTED wire path (CM_netUpdateTransform
-    // wrapped in ObjControllerMessage). The default ctx.walkTo() sends
-    // top-level UpdateTransformMessage which the server silently drops —
-    // confirmed against engine/server/.../core/Client.cpp's dispatch table.
+    // Walk to target. ctx.walkTo() goes through the correct CM_netUpdateTransform
+    // wire path and auto-ACKs the zone-in teleport lockout before its first
+    // transform send.
     let here: { x: number; y: number; z: number };
     if (target !== null) {
       log(`walking to (${target.x.toFixed(1)}, ${target.z.toFixed(1)}) at speed ${args.walkSpeed}`);
-      const spawn = ctx.sceneStart.startPosition;
-      const sessionStart = Date.now();
-      here = await nativeWalkTo(ctx, spawn.x, spawn.y, spawn.z, target.x, target.z, args.walkSpeed, sessionStart);
+      await ctx.walkTo({ x: target.x, z: target.z }, { speed: args.walkSpeed });
       await ctx.wait(1_500); // server-side settle so position reads catch up
+      const cur = ctx.position();
+      here = { x: cur.x, y: cur.y, z: cur.z };
     } else {
       const cur = ctx.position();
       here = { x: cur.x, y: cur.y, z: cur.z };

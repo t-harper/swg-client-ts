@@ -1,11 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { UpdateTransformMessage } from '../../messages/game/update-transform-message.js';
-import { createFakeContext } from './test-helpers.js';
+import { createFakeContext, movementSends } from './test-helpers.js';
 
 describe('walkCircle', () => {
-  it('keeps every emitted position on the circle (within fixed-point quantization)', async () => {
+  it('keeps every emitted position on the circle (float wire, no quantization)', async () => {
     const { ctx, sent } = createFakeContext({
-      // Start exactly on the circle so the first sample is on-radius too
       startPosition: { x: 8, y: 0, z: 0 },
     });
     await ctx.walkCircle({
@@ -16,14 +14,11 @@ describe('walkCircle', () => {
       tickMs: 200,
     });
 
-    // 1200ms / 200ms = 6 ticks
-    expect(sent.length).toBe(6);
-    for (const m of sent as UpdateTransformMessage[]) {
-      const x = m.positionX / 4;
-      const z = m.positionZ / 4;
-      const r = Math.hypot(x, z);
-      // Allow 0.5m slack: 0.25 for x quantization + 0.25 for z
-      expect(Math.abs(r - 8)).toBeLessThanOrEqual(0.5);
+    const moves = movementSends(sent);
+    expect(moves.length).toBe(6);
+    for (const { data } of moves) {
+      const r = Math.hypot(data.position.x, data.position.z);
+      expect(Math.abs(r - 8)).toBeLessThan(1e-5);
     }
   });
 
@@ -36,7 +31,7 @@ describe('walkCircle', () => {
       durationMs: 1000,
       tickMs: 200,
     });
-    const seqs = (sent as UpdateTransformMessage[]).map((m) => m.sequenceNumber);
+    const seqs = movementSends(sent).map((m) => m.data.sequenceNumber);
     for (let i = 1; i < seqs.length; i++) {
       expect(seqs[i]).toBeGreaterThan(seqs[i - 1] ?? -1);
     }
@@ -51,11 +46,19 @@ describe('walkCircle', () => {
     await cw.ctx.walkCircle({
       centerX: 0, centerZ: 0, radius: 5, durationMs: 400, tickMs: 200, direction: -1,
     });
-    const ccwSecond = ccw.sent[1] as UpdateTransformMessage;
-    const cwSecond = cw.sent[1] as UpdateTransformMessage;
-    // After one tick from (5,0), CCW (omega>0) and CW (omega<0) should be
-    // on opposite sides of the starting line z=0.
-    expect(Math.sign(ccwSecond.positionZ)).not.toBe(Math.sign(cwSecond.positionZ));
+    const ccwSecond = movementSends(ccw.sent)[1]?.data;
+    const cwSecond = movementSends(cw.sent)[1]?.data;
+    expect(Math.sign(ccwSecond?.position.z ?? 0)).not.toBe(Math.sign(cwSecond?.position.z ?? 0));
+  });
+
+  it('sends speed=0 in the wire field', async () => {
+    const { ctx, sent } = createFakeContext();
+    await ctx.walkCircle({
+      centerX: 0, centerZ: 0, radius: 5, durationMs: 1000, tickMs: 200,
+    });
+    for (const { data } of movementSends(sent)) {
+      expect(data.speed).toBe(0);
+    }
   });
 
   it('aborts mid-circle when signal fires', async () => {
@@ -67,7 +70,7 @@ describe('walkCircle', () => {
       durationMs: 5_000,
       tickMs: 100,
     });
-    setTimeout(() => abort(), 50);
+    setTimeout(() => abort(), 100);
     await expect(p).rejects.toThrow(/aborted/);
   });
 });

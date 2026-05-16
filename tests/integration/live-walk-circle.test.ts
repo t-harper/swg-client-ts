@@ -46,19 +46,22 @@ describe.skipIf(!LIVE)('live walk-circle script', () => {
     expect(result.logoutAt, 'logoutAt present').not.toBeNull();
     expect(result.baselineObjectCount).toBeGreaterThan(0);
 
-    // Script ran and emitted UpdateTransformMessages.
+    // Script ran and emitted ObjControllerMessage(CM_netUpdateTransform) sends.
     expect(result.scriptResult, 'scriptResult populated').toBeDefined();
     const sr = result.scriptResult;
     if (sr === undefined) throw new Error('unreachable');
     expect(sr.error, 'script did not throw').toBeUndefined();
-    // 3000ms / 200ms tick = ~15 transforms
-    expect(sr.sendsCount, 'walk-circle sent ~15 transforms').toBeGreaterThanOrEqual(12);
+    // 3000ms / 500ms default tick ≈ 6 transforms + 1 teleport-ack bootstrap.
+    expect(sr.sendsCount, 'walk-circle sent ≥6 sends').toBeGreaterThanOrEqual(6);
 
-    // Transcript confirms outbound UpdateTransformMessages exist.
-    const sentUpdates = result.transcript.filter(
-      (e) => e.direction === 'send' && e.messageName === 'UpdateTransformMessage',
+    // Transcript confirms outbound ObjControllerMessage sends — at least one
+    // teleport-ack and one or more transform broadcasts.
+    const sentObjs = result.transcript.filter(
+      (e) => e.direction === 'send' && e.messageName === 'ObjControllerMessage',
     );
-    expect(sentUpdates.length, 'transcript records movement sends').toBeGreaterThanOrEqual(12);
+    expect(sentObjs.length, 'transcript records ObjControllerMessage sends').toBeGreaterThanOrEqual(
+      5,
+    );
 
     // Server did not flag anything as an error.
     expect(result.receivedErrorMessage, 'no ErrorMessage during run').toBe(false);

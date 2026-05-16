@@ -1,26 +1,62 @@
 /**
- * Movement primitives — tick-based UpdateTransformMessage senders.
+ * Movement primitives — tick-based ObjControllerMessage senders.
  *
- * Wire encoding (matches `UpdateTransformMessage`):
- *   - position: meters → i16 via `Math.round(meters * 4)` (0.25m resolution)
- *   - yaw:     radians → i8 via `Math.round(yaw * 16)` (clamped)
- *   - speed:    passed through as i8 (server validates)
+ * Wire encoding (matches the real Windows client, verified via pcap):
+ *   ObjControllerMessage(
+ *     flags = 0x23 (CLIENT_TO_AUTH_SERVER_FLAGS),
+ *     message = CM_netUpdateTransform (113)         // CM_netUpdateTransformWithParent (241) when inside a cell
+ *     networkId = playerNetworkId,
+ *     value = 0,
+ *     data = MessageQueueDataTransform { syncStamp, seq, rotation, position, speed=0, lookAtYaw=0, useLookAtYaw=0 }
+ *   )
  *
- * The server's PlayerCreatureController enforces ~100m max distance per
- * update and a speed-tolerance check; we keep ticks small and split long
- * moves into multiple ticks. Default cadence 200ms (~5Hz), matching what
- * the real Windows client emits while running.
+ * **DO NOT** use top-level `UpdateTransformMessage` for client→server sends —
+ * the server silently drops it. UpdateTransformMessage is the server's
+ * broadcast wire form; client→server movement goes through the
+ * ObjController/CM_netUpdateTransform subtype above (verified in the C++
+ * server source: `Client::receiveClientMessage` dispatches CM_* via
+ * `ControllerMessageFactory::unpack`, and only ObjControllerMessage carries
+ * those subtypes).
+ *
+ * **Speed field**: the real client sends `speed=0`. The server derives the
+ * effective speed from `distance / (syncStamp delta seconds)`. Sending a
+ * non-zero speed causes the server's anti-cheat to validate against the
+ * creature's allowed walk/run cap which may reject moves for freshly-spawned
+ * characters whose skill tables haven't fully populated yet.
+ *
+ * **Cadence**: the real Windows client emits ~1 packet every 2–3s during
+ * sustained movement with 5–10m position deltas (effective ~3–4 m/s). Our
+ * default tickMs is 500ms so that with the default 4 m/s speed we send
+ * roughly one update per 2m of travel.
+ *
+ * **Teleport-ACK bootstrap**: before the first transform is accepted by the
+ * server, the client MUST acknowledge the zone-in teleport-lockout signal
+ * (see `ctx.ackPendingTeleports`). The walk primitives call this
+ * automatically on first invocation per context.
  */
 
-import { UpdateTransformMessage } from '../../messages/game/update-transform-message.js';
-import { UpdateTransformWithParentMessage } from '../../messages/game/update-transform-with-parent-message.js';
+import { ByteStream } from '../../archive/byte-stream.js';
+import { yawToQuat } from '../../archive/transform.js';
+import { CLIENT_TO_AUTH_SERVER_FLAGS } from '../../messages/game/command-queue/index.js';
+import {
+  type NetUpdateTransformData,
+  NetUpdateTransformDecoder,
+  type NetUpdateTransformWithParentData,
+  NetUpdateTransformWithParentDecoder,
+  ObjControllerSubtypeIds,
+} from '../../messages/game/obj-controller/index.js';
+import { ObjControllerMessage } from '../../messages/game/obj-controller-message.js';
 import type { NetworkId } from '../../types.js';
 import type { ScriptContext } from './context.js';
 
 export interface WalkToOptions {
-  /** Walking speed in meters/sec. Default 5 (run speed). */
+  /** Walking speed in meters/sec. Default 4 (slow run). */
   speed?: number;
-  /** Update cadence in ms. Default 200. */
+  /**
+   * Update cadence in ms. Default 500 (~2 updates / second) — matches the
+   * sparseness of real-client movement and stays well under the server's
+   * anti-cheat speed window.
+   */
   tickMs?: number;
   /** Override the y-coordinate (otherwise hold current y). */
   y?: number;
@@ -33,7 +69,7 @@ export interface CircleOptions {
   durationMs: number;
   /** Tangential speed in m/s. If omitted, completes exactly one revolution in durationMs. */
   speed?: number;
-  /** Update cadence in ms. Default 200. */
+  /** Update cadence in ms. Default 500. */
   tickMs?: number;
   /** Override the y-coordinate (otherwise hold current y). */
   y?: number;
@@ -41,35 +77,29 @@ export interface CircleOptions {
   direction?: 1 | -1;
 }
 
-const MAX_DISTANCE_PER_TICK_METERS = 90; // stay safely under server's ~100m cap
-const POSITION_QUANT = 4; // wire units per meter
-const YAW_QUANT = 16; // wire units per radian
-const POSITION_WIRE_MIN = -0x8000;
-const POSITION_WIRE_MAX = 0x7fff;
-const YAW_WIRE_MIN = -0x80;
-const YAW_WIRE_MAX = 0x7f;
+const MAX_DISTANCE_PER_TICK_METERS = 8;
 
 export async function walkTo(
   ctx: ScriptContext,
   target: { x: number; z: number; y?: number },
   opts: WalkToOptions,
 ): Promise<void> {
-  const speed = opts.speed ?? 5;
-  const tickMs = opts.tickMs ?? 200;
+  await ctx.ackPendingTeleports();
+  const speed = opts.speed ?? 4;
+  const tickMs = opts.tickMs ?? 500;
   const tickSeconds = tickMs / 1000;
   const startY = opts.y ?? target.y ?? ctx.position().y;
 
-  let cur = ctx.position();
+  const cur = ctx.position();
   const dx = target.x - cur.x;
   const dz = target.z - cur.z;
   const distance = Math.hypot(dx, dz);
   if (distance < 1e-6) {
-    // Nothing to do; still send one update so the server knows our yaw.
-    sendTransform(ctx, target.x, startY, target.z, ctx.yaw(), speed);
+    sendTransform(ctx, target.x, startY, target.z, ctx.yaw());
     return;
   }
 
-  const yaw = Math.atan2(dx, dz); // SWG: z = north, x = east → atan2(x,z) is heading
+  const yaw = Math.atan2(dx, dz);
   const stepLen = Math.min(speed * tickSeconds, MAX_DISTANCE_PER_TICK_METERS);
   const totalTicks = Math.max(1, Math.ceil(distance / stepLen));
   const ux = dx / distance;
@@ -81,7 +111,7 @@ export async function walkTo(
     const traveled = isLast ? distance : stepLen * i;
     const x = isLast ? target.x : cur.x + ux * traveled;
     const z = isLast ? target.z : cur.z + uz * traveled;
-    sendTransform(ctx, x, startY, z, yaw, speed);
+    sendTransform(ctx, x, startY, z, yaw);
     if (!isLast) {
       await sleep(tickMs, ctx.signal);
     }
@@ -89,21 +119,17 @@ export async function walkTo(
 }
 
 export async function walkCircle(ctx: ScriptContext, opts: CircleOptions): Promise<void> {
-  const tickMs = opts.tickMs ?? 200;
+  await ctx.ackPendingTeleports();
+  const tickMs = opts.tickMs ?? 500;
   const tickSeconds = tickMs / 1000;
   const direction = opts.direction ?? 1;
   const y = opts.y ?? ctx.position().y;
 
-  // omega = angular velocity in rad/sec. If speed given, omega = v / r.
-  // Otherwise, default to one full revolution in durationMs.
   const omega =
     opts.speed !== undefined
       ? (direction * opts.speed) / opts.radius
       : (direction * (2 * Math.PI * 1000)) / opts.durationMs;
-  // Tangential linear speed for the wire speed field
-  const speed = Math.abs(omega * opts.radius);
 
-  // Seed theta from current position relative to the centre.
   const cur = ctx.position();
   let theta = Math.atan2(cur.x - opts.centerX, cur.z - opts.centerZ);
 
@@ -113,12 +139,10 @@ export async function walkCircle(ctx: ScriptContext, opts: CircleOptions): Promi
     theta += omega * tickSeconds;
     const x = opts.centerX + opts.radius * Math.sin(theta);
     const z = opts.centerZ + opts.radius * Math.cos(theta);
-    // Tangent to a circle traced by (sin, cos) is (cos, -sin) for CCW;
-    // heading in SWG = atan2(x', z') of the velocity vector.
     const vx = direction * Math.cos(theta);
     const vz = -direction * Math.sin(theta);
     const yaw = Math.atan2(vx, vz);
-    sendTransform(ctx, x, y, z, yaw, speed);
+    sendTransform(ctx, x, y, z, yaw);
     if (i < totalTicks - 1) {
       await sleep(tickMs, ctx.signal);
     }
@@ -131,22 +155,29 @@ function sendTransform(
   y: number,
   z: number,
   yaw: number,
-  speed: number,
 ): void {
-  const px = clampInt(Math.round(x * POSITION_QUANT), POSITION_WIRE_MIN, POSITION_WIRE_MAX);
-  const py = clampInt(Math.round(y * POSITION_QUANT), POSITION_WIRE_MIN, POSITION_WIRE_MAX);
-  const pz = clampInt(Math.round(z * POSITION_QUANT), POSITION_WIRE_MIN, POSITION_WIRE_MAX);
-  const yawWire = clampInt(Math.round(yaw * YAW_QUANT), YAW_WIRE_MIN, YAW_WIRE_MAX);
-  const speedWire = clampInt(Math.round(speed), YAW_WIRE_MIN, YAW_WIRE_MAX);
-  const seq = ctx.nextSequenceNumber();
-  ctx.send(new UpdateTransformMessage(ctx.sceneStart.playerNetworkId, px, py, pz, seq, speedWire, yawWire, 0, 0));
+  const data: NetUpdateTransformData = {
+    syncStamp: ctx.nextSyncStamp(),
+    sequenceNumber: ctx.nextSequenceNumber(),
+    rotation: yawToQuat(yaw),
+    position: { x, y, z },
+    speed: 0,
+    lookAtYaw: 0,
+    useLookAtYaw: false,
+  };
+  const stream = new ByteStream();
+  NetUpdateTransformDecoder.encode(stream, data);
+  ctx.send(
+    new ObjControllerMessage(
+      CLIENT_TO_AUTH_SERVER_FLAGS,
+      ObjControllerSubtypeIds.CM_netUpdateTransform,
+      ctx.sceneStart.playerNetworkId,
+      0,
+      stream.toBytes(),
+      { kind: NetUpdateTransformDecoder.kind, data },
+    ),
+  );
   ctx.setPose({ x, y, z }, yaw);
-}
-
-function clampInt(v: number, min: number, max: number): number {
-  if (v < min) return min;
-  if (v > max) return max;
-  return v;
 }
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
@@ -169,7 +200,7 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 // -----------------------------------------------------------------------------
-// Cell-relative movement (UpdateTransformWithParentMessage)
+// Cell-relative movement (CM_netUpdateTransformWithParent)
 // -----------------------------------------------------------------------------
 
 /**
@@ -178,30 +209,18 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
  * cell axes), not world coords.
  */
 export interface WalkToCellOptions {
-  /** Walking speed in meters/sec. Default 5 (run speed). */
+  /** Walking speed in meters/sec. Default 4 (slow run). */
   speed?: number;
-  /** Update cadence in ms. Default 200. */
+  /** Update cadence in ms. Default 500. */
   tickMs?: number;
   /** Override the cell-relative y-coordinate (otherwise hold current cell y, defaulting to 0). */
   y?: number;
 }
 
-/** Cell-relative position quantization: int16 fixed-point * 8 (0.125m resolution). */
-const CELL_POSITION_QUANT = 8; // wire units per meter for cell-relative coords
-
 /**
- * Walk to (x, z) inside `parentId`'s cell-local coordinate frame.
- *
- * Uses `UpdateTransformWithParentMessage` with the same tick/quantization
- * approach as `walkTo`, but with the cell-relative `* 8` position scale.
- * The orchestrator's pose cursor is intentionally NOT updated by this
- * function (it tracks world coords); use `ctx.cellPosition()` /
- * `ctx.parentCell()` to read the cell-relative cursor that `walkToCell`
- * maintains via `ctx.setCellPose`.
- *
- * Note: there is no `walkCircle` for cell-relative coordinates because
- * interior cells are usually small enough that a straight-line walk to a
- * point suffices. If you need a parametric pattern, call this in a loop.
+ * Walk to (x, z) inside `parentId`'s cell-local coordinate frame. Uses
+ * CM_netUpdateTransformWithParent (id 241) — the cell variant of the
+ * movement subtype.
  */
 export async function walkToCell(
   ctx: ScriptContext,
@@ -209,12 +228,11 @@ export async function walkToCell(
   target: { x: number; z: number; y?: number },
   opts: WalkToCellOptions = {},
 ): Promise<void> {
-  const speed = opts.speed ?? 5;
-  const tickMs = opts.tickMs ?? 200;
+  await ctx.ackPendingTeleports();
+  const speed = opts.speed ?? 4;
+  const tickMs = opts.tickMs ?? 500;
   const tickSeconds = tickMs / 1000;
   const cellCursor = ctx.cellPosition();
-  // If we're entering a new cell, reset cursor to (0, 0, 0) — caller should
-  // call ctx.setCellPose first if they have a better seed.
   const startCursor =
     ctx.parentCell() === parentId ? cellCursor : { x: 0, y: opts.y ?? 0, z: 0 };
   const startY = opts.y ?? target.y ?? startCursor.y;
@@ -223,12 +241,11 @@ export async function walkToCell(
   const dz = target.z - startCursor.z;
   const distance = Math.hypot(dx, dz);
   if (distance < 1e-6) {
-    // Nothing to do; still send one update so the server knows our yaw + parent.
-    sendCellTransform(ctx, parentId, target.x, startY, target.z, ctx.yaw(), speed);
+    sendCellTransform(ctx, parentId, target.x, startY, target.z, ctx.yaw());
     return;
   }
 
-  const yaw = Math.atan2(dx, dz); // SWG: z = north, x = east → atan2(x,z) is heading
+  const yaw = Math.atan2(dx, dz);
   const stepLen = Math.min(speed * tickSeconds, MAX_DISTANCE_PER_TICK_METERS);
   const totalTicks = Math.max(1, Math.ceil(distance / stepLen));
   const ux = dx / distance;
@@ -240,7 +257,7 @@ export async function walkToCell(
     const traveled = isLast ? distance : stepLen * i;
     const x = isLast ? target.x : startCursor.x + ux * traveled;
     const z = isLast ? target.z : startCursor.z + uz * traveled;
-    sendCellTransform(ctx, parentId, x, startY, z, yaw, speed);
+    sendCellTransform(ctx, parentId, x, startY, z, yaw);
     if (!isLast) {
       await sleep(tickMs, ctx.signal);
     }
@@ -254,26 +271,27 @@ function sendCellTransform(
   y: number,
   z: number,
   yaw: number,
-  speed: number,
 ): void {
-  const px = clampInt(Math.round(x * CELL_POSITION_QUANT), POSITION_WIRE_MIN, POSITION_WIRE_MAX);
-  const py = clampInt(Math.round(y * CELL_POSITION_QUANT), POSITION_WIRE_MIN, POSITION_WIRE_MAX);
-  const pz = clampInt(Math.round(z * CELL_POSITION_QUANT), POSITION_WIRE_MIN, POSITION_WIRE_MAX);
-  const yawWire = clampInt(Math.round(yaw * YAW_QUANT), YAW_WIRE_MIN, YAW_WIRE_MAX);
-  const speedWire = clampInt(Math.round(speed), YAW_WIRE_MIN, YAW_WIRE_MAX);
-  const seq = ctx.nextSequenceNumber();
+  const data: NetUpdateTransformWithParentData = {
+    parentCell: parentId,
+    syncStamp: ctx.nextSyncStamp(),
+    sequenceNumber: ctx.nextSequenceNumber(),
+    rotation: yawToQuat(yaw),
+    position: { x, y, z },
+    speed: 0,
+    lookAtYaw: 0,
+    useLookAtYaw: false,
+  };
+  const stream = new ByteStream();
+  NetUpdateTransformWithParentDecoder.encode(stream, data);
   ctx.send(
-    new UpdateTransformWithParentMessage(
-      parentId,
+    new ObjControllerMessage(
+      CLIENT_TO_AUTH_SERVER_FLAGS,
+      ObjControllerSubtypeIds.CM_netUpdateTransformWithParent,
       ctx.sceneStart.playerNetworkId,
-      px,
-      py,
-      pz,
-      seq,
-      speedWire,
-      yawWire,
       0,
-      0,
+      stream.toBytes(),
+      { kind: NetUpdateTransformWithParentDecoder.kind, data },
     ),
   );
   ctx.setCellPose(parentId, { x, y, z }, yaw);

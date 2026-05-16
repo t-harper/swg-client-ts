@@ -49,8 +49,12 @@ import {
   CraftingSlotAssignDecoder,
   type CraftingSlotEmptyData,
   CraftingSlotEmptyDecoder,
+  type NetUpdateTransformData,
+  NetUpdateTransformKind,
   ObjControllerSubtypeIds,
   SpatialChatType,
+  type TeleportAckData,
+  TeleportAckDecoder,
 } from '../../messages/game/obj-controller/index.js';
 import { SurveyMessage, type SurveyPoint } from '../../messages/game/survey/index.js';
 import type { GameNetworkMessage } from '../../messages/interface.js';
@@ -134,8 +138,33 @@ export interface ScriptContext {
   position(): Readonly<Vector3>;
   /** Live cursor — current best estimate of the player's heading (radians). */
   yaw(): number;
-  /** Next UpdateTransformMessage sequence number (auto-incremented by movement primitives). */
+  /** Next movement sequence number (auto-incremented by movement primitives). */
   nextSequenceNumber(): number;
+  /**
+   * Monotonic milliseconds-since-script-start, wrapped to u32. Used as the
+   * `syncStamp` field in MessageQueueDataTransform — the server divides
+   * `distance / (syncStamp delta in seconds)` to derive the effective speed
+   * for anti-cheat validation, so it just needs to be monotonic and have
+   * meaningful deltas. Rolled on every call so consecutive sends don't
+   * collide at `delta = 0`.
+   */
+  nextSyncStamp(): number;
+  /**
+   * ACK every pending server-initiated teleport / zone-in lockout. Scans
+   * the dispatcher's transcript for inbound
+   * `ObjControllerMessage(CM_netUpdateTransform=113)` events for the
+   * player's networkId with a negative `sequenceNumber` (the wire-level
+   * signal from `PlayerCreatureController::resyncMovementUpdates`) and
+   * sends back a `CM_teleportAck` for each matching seq, plus seq=-1 as a
+   * defensive fallback. Idempotent: only ACKs each seq once per context.
+   *
+   * Movement primitives (`walkTo`, `walkCircle`, `walkToCell`) call this
+   * automatically on first invocation per context. Manual code that uses
+   * `ctx.send()` to push raw transforms must call this once after zone-in
+   * before its first transform — otherwise every transform is dropped
+   * server-side by `handleMove`'s `isTeleporting()` check.
+   */
+  ackPendingTeleports(): Promise<void>;
   /** Update the position cursor (used by movement primitives; rarely called directly). */
   setPose(position: Vector3, yaw: number): void;
   /** Escape hatch — send any GameNetworkMessage and count it in scriptResult. */
@@ -496,6 +525,14 @@ interface InternalContext extends ScriptContext {
     /** Cell-relative pose cursor — separate from the world pose. */
     cellPose: { parentId: NetworkId; x: number; y: number; z: number; yaw: number };
     sequenceNumber: number;
+    /** Wall-clock ms when the context was created — base for syncStamp derivation. */
+    scriptStartTime: number;
+    /** Last syncStamp returned by nextSyncStamp(); ensures monotonic-with-delta progression even on rapid calls. */
+    lastSyncStamp: number;
+    /** Negative seqs we've already ACKed via CM_teleportAck. */
+    ackedTeleportSeqs: Set<number>;
+    /** Unsubscribe handle for the live CM=113 listener installed in ackPendingTeleports. */
+    teleportListenerUnsubscribe: (() => void) | null;
     commandSequence: number;
     chatSequence: number;
     /**
@@ -551,6 +588,10 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
       yaw: 0,
     },
     sequenceNumber: opts.initialSequenceNumber ?? 1,
+    scriptStartTime: Date.now(),
+    lastSyncStamp: 0,
+    ackedTeleportSeqs: new Set<number>(),
+    teleportListenerUnsubscribe: null as (() => void) | null,
     commandSequence: opts.initialCommandSequence ?? 1,
     chatSequence: opts.initialChatSequence ?? 1,
     craftSequence: opts.initialCraftSequence ?? 1,
@@ -572,6 +613,69 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     },
     nextSequenceNumber(): number {
       return state.sequenceNumber++;
+    },
+    nextSyncStamp(): number {
+      const elapsed = (Date.now() - state.scriptStartTime) >>> 0;
+      const next = elapsed <= state.lastSyncStamp ? (state.lastSyncStamp + 1) >>> 0 : elapsed;
+      state.lastSyncStamp = next;
+      return next;
+    },
+    async ackPendingTeleports(): Promise<void> {
+      const playerId = opts.sceneStart.playerNetworkId;
+      const ackSeq = (seq: number): void => {
+        if (state.ackedTeleportSeqs.has(seq)) return;
+        state.ackedTeleportSeqs.add(seq);
+        const data: TeleportAckData = { sequenceId: seq };
+        const stream = new ByteStream();
+        TeleportAckDecoder.encode(stream, data);
+        ctx.send(
+          new ObjControllerMessage(
+            CLIENT_TO_AUTH_SERVER_FLAGS,
+            ObjControllerSubtypeIds.CM_teleportAck,
+            playerId,
+            0,
+            stream.toBytes(),
+            { kind: TeleportAckDecoder.kind, data },
+          ),
+        );
+      };
+
+      // 1) Scan the transcript for already-received teleport signals
+      //    (the zone-in flood arrives BEFORE the script runs).
+      for (const e of opts.dispatcher.transcript) {
+        if (e.direction !== 'recv') continue;
+        const decoded = (e as { decoded?: unknown }).decoded;
+        if (!(decoded instanceof ObjControllerMessage)) continue;
+        if (decoded.message !== ObjControllerSubtypeIds.CM_netUpdateTransform) continue;
+        if (decoded.networkId !== playerId) continue;
+        if (decoded.decodedSubtype?.kind !== NetUpdateTransformKind) continue;
+        const td = decoded.decodedSubtype.data as NetUpdateTransformData;
+        if (td.sequenceNumber < 0) ackSeq(td.sequenceNumber);
+      }
+
+      // 2) Defensive fallback — also send -1, which is what
+      //    resyncMovementUpdates uses by default when no specific id is in
+      //    the m_teleportIds set yet but isTeleporting() is still true.
+      ackSeq(-1);
+
+      // 3) Subscribe to future signals so subsequent server teleports
+      //    (during the script's run) get ACKed automatically.
+      if (state.teleportListenerUnsubscribe === null) {
+        state.teleportListenerUnsubscribe = opts.dispatcher.onMessage(
+          ObjControllerMessage,
+          (m) => {
+            if (m.message !== ObjControllerSubtypeIds.CM_netUpdateTransform) return;
+            if (m.networkId !== playerId) return;
+            if (m.decodedSubtype?.kind !== NetUpdateTransformKind) return;
+            const td = m.decodedSubtype.data as NetUpdateTransformData;
+            if (td.sequenceNumber < 0) ackSeq(td.sequenceNumber);
+          },
+        );
+      }
+
+      // 4) Brief settle so the server processes the ACK before the next
+      //    movement send hits handleMove.
+      await sleep(50, opts.signal);
     },
     setPose(position: Vector3, yaw: number): void {
       state.pose.x = position.x;
@@ -1002,6 +1106,11 @@ export async function runScript(fn: ScenarioFn, ctx: ScriptContext): Promise<Scr
     await fn(ctx);
   } catch (err) {
     error = err instanceof Error ? err.message : String(err);
+  } finally {
+    if (internal._state.teleportListenerUnsubscribe !== null) {
+      internal._state.teleportListenerUnsubscribe();
+      internal._state.teleportListenerUnsubscribe = null;
+    }
   }
   return {
     elapsedMs: Date.now() - t0,

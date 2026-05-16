@@ -1,53 +1,78 @@
 import { describe, expect, it } from 'vitest';
-import { UpdateTransformMessage } from '../../messages/game/update-transform-message.js';
-import { createFakeContext } from './test-helpers.js';
+import { yawToQuat } from '../../archive/transform.js';
+import { ObjControllerSubtypeIds } from '../../messages/game/obj-controller/index.js';
+import { ObjControllerMessage } from '../../messages/game/obj-controller-message.js';
+import { createFakeContext, movementSends, teleportAckSends } from './test-helpers.js';
 
 describe('walkTo', () => {
-  it('emits a sequence of UpdateTransformMessages reaching the target', async () => {
+  it('emits a sequence of CM_netUpdateTransform messages reaching the target', async () => {
     const { ctx, sent } = createFakeContext({ startPosition: { x: 0, y: 0, z: 0 } });
     await ctx.walkTo({ x: 0, z: 10 }, { speed: 5, tickMs: 200 });
 
-    // distance 10m, speed 5m/s = 2s travel = 10 ticks at 200ms
-    expect(sent.length).toBeGreaterThanOrEqual(9);
-    expect(sent.length).toBeLessThanOrEqual(11);
-    for (const m of sent) expect(m).toBeInstanceOf(UpdateTransformMessage);
+    const moves = movementSends(sent);
+    // distance 10m, speed 5m/s, step capped by tickMs=200ms → 1m/tick → 10 ticks
+    expect(moves.length).toBeGreaterThanOrEqual(9);
+    expect(moves.length).toBeLessThanOrEqual(11);
 
     // Sequence numbers strictly monotonic, starting at 1
-    const seqs = (sent as UpdateTransformMessage[]).map((m) => m.sequenceNumber);
+    const seqs = moves.map((m) => m.data.sequenceNumber);
     expect(seqs[0]).toBe(1);
     for (let i = 1; i < seqs.length; i++) {
       expect(seqs[i]).toBe((seqs[i - 1] ?? 0) + 1);
     }
 
-    // Final position reaches target (within 0.25m fixed-point quantization)
-    const last = sent[sent.length - 1] as UpdateTransformMessage;
-    expect(Math.abs(last.positionX / 4 - 0)).toBeLessThanOrEqual(0.25);
-    expect(Math.abs(last.positionZ / 4 - 10)).toBeLessThanOrEqual(0.25);
+    // Final position reaches target exactly (no quantization on float wire)
+    const last = moves[moves.length - 1]?.data;
+    expect(last?.position.x).toBeCloseTo(0, 5);
+    expect(last?.position.z).toBeCloseTo(10, 5);
   });
 
-  it('computes yaw via atan2(dx, dz) — SWG heading convention', async () => {
+  it('sends speed=0 in the wire field (matching real client; server derives from delta)', async () => {
+    const { ctx, sent } = createFakeContext();
+    await ctx.walkTo({ x: 0, z: 10 }, { speed: 5, tickMs: 200 });
+    for (const m of movementSends(sent)) {
+      expect(m.data.speed).toBe(0);
+    }
+  });
+
+  it('encodes yaw as a Y-axis quaternion (atan2(dx, dz) → quat)', async () => {
     const { ctx, sent } = createFakeContext({ startPosition: { x: 0, y: 0, z: 0 } });
     await ctx.walkTo({ x: 5, z: 0 }, { speed: 5, tickMs: 200 });
-    const first = sent[0] as UpdateTransformMessage;
-    // Moving +x with z=0 → atan2(5, 0) = π/2 radians; * 16 = ~25.13 → rounded to 25
-    expect(first.yaw).toBe(25);
+    const first = movementSends(sent)[0]?.data;
+    // Moving +x with z=0 → yaw = atan2(5, 0) = π/2
+    const expected = yawToQuat(Math.PI / 2);
+    expect(first?.rotation.x).toBeCloseTo(expected.x, 5);
+    expect(first?.rotation.y).toBeCloseTo(expected.y, 5);
+    expect(first?.rotation.z).toBeCloseTo(expected.z, 5);
+    expect(first?.rotation.w).toBeCloseTo(expected.w, 5);
   });
 
-  it('quantizes position to 0.25m and yaw to ~3.6°/unit', async () => {
+  it('preserves exact float position (no fixed-point quantization)', async () => {
     const { ctx, sent } = createFakeContext({ startPosition: { x: 12.37, y: 1, z: -4.81 } });
-    await ctx.walkTo({ x: 12.37, z: -4.81 }, { speed: 5 }); // zero-distance: one update
-    expect(sent.length).toBe(1);
-    const m = sent[0] as UpdateTransformMessage;
-    // 12.37 * 4 = 49.48 → 49; -4.81 * 4 = -19.24 → -19
-    expect(m.positionX).toBe(49);
-    expect(m.positionZ).toBe(-19);
+    await ctx.walkTo({ x: 12.37, z: -4.81 }, { speed: 5 });
+    const moves = movementSends(sent);
+    expect(moves.length).toBe(1);
+    const m = moves[0]?.data;
+    expect(m?.position.x).toBeCloseTo(12.37, 5);
+    expect(m?.position.z).toBeCloseTo(-4.81, 5);
+    expect(m?.position.y).toBeCloseTo(1, 5);
+  });
+
+  it('sends with the player networkId from sceneStart and CLIENT_TO_AUTH_SERVER_FLAGS', async () => {
+    const playerNetworkId = 0xabcd_0001_0002_0003n;
+    const { ctx, sent } = createFakeContext({ playerNetworkId });
+    await ctx.walkTo({ x: 0, z: 10 }, { speed: 5, tickMs: 200 });
+    for (const { msg } of movementSends(sent)) {
+      expect(msg.networkId).toBe(playerNetworkId);
+      expect(msg.flags).toBe(0x23);
+      expect(msg.message).toBe(ObjControllerSubtypeIds.CM_netUpdateTransform);
+    }
   });
 
   it('aborts cleanly when the signal fires mid-walk', async () => {
     const { ctx, abort } = createFakeContext({ startPosition: { x: 0, y: 0, z: 0 } });
-    // Long walk so the abort lands during a sleep
     const walkPromise = ctx.walkTo({ x: 0, z: 100 }, { speed: 5, tickMs: 100 });
-    setTimeout(() => abort(), 50);
+    setTimeout(() => abort(), 100);
     await expect(walkPromise).rejects.toThrow(/aborted/);
   });
 
@@ -57,5 +82,31 @@ describe('walkTo', () => {
     const pos = ctx.position();
     expect(pos.x).toBeCloseTo(10, 5);
     expect(pos.z).toBeCloseTo(0, 5);
+  });
+
+  it('auto-sends a CM_teleportAck(-1) bootstrap before the first transform', async () => {
+    const { ctx, sent } = createFakeContext();
+    await ctx.walkTo({ x: 0, z: 5 }, { speed: 5, tickMs: 200 });
+    const acks = teleportAckSends(sent);
+    expect(acks.length).toBeGreaterThanOrEqual(1);
+    expect(acks.some((a) => a.data.sequenceId === -1)).toBe(true);
+    // The ack must come before any movement send.
+    const firstAckIdx = sent.findIndex((m) => m instanceof ObjControllerMessage && m.message === ObjControllerSubtypeIds.CM_teleportAck);
+    const firstMoveIdx = sent.findIndex(
+      (m) =>
+        m instanceof ObjControllerMessage &&
+        m.message === ObjControllerSubtypeIds.CM_netUpdateTransform,
+    );
+    expect(firstAckIdx).toBeGreaterThanOrEqual(0);
+    expect(firstMoveIdx).toBeGreaterThan(firstAckIdx);
+  });
+
+  it('produces monotonic-with-positive-delta syncStamps', async () => {
+    const { ctx, sent } = createFakeContext();
+    await ctx.walkTo({ x: 0, z: 10 }, { speed: 5, tickMs: 200 });
+    const stamps = movementSends(sent).map((m) => m.data.syncStamp);
+    for (let i = 1; i < stamps.length; i++) {
+      expect(stamps[i]).toBeGreaterThan(stamps[i - 1] ?? -1);
+    }
   });
 });

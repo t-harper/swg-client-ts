@@ -134,6 +134,35 @@ export function tryDecodeSubtype(
  * (starting at CM_nothing = 0).
  */
 export const ObjControllerSubtypeIds = {
+  /**
+   * Bidirectional. Movement transform — client→server: "I am moving to here";
+   * server→client: position broadcast for any creature in the area. Trailer is
+   * `MessageQueueDataTransform` (45 bytes: u32 syncStamp, i32 seq, Quaternion,
+   * Vector3, f32 speed, f32 lookAtYaw, u8 useLookAtYaw).
+   *
+   * NEGATIVE sequence numbers from the server are the teleport-lockout signal
+   * (PlayerCreatureController::resyncMovementUpdates) — the client MUST reply
+   * with CM_teleportAck carrying the matching seq before further client→server
+   * transforms will be accepted.
+   *
+   * NOTE: top-level `UpdateTransformMessage` (a separate GameNetworkMessage)
+   * is the *server-broadcast* wire form. Client→server movement MUST use this
+   * subtype (CM=113); top-level UpdateTransformMessage from a client is
+   * silently dropped server-side.
+   */
+  CM_netUpdateTransform: 113,
+  /**
+   * Bidirectional. Cell-relative movement. Same trailer as
+   * `MessageQueueDataTransform` but prefixed with a `NetworkId parentCell`.
+   */
+  CM_netUpdateTransformWithParent: 241,
+  /**
+   * Client → server. ACK a server teleport / zone-in lockout. Trailer is just
+   * `[i32 sequenceId]` — match the negative seq the server pushed via
+   * CM_netUpdateTransform. Without this ACK, PlayerCreatureController::handleMove
+   * returns false for every subsequent client transform.
+   */
+  CM_teleportAck: 319,
   CM_combatAction: 204,
   CM_spatialChatSend: 243,
   CM_spatialChatReceive: 244,

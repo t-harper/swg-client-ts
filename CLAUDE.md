@@ -83,7 +83,7 @@ The client started as just `SwgClient.fullLifecycle()` and is now a small toolki
 | **ObjController subtype decoder** | `src/messages/game/obj-controller/` | Decode the variable-length trailer based on `controllerType` — 8 most common subtypes covered |
 | **Character pool** | `CharacterPool` + CLI `pool` + `poolCredentials()` in `tests/integration/helpers.ts` | Persistent check-out database (JSON-backed, lockfile-coordinated) for pre-created characters. Pre-stock the cluster's character quota once via `pool stock`; tests `CI_USE_POOL=1` opt-in to lease from the pool instead of leaking new chars per run. |
 
-## Five wire-format gotchas (memorize)
+## Six wire-format gotchas (memorize)
 
 These cost hours during the initial build. Don't relearn them.
 
@@ -112,6 +112,25 @@ The trailing flag byte is what trips zlib if you forget it ("incorrect data chec
 
 ### 5. Captured packets use cUdpPacketGroup (opcode 25), NOT cUdpPacketMulti (3)
 `Multi` is the SOE-internal low-level coalescer; `Group` is the app-message bundler that `sharedNetwork`'s send path uses. Both are implemented in `src/soe/multipacket.ts`. Group's sub-message length prefix is variable-length (1, 3, or 7 bytes) — `unpackGroup` handles it.
+
+### 6. Client→server movement is `ObjControllerMessage(CM_netUpdateTransform=113)`, NOT top-level `UpdateTransformMessage`
+The top-level `UpdateTransformMessage` GameNetworkMessage is the **server-broadcast** wire form — when the server tells you "Bob just moved to (x,z)", that's what arrives. **Client→server** movement only flows through the ObjController subtype:
+
+```
+ObjControllerMessage(
+  flags     = 0x23 (CLIENT_TO_AUTH_SERVER_FLAGS),
+  message   = 113  (CM_netUpdateTransform),  // or 241 (CM_netUpdateTransformWithParent) when in a cell
+  networkId = playerNetworkId,
+  value     = 0,
+  data      = MessageQueueDataTransform   // 45 bytes
+)
+
+MessageQueueDataTransform = [u32 syncStamp][i32 seq][Quat 4×f32][Vec3 3×f32][f32 speed=0][f32 lookAtYaw=0][u8 useLookAtYaw=0]
+```
+
+`speed` on the wire is **always 0**. The server derives effective speed from `position_delta / (syncStamp_delta_ms / 1000)` and validates against the creature's anti-cheat cap. Sending a non-zero speed can trip the validator for freshly-spawned characters.
+
+**Zone-in teleport-lockout**: `PlayerCreatureController::resyncMovementUpdates` inserts negative sequence ids into `m_teleportIds` during zone-in. Until the client ACKs them via `ObjControllerMessage(message=CM_teleportAck=319, data=[i32 LE seq])`, every client→server transform is rejected by `handleMove`'s `isTeleporting()` check (returns silently — no error response). The script context's `ctx.ackPendingTeleports()` handles this automatically and is called by all built-in movement primitives (`walkTo`, `walkCircle`, `walkToCell`) on first invocation. Manual code paths that build their own ObjControllerMessage transforms via `ctx.send()` MUST call `await ctx.ackPendingTeleports()` once after zone-in before their first transform.
 
 ## Architecture corrections from the implementation
 

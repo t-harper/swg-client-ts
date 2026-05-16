@@ -9,6 +9,16 @@
  */
 
 import { encodeMessage } from '../../messages/base.js';
+import {
+  type NetUpdateTransformData,
+  NetUpdateTransformKind,
+  type NetUpdateTransformWithParentData,
+  NetUpdateTransformWithParentKind,
+  ObjControllerSubtypeIds,
+  type TeleportAckData,
+  TeleportAckKind,
+} from '../../messages/game/obj-controller/index.js';
+import { ObjControllerMessage } from '../../messages/game/obj-controller-message.js';
 import type { GameNetworkMessage } from '../../messages/interface.js';
 import type { NetworkId, SceneStart, Vector3 } from '../../types.js';
 import type { MessageDispatcher, TranscriptEvent } from '../dispatcher.js';
@@ -206,4 +216,54 @@ export function createFakeContext(opts: FakeContextOptions = {}): FakeContext {
     abort: () => abortController.abort(),
     simulateRecv,
   };
+}
+
+/**
+ * Extract just the world-coord movement sends (CM_netUpdateTransform) from a
+ * `sent[]` array. Filters out teleport-ACK bootstrap sends and any other
+ * traffic, returning the decoded subtype data for each.
+ */
+export function movementSends(
+  sent: GameNetworkMessage[],
+): { msg: ObjControllerMessage; data: NetUpdateTransformData }[] {
+  const out: { msg: ObjControllerMessage; data: NetUpdateTransformData }[] = [];
+  for (const m of sent) {
+    if (!(m instanceof ObjControllerMessage)) continue;
+    if (m.message !== ObjControllerSubtypeIds.CM_netUpdateTransform) continue;
+    if (m.decodedSubtype?.kind !== NetUpdateTransformKind) continue;
+    out.push({ msg: m, data: m.decodedSubtype.data as NetUpdateTransformData });
+  }
+  return out;
+}
+
+/**
+ * Extract just the cell-relative movement sends (CM_netUpdateTransformWithParent).
+ */
+export function cellMovementSends(
+  sent: GameNetworkMessage[],
+): { msg: ObjControllerMessage; data: NetUpdateTransformWithParentData }[] {
+  const out: { msg: ObjControllerMessage; data: NetUpdateTransformWithParentData }[] = [];
+  for (const m of sent) {
+    if (!(m instanceof ObjControllerMessage)) continue;
+    if (m.message !== ObjControllerSubtypeIds.CM_netUpdateTransformWithParent) continue;
+    if (m.decodedSubtype?.kind !== NetUpdateTransformWithParentKind) continue;
+    out.push({ msg: m, data: m.decodedSubtype.data as NetUpdateTransformWithParentData });
+  }
+  return out;
+}
+
+/**
+ * Extract teleport-ACK sends (CM_teleportAck) from a `sent[]` array.
+ */
+export function teleportAckSends(
+  sent: GameNetworkMessage[],
+): { msg: ObjControllerMessage; data: TeleportAckData }[] {
+  const out: { msg: ObjControllerMessage; data: TeleportAckData }[] = [];
+  for (const m of sent) {
+    if (!(m instanceof ObjControllerMessage)) continue;
+    if (m.message !== ObjControllerSubtypeIds.CM_teleportAck) continue;
+    if (m.decodedSubtype?.kind !== TeleportAckKind) continue;
+    out.push({ msg: m, data: m.decodedSubtype.data as TeleportAckData });
+  }
+  return out;
 }

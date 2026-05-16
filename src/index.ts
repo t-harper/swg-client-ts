@@ -94,6 +94,53 @@ export type {
   ChatRoomData,
 } from './messages/game/chat/index.js';
 
+// Crafting wire types — both the server→client schematic messages and the
+// client→server step subtypes. Useful for consumers wiring crafting flows
+// programmatically (the ScriptContext primitives wrap most of these for
+// convenience).
+export {
+  DraftSchematicsDecoder,
+  DraftSchematicsKind,
+  CraftingIngredientType,
+  ManufactureSchematicDecoder,
+  ManufactureSchematicKind,
+} from './messages/game/crafting/index.js';
+export type {
+  CraftingIngredientTypeValue,
+  DraftSchematicEntry,
+  DraftSchematicsData,
+  ManufactureSchematicData,
+  ManufactureSchematicSlot,
+  ManufactureSchematicSlotOption,
+  ManufactureSchematicStringId,
+} from './messages/game/crafting/index.js';
+export {
+  CraftingExperimentDecoder,
+  CraftingExperimentKind,
+  CraftingFinishDecoder,
+  CraftingFinishKind,
+  CraftingResultDecoder,
+  CraftingResultKind,
+  CraftSelectSchematicDecoder,
+  CraftSelectSchematicKind,
+  CraftingSlotAssignDecoder,
+  CraftingSlotAssignKind,
+  CraftingSlotEmptyDecoder,
+  CraftingSlotEmptyKind,
+  CraftingStartDecoder,
+  CraftingStartKind,
+} from './messages/game/obj-controller/index.js';
+export type {
+  CraftingExperimentData,
+  CraftingExperimentEntry,
+  CraftingFinishData,
+  CraftingResultData,
+  CraftSelectSchematicData,
+  CraftingSlotAssignData,
+  CraftingSlotEmptyData,
+  CraftingStartData,
+} from './messages/game/obj-controller/index.js';
+
 // Baseline decoders — for inspecting per-object state pushed during zone-in.
 // The `BaselinesMessage` envelope wraps the variable-length package payload;
 // once decoded, `decodedBaseline.data` is one of the per-type interfaces below.

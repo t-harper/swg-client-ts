@@ -3,9 +3,12 @@ import { ByteStream } from '../../../archive/byte-stream.js';
 import { ReadIterator } from '../../../archive/read-iterator.js';
 // Side-effect imports: every subtype self-registers on first load.
 import './index.js';
+// Side-effect: the crafting-folder subtypes register through this registry too.
+import '../crafting/index.js';
 import { encodeMessage, parseHeader } from '../../base.js';
 import { messageRegistry } from '../../registry.js';
 import { ObjControllerMessage } from '../obj-controller-message.js';
+import { type CraftingStartData, CraftingStartDecoder } from './crafting-start.js';
 import { GroupInviteDecoder } from './group-invite.js';
 import {
   type ObjControllerSubtypeDecoder,
@@ -144,6 +147,30 @@ describe('ObjController parent-message dispatch', () => {
     expect(decoded.decodedSubtype?.kind).toBe('StartDance');
     const data = decoded.decodedSubtype?.data as { performanceType: number };
     expect(data.performanceType).toBe(12);
+  });
+
+  it('dispatches a CraftingStart trailer (CM_requestCraftingSession)', () => {
+    const s = new ByteStream();
+    CraftingStartDecoder.encode(s, { stationId: 0xc0fen, sequenceId: 3 });
+
+    const parent = new ObjControllerMessage(
+      0x23,
+      ObjControllerSubtypeIds.CM_requestCraftingSession,
+      0xabcdn, // player id
+      0,
+      s.toBytes(),
+    );
+    const bytes = encodeMessage(parent);
+
+    const { typeCrc, payload } = parseHeader(bytes);
+    const decoder = messageRegistry.getByCrc(typeCrc);
+    if (!decoder) throw new Error('ObjControllerMessage decoder not registered');
+    const decoded = decoder.decodePayload(payload) as ObjControllerMessage;
+    expect(decoded.message).toBe(ObjControllerSubtypeIds.CM_requestCraftingSession);
+    expect(decoded.decodedSubtype?.kind).toBe('CraftingStart');
+    const data = decoded.decodedSubtype?.data as CraftingStartData;
+    expect(data.stationId).toBe(0xc0fen);
+    expect(data.sequenceId).toBe(3);
   });
 
   it('dispatches a GroupInvite trailer (CM_setGroupInviter)', () => {

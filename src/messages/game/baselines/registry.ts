@@ -28,27 +28,33 @@
 
 import type { IReadIterator } from '../../../archive/interface.js';
 
-/** Convert a 4-char ASCII string to a u32 tag (matching wire LE byte order). */
+/**
+ * Convert a 4-char ASCII string to a u32 IFF tag. SWG's `TAG(a,b,c,d)` macro
+ * packs as `(a<<24 | b<<16 | c<<8 | d)` — big-endian. The same integer is
+ * then serialized as a little-endian u32 on the wire, so reading it via
+ * `iter.readU32()` reproduces this big-endian-packed integer.
+ *
+ * `stringToTag('TANO')` == 0x54414E4F (== `TAG(T,A,N,O)` server-side).
+ */
 export function stringToTag(s: string): number {
   if (s.length !== 4) {
     throw new Error(`Tag string must be exactly 4 chars, got ${s.length}: "${s}"`);
   }
-  // Little-endian: first char is low byte. >>>0 forces unsigned reading.
   return (
-    (s.charCodeAt(0) |
-      (s.charCodeAt(1) << 8) |
-      (s.charCodeAt(2) << 16) |
-      (s.charCodeAt(3) << 24)) >>>
+    ((s.charCodeAt(0) << 24) |
+      (s.charCodeAt(1) << 16) |
+      (s.charCodeAt(2) << 8) |
+      s.charCodeAt(3)) >>>
     0
   );
 }
 
-/** Convert a u32 tag (little-endian-read) back to the 4-char ASCII string. */
+/** Inverse of `stringToTag`. */
 export function tagToString(tag: number): string {
-  const b0 = tag & 0xff;
-  const b1 = (tag >>> 8) & 0xff;
-  const b2 = (tag >>> 16) & 0xff;
-  const b3 = (tag >>> 24) & 0xff;
+  const b0 = (tag >>> 24) & 0xff;
+  const b1 = (tag >>> 16) & 0xff;
+  const b2 = (tag >>> 8) & 0xff;
+  const b3 = tag & 0xff;
   return (
     String.fromCharCode(b0) +
     String.fromCharCode(b1) +

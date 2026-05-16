@@ -62,7 +62,8 @@ describe('BaselinesMessage', () => {
     // varCount = 5 → 05 00
     // typeCrc (4 bytes)
     // target = 0x42 i64 LE → 42 00 00 00 00 00 00 00
-    // typeId TANO LE → 54 41 4E 4F
+    // typeId TANO: C++ TAG(T,A,N,O) packs as T<<24|A<<16|N<<8|O = 0x54414E4F.
+    //   Serialized LE → bytes [4F, 4E, 41, 54] ('O','N','A','T') on the wire.
     // packageId = 3 → 03
     // packageLen = 0 → 00 00 00 00
     // Total: 2 + 4 + 8 + 4 + 1 + 4 = 23 bytes
@@ -73,11 +74,11 @@ describe('BaselinesMessage', () => {
     // skip typeCrc 4 bytes
     // target i64 LE - first byte
     expect(bytes[6]).toBe(0x42);
-    // typeId TANO = 'T' 'A' 'N' 'O' at offset 6 + 8 = 14
-    expect(bytes[14]).toBe(0x54);
-    expect(bytes[15]).toBe(0x41);
-    expect(bytes[16]).toBe(0x4e);
-    expect(bytes[17]).toBe(0x4f);
+    // typeId TANO serialized LE at offset 6 + 8 = 14: bytes 'O','N','A','T'
+    expect(bytes[14]).toBe(0x4f);
+    expect(bytes[15]).toBe(0x4e);
+    expect(bytes[16]).toBe(0x41);
+    expect(bytes[17]).toBe(0x54);
     // packageId at offset 18
     expect(bytes[18]).toBe(0x03);
     // packageLen u32 = 0 at offsets 19-22

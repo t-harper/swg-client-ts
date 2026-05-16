@@ -34,10 +34,10 @@ describe('baseline registry', () => {
       expect(tagToString(tag)).toBe('CREO');
     });
 
-    it('byte order: TANO first char is low byte of u32', () => {
+    it('byte order: TANO uses TAG(T,A,N,O) packing (T is high byte)', () => {
       // 'T' = 0x54, 'A' = 0x41, 'N' = 0x4E, 'O' = 0x4F
-      // LE: low byte first → 0x54 + (0x41 << 8) + (0x4E << 16) + (0x4F << 24)
-      expect(ObjectTypeTags.TANO).toBe(0x4f4e4154);
+      // C++ TAG(T,A,N,O) = T<<24 | A<<16 | N<<8 | O = 0x54414E4F
+      expect(ObjectTypeTags.TANO).toBe(0x54414e4f);
     });
 
     it('rejects non-4-char input', () => {

@@ -13,6 +13,7 @@
  */
 
 export { BaselinesMessage, BaselinesMessageDecoder } from './baselines-message.js';
+export { BatchBaselinesMessage, BatchBaselinesMessageDecoder } from './batch-baselines-message.js';
 export {
   type BitArrayValue,
   type MapEntry,

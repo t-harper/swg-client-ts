@@ -9,6 +9,7 @@
  */
 
 import { BaselinesMessage } from '../messages/game/baselines/baselines-message.js';
+import { BatchBaselinesMessage } from '../messages/game/baselines/batch-baselines-message.js';
 import type {
   DecodedBaseline,
   PlayerObjectSharedBaseline,
@@ -32,6 +33,23 @@ function eventsOf(source: TranscriptSource): TranscriptEvent[] {
 }
 
 /**
+ * Yield every BaselinesMessage in the transcript, flattening any
+ * BatchBaselinesMessage envelopes (the server batches baselines during
+ * zone-in for efficiency).
+ */
+function* iterBaselines(source: TranscriptSource): Iterable<BaselinesMessage> {
+  for (const event of eventsOf(source)) {
+    if (event.direction !== 'recv') continue;
+    if (event.decoded === null) continue;
+    if (event.decoded instanceof BaselinesMessage) {
+      yield event.decoded;
+    } else if (event.decoded instanceof BatchBaselinesMessage) {
+      yield* event.decoded.baselines;
+    }
+  }
+}
+
+/**
  * Find all decoded BaselinesMessage events for a given NetworkId. Returns
  * `[ ]` if none. The result is ordered by transcript position (i.e. wire
  * arrival order).
@@ -41,13 +59,8 @@ export function extractBaselinesForObject(
   networkId: NetworkId,
 ): BaselinesMessage[] {
   const out: BaselinesMessage[] = [];
-  for (const event of eventsOf(source)) {
-    if (event.direction !== 'recv') continue;
-    if (event.decoded === null) continue;
-    if (!(event.decoded instanceof BaselinesMessage)) continue;
-    if (event.decoded.target === networkId) {
-      out.push(event.decoded);
-    }
+  for (const b of iterBaselines(source)) {
+    if (b.target === networkId) out.push(b);
   }
   return out;
 }
@@ -59,14 +72,9 @@ export function extractBaselinesForObject(
  */
 export function findBaselinesByKind(source: TranscriptSource, kind: string): BaselinesMessage[] {
   const out: BaselinesMessage[] = [];
-  for (const event of eventsOf(source)) {
-    if (event.direction !== 'recv') continue;
-    if (event.decoded === null) continue;
-    if (!(event.decoded instanceof BaselinesMessage)) continue;
-    const decoded: DecodedBaseline | null = event.decoded.decodedBaseline;
-    if (decoded?.kind === kind) {
-      out.push(event.decoded);
-    }
+  for (const b of iterBaselines(source)) {
+    const decoded: DecodedBaseline | null = b.decodedBaseline;
+    if (decoded?.kind === kind) out.push(b);
   }
   return out;
 }
@@ -129,14 +137,11 @@ export function extractInventoryContainerId(source: TranscriptSource): NetworkId
 export function networkIdsByObjectType(source: TranscriptSource, typeId: number): NetworkId[] {
   const seen = new Set<NetworkId>();
   const out: NetworkId[] = [];
-  for (const event of eventsOf(source)) {
-    if (event.direction !== 'recv') continue;
-    if (event.decoded === null) continue;
-    if (!(event.decoded instanceof BaselinesMessage)) continue;
-    if (event.decoded.typeId !== typeId) continue;
-    if (seen.has(event.decoded.target)) continue;
-    seen.add(event.decoded.target);
-    out.push(event.decoded.target);
+  for (const b of iterBaselines(source)) {
+    if (b.typeId !== typeId) continue;
+    if (seen.has(b.target)) continue;
+    seen.add(b.target);
+    out.push(b.target);
   }
   return out;
 }

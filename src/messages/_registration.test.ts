@@ -36,6 +36,7 @@ import { ObjControllerMessage } from './game/obj-controller-message.js';
 import { SceneCreateObjectByCrc } from './game/scene-create-object-by-crc.js';
 import { SceneCreateObjectByName } from './game/scene-create-object-by-name.js';
 import { SceneEndBaselines } from './game/scene-end-baselines.js';
+import { UpdateContainmentMessage } from './game/update-containment-message.js';
 import { UpdateTransformMessage } from './game/update-transform-message.js';
 import { UpdateTransformWithParentMessage } from './game/update-transform-with-parent-message.js';
 import { messageRegistry } from './registry.js';
@@ -59,6 +60,7 @@ const ALL_DECODERS = [
   HeartBeat,
   LogoutMessage,
   ObjControllerMessage,
+  UpdateContainmentMessage,
   UpdateTransformMessage,
   UpdateTransformWithParentMessage,
   AttributeListMessage,

@@ -36,8 +36,11 @@ function eventsOf(source: TranscriptSource): TranscriptEvent[] {
  * Yield every BaselinesMessage in the transcript, flattening any
  * BatchBaselinesMessage envelopes (the server batches baselines during
  * zone-in for efficiency).
+ *
+ * Exported for reuse by other transcript-walking helpers (e.g. ContainerView)
+ * — keep the visibility narrow to "things inside this package" if you can.
  */
-function* iterBaselines(source: TranscriptSource): Iterable<BaselinesMessage> {
+export function* iterBaselines(source: TranscriptSource): Iterable<BaselinesMessage> {
   for (const event of eventsOf(source)) {
     if (event.direction !== 'recv') continue;
     if (event.decoded === null) continue;

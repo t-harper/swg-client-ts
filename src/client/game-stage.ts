@@ -29,6 +29,13 @@ import { SceneCreateObjectByName } from '../messages/game/scene-create-object-by
 import { SceneEndBaselines } from '../messages/game/scene-end-baselines.js';
 import { type NetworkId, type SceneStart, ZoneState } from '../types.js';
 import type { MessageDispatcher, TranscriptEvent } from './dispatcher.js';
+import {
+  type ScenarioFn,
+  type ScriptResult,
+  createScriptContext,
+  didScriptLogout,
+  runScript,
+} from './script/context.js';
 
 /** A summary of the baseline flood we observed during zone-in. */
 export interface BaselineSummary {
@@ -53,6 +60,13 @@ export interface GameStageOptions {
   holdZonedInMs?: number;
   /** How often to send a HeartBeat while zoned in (ms). Default 30_000. */
   heartbeatMs?: number;
+  /**
+   * Optional scenario function to run during the zoned-in hold. If set, runs
+   * in place of the sleep; any remaining `holdZonedInMs` after the script
+   * returns is still awaited. If the script calls `ctx.logout()`, the stage
+   * will skip the implicit LogoutMessage send.
+   */
+  script?: ScenarioFn;
   /** Callback whenever the ZoneState changes. */
   onStateChange?: (state: ZoneState) => void;
   /** Hook for streaming transcript events. */
@@ -70,6 +84,8 @@ export interface GameStageResult {
   logoutAt: Date;
   /** Stage 3 elapsed time in ms. */
   elapsedMs: number;
+  /** Set if a script ran during the dwell. */
+  scriptResult?: ScriptResult;
 }
 
 export async function runGameStage(opts: GameStageOptions): Promise<GameStageResult> {
@@ -139,15 +155,34 @@ export async function runGameStage(opts: GameStageOptions): Promise<GameStageRes
       heartbeatTimer.unref?.();
     }
 
-    await sleep(holdZonedInMs);
+    // 5a. Optional script — runs in place of the sleep, then any remaining
+    // hold time is awaited.
+    const scriptT0 = Date.now();
+    let scriptResult: ScriptResult | undefined;
+    let scriptLoggedOut = false;
+    if (opts.script !== undefined) {
+      const abortController = new AbortController();
+      const scriptCtx = createScriptContext({
+        dispatcher,
+        sceneStart: startScene,
+        signal: abortController.signal,
+      });
+      scriptResult = await runScript(opts.script, scriptCtx);
+      scriptLoggedOut = didScriptLogout(scriptCtx);
+    }
+    const remainingHoldMs = Math.max(0, holdZonedInMs - (Date.now() - scriptT0));
+    if (remainingHoldMs > 0) await sleep(remainingHoldMs);
 
     // 6. Send LogoutMessage. No reply is sent on the client wire.
+    // (Skip if the script already sent one via ctx.logout().)
     opts.onStateChange?.(ZoneState.LoggingOut);
     const logoutAt = new Date();
-    try {
-      dispatcher.send(new LogoutMessage());
-    } catch {
-      // already disconnected — ignore
+    if (!scriptLoggedOut) {
+      try {
+        dispatcher.send(new LogoutMessage());
+      } catch {
+        // already disconnected — ignore
+      }
     }
 
     // Give the server a beat to persist the character before we drop the SOE
@@ -176,6 +211,7 @@ export async function runGameStage(opts: GameStageOptions): Promise<GameStageRes
       zonedInAt,
       logoutAt,
       elapsedMs: Date.now() - t0,
+      ...(scriptResult !== undefined ? { scriptResult } : {}),
     };
   } finally {
     if (heartbeatTimer !== null) clearInterval(heartbeatTimer);

@@ -36,6 +36,7 @@ import '../messages/connection/game-server-for-login.js';
 import '../messages/connection/select-character.js';
 import '../messages/connection/station-id-has-jedi-slot.js';
 import '../messages/game/attribute-list-message.js';
+import '../messages/game/client-open-container.js';
 import '../messages/game/cmd-scene-ready.js';
 import '../messages/game/cmd-start-scene.js';
 import '../messages/game/heart-beat.js';
@@ -58,6 +59,7 @@ import { type CreateCharacterOptions, runConnectionStage } from './connection-st
 import type { TranscriptEvent } from './dispatcher.js';
 import { runGameStage } from './game-stage.js';
 import { runLoginStage } from './login-stage.js';
+import type { ScenarioFn, ScriptResult } from './script/context.js';
 
 export interface SwgClientOptions {
   loginServer: ServerEndpoint;
@@ -81,6 +83,12 @@ export interface FullLifecycleOptions {
   profession?: string;
   /** How long to hold the zoned-in state before logging out. Default 5_000ms. */
   holdZonedInMs?: number;
+  /**
+   * Optional scripted scenario to run during the zoned-in dwell (walk,
+   * open inventory, etc.). Runs in place of the sleep; any remaining
+   * `holdZonedInMs` after the script returns is still awaited.
+   */
+  script?: ScenarioFn;
   /**
    * If true, only run Stages 1 + 2 (login + select), skip zone-in + logout.
    * Used by `live-connection.test.ts`.
@@ -122,6 +130,8 @@ export interface LifecycleResult {
   stationId: number;
   /** Whether we ever observed a server-side ErrorMessage. */
   receivedErrorMessage: boolean;
+  /** Set if a script ran during the dwell. */
+  scriptResult?: ScriptResult;
 }
 
 export class SwgClient {
@@ -216,6 +226,7 @@ export class SwgClient {
         game = await runGameStage({
           dispatcher: connectionStage.dispatcher,
           holdZonedInMs: opts.holdZonedInMs ?? 5_000,
+          ...(opts.script !== undefined ? { script: opts.script } : {}),
           onStateChange: opts.onStateChange,
           onTranscript: undefined, // already wired via Stage 2's dispatcher
         });
@@ -253,6 +264,7 @@ export class SwgClient {
       transcript,
       stationId: login.token.stationId,
       receivedErrorMessage,
+      ...(game?.scriptResult !== undefined ? { scriptResult: game.scriptResult } : {}),
     };
     return result;
   }

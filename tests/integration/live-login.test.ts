@@ -15,6 +15,7 @@ import { describe, expect, it } from 'vitest';
 
 import { runLoginStage } from '../../src/client/login-stage.js';
 import { ClusterStatus } from '../../src/types.js';
+import { liveAccount } from './helpers.js';
 
 const LIVE = process.env.LIVE === '1';
 const HOST = process.env.SWG_HOST ?? '10.254.0.253';
@@ -23,7 +24,7 @@ const PORT = Number(process.env.SWG_LOGIN_PORT ?? 44453);
 describe.skipIf(!LIVE)('live login (Stage 1)', () => {
   it('connects, authenticates, enumerates clusters, and disconnects cleanly', async () => {
     // Server enforces MAX_ACCOUNT_NAME_LENGTH = 15 — keep it short.
-    const username = `tslv${(Date.now() % 100_000_000).toString(36)}`;
+    const username = liveAccount('tslv');
     const result = await runLoginStage({
       endpoint: { host: HOST, port: PORT },
       username,

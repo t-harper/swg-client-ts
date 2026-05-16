@@ -44,3 +44,9 @@ export type {
   CreateCharacterOptions,
 } from './client/connection-stage.js';
 export type { GameStageResult, GameStageOptions, BaselineSummary } from './client/game-stage.js';
+
+// Scripting engine
+export type { ScenarioFn, ScriptContext, ScriptResult } from './client/script/context.js';
+export type { WalkToOptions, CircleOptions } from './client/script/movement.js';
+export { scenarios } from './scenarios/index.js';
+export type { ScenarioFactory } from './scenarios/index.js';

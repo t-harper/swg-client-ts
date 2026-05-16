@@ -12,6 +12,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { SwgClient } from '../../src/client/swg-client.js';
+import { liveCredentials } from './helpers.js';
 
 const LIVE = process.env.LIVE === '1';
 const HOST = process.env.SWG_HOST ?? '10.254.0.253';
@@ -19,9 +20,8 @@ const PORT = Number(process.env.SWG_LOGIN_PORT ?? 44453);
 
 describe.skipIf(!LIVE)('live login + connection (Stage 1 + 2)', () => {
   it('logs in, attaches to ConnectionServer, gets character list (creates if empty), selects', async () => {
-    // Server enforces MAX_ACCOUNT_NAME_LENGTH = 15 — keep account name short.
-    const account = `tscn${(Date.now() % 100_000_000).toString(36)}`;
-    const characterName = `TsLive${Date.now() % 1_000_000}`;
+    // Set CI_REUSE_ACCOUNT + CI_REUSE_CHARACTER to reuse instead of leaking.
+    const { account, characterName } = liveCredentials('cn');
     const client = new SwgClient({ loginServer: { host: HOST, port: PORT } });
     const result = await client.fullLifecycle({
       account,

@@ -12,6 +12,7 @@
  */
 import { SwgClient, lifecycleResultToJSON } from '../src/index.js';
 import type { TranscriptEvent } from '../src/index.js';
+import { scenarios } from '../src/scenarios/index.js';
 
 interface CliArgs {
   command: 'zone' | 'help';
@@ -27,6 +28,8 @@ interface CliArgs {
   verbose: boolean;
   pretty: boolean;
   skipGame: boolean;
+  script?: string;
+  scriptArgs: Record<string, string>;
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -35,12 +38,14 @@ function parseArgs(argv: string[]): CliArgs {
     host: '127.0.0.1',
     port: 44453,
     user: '',
-    planet: 'tatooine',
+    // starting_locations.iff city key (NOT a planet name like "tatooine")
+    planet: 'mos_eisley',
     profession: 'combat_brawler',
     holdMs: 5_000,
     verbose: false,
     pretty: true,
     skipGame: false,
+    scriptArgs: {},
   };
   const positional: string[] = [];
   for (const a of argv) {
@@ -85,6 +90,18 @@ function parseArgs(argv: string[]): CliArgs {
         case 'skip-game':
           args.skipGame = val === 'true' || val === '';
           break;
+        case 'script':
+          args.script = val;
+          break;
+        case 'script-arg': {
+          const sep = val.indexOf('=');
+          if (sep < 0) {
+            process.stderr.write(`--script-arg expects key=value, got: ${val}\n`);
+            process.exit(2);
+          }
+          args.scriptArgs[val.slice(0, sep)] = val.slice(sep + 1);
+          break;
+        }
         case 'help':
           args.command = 'help';
           break;
@@ -114,14 +131,19 @@ function printHelp(): void {
       '',
       'Usage:',
       '  swg-ts-cli zone --host=<host> [--port=44453] --user=<account>',
-      '                 [--character=<name>] [--cluster=swg] [--planet=tatooine]',
+      '                 [--character=<name>] [--cluster=swg] [--planet=mos_eisley]',
       '                 [--profession=combat_brawler] [--hold-ms=5000]',
+      '                 [--script=<name>] [--script-arg=k=v ...]',
       '                 [--verbose] [--no-pretty] [--skip-game]',
       '  swg-ts-cli help',
+      '',
+      `Available scripts: ${Object.keys(scenarios).sort().join(', ')}`,
       '',
       'Examples:',
       '  swg-ts-cli zone --host=10.254.0.253 --user=ci-test',
       '  swg-ts-cli zone --host=10.254.0.253 --user=ci-test --character=TsTest --hold-ms=10000',
+      '  swg-ts-cli zone --host=10.254.0.253 --user=ci-test --character=TsTest \\',
+      '                 --script=walk-circle --script-arg=radius=8 --script-arg=durationMs=3000',
       '',
       'Exits 0 on success, 1 on failure. Always emits JSON on stdout.',
       '',
@@ -144,6 +166,25 @@ async function main(): Promise<number> {
     return 2;
   }
 
+  let scenarioFn: ReturnType<(typeof scenarios)[string]> | undefined;
+  if (args.script !== undefined) {
+    const factory = scenarios[args.script];
+    if (factory === undefined) {
+      process.stderr.write(
+        `Unknown --script=${args.script}. Available: ${Object.keys(scenarios).sort().join(', ')}\n`,
+      );
+      return 2;
+    }
+    try {
+      scenarioFn = factory(args.scriptArgs);
+    } catch (err) {
+      process.stderr.write(
+        `Invalid --script-arg(s) for ${args.script}: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+      return 2;
+    }
+  }
+
   const client = new SwgClient({
     loginServer: { host: args.host, port: args.port },
   });
@@ -160,6 +201,7 @@ async function main(): Promise<number> {
       profession: args.profession,
       holdZonedInMs: args.holdMs,
       skipGameStage: args.skipGame,
+      ...(scenarioFn !== undefined ? { script: scenarioFn } : {}),
       onTranscript: (event) => {
         transcriptStream.push(event);
         if (args.verbose) {

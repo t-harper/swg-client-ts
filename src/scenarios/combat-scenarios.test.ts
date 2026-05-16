@@ -120,3 +120,38 @@ describe('posture-cycle scenario', () => {
     expect(() => factory({ tickMs: '0' })).toThrow(/tickMs/);
   });
 });
+
+describe('survey scenario', () => {
+  it('is registered under the name "survey"', () => {
+    expect(scenarios.survey).toBeDefined();
+  });
+
+  it('defaults to resourceClass="mineral" and emits one ObjController wrapping requestSurvey', async () => {
+    const factory = scenarios.survey;
+    if (!factory) throw new Error('survey not registered');
+    // Tiny waitMs so the test doesn't actually idle.
+    const fn = factory({ waitMs: '0' });
+    const { ctx, sent } = createFakeContext();
+    const result = await runScript(fn, ctx);
+    expect(result.error).toBeUndefined();
+    expect(sent.length).toBe(1);
+    const obj = sent[0] as ObjControllerMessage;
+    expect(obj).toBeInstanceOf(ObjControllerMessage);
+    expect(obj.message).toBe(CM_COMMAND_QUEUE_ENQUEUE);
+    const inner = CommandQueueEnqueue.unpack(new ReadIterator(obj.data));
+    expect(inner.commandHash).toBe(hashCommand('requestSurvey'));
+    expect(inner.params).toBe('mineral');
+  });
+
+  it('respects an explicit resourceClass arg', async () => {
+    const factory = scenarios.survey;
+    if (!factory) throw new Error('survey not registered');
+    const fn = factory({ resourceClass: 'flora', waitMs: '0' });
+    const { ctx, sent } = createFakeContext();
+    await runScript(fn, ctx);
+    const inner = CommandQueueEnqueue.unpack(
+      new ReadIterator((sent[0] as ObjControllerMessage).data),
+    );
+    expect(inner.params).toBe('flora');
+  });
+});

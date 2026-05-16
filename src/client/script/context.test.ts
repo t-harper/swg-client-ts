@@ -22,6 +22,7 @@ import {
   SpatialChatSendKind,
   SpatialChatType,
 } from '../../messages/game/obj-controller/index.js';
+import { SurveyMessage } from '../../messages/game/survey/index.js';
 import { didScriptLogout, runScript } from './context.js';
 import { createFakeContext } from './test-helpers.js';
 
@@ -294,4 +295,91 @@ describe('ScriptContext: chat primitives', () => {
   // ReadIterator is imported for parity with combat tests if future chat
   // round-trips need it inline.
   void ReadIterator;
+});
+
+describe('ScriptContext: survey primitives', () => {
+  it('survey() sends one ObjControllerMessage wrapping CommandQueueEnqueue with requestSurvey + resourceClass param', () => {
+    const playerId = 0x501n;
+    const { ctx, sent } = createFakeContext({ playerNetworkId: playerId });
+    const seq = ctx.survey('mineral');
+    expect(seq).toBe(1);
+    expect(sent.length).toBe(1);
+
+    const wrapped = sent[0];
+    expect(wrapped).toBeInstanceOf(ObjControllerMessage);
+    const obj = wrapped as ObjControllerMessage;
+    expect(obj.message).toBe(CM_COMMAND_QUEUE_ENQUEUE);
+    expect(obj.flags).toBe(CLIENT_TO_AUTH_SERVER_FLAGS);
+    expect(obj.networkId).toBe(playerId);
+
+    const inner = CommandQueueEnqueue.unpack(new ReadIterator(obj.data));
+    expect(inner.sequenceId).toBe(1);
+    expect(inner.commandHash).toBe(hashCommand('requestSurvey'));
+    expect(inner.targetId).toBe(0n);
+    expect(inner.params).toBe('mineral');
+  });
+
+  it('survey() consumes from the command-queue sequence counter', () => {
+    const { ctx } = createFakeContext();
+    expect(ctx.survey('mineral')).toBe(1);
+    expect(ctx.survey('flora')).toBe(2);
+    expect(ctx.useAbility('attack', 0x42n)).toBe(3);
+  });
+
+  it('survey() with different resourceClass strings is reflected on the wire', () => {
+    const { ctx, sent } = createFakeContext();
+    ctx.survey('inorganic_chemical');
+    const inner = CommandQueueEnqueue.unpack(
+      new ReadIterator((sent[0] as ObjControllerMessage).data),
+    );
+    expect(inner.params).toBe('inorganic_chemical');
+  });
+
+  it('survey() command name hashes to the same value the server expects', () => {
+    // `requestSurvey` (camelCase) is the canonical form (command_table.tab:927).
+    // hashCommand lowercases internally, so the wire hash matches
+    // constcrc('requestsurvey') exactly. Guard against accidentally
+    // case-sensitive refactors.
+    const { ctx, sent } = createFakeContext();
+    ctx.survey('mineral');
+    const inner = CommandQueueEnqueue.unpack(
+      new ReadIterator((sent[0] as ObjControllerMessage).data),
+    );
+    expect(inner.commandHash).toBe(hashCommand('requestsurvey'));
+    expect(inner.commandHash).toBe(hashCommand('REQUESTSURVEY'));
+  });
+
+  it('waitForSurvey() resolves with the parsed sample points when SurveyMessage arrives', async () => {
+    const { ctx, simulateRecv } = createFakeContext();
+    const pending = ctx.waitForSurvey({ timeoutMs: 1_000 });
+    // Inject the server response.
+    simulateRecv(
+      new SurveyMessage([
+        { location: { x: 1, y: 2, z: 3 }, efficiency: 0.5 },
+        { location: { x: 4, y: 5, z: 6 }, efficiency: 0.9 },
+      ]),
+    );
+    const result = await pending;
+    expect(result.points).toHaveLength(2);
+    const first = result.points[0];
+    const second = result.points[1];
+    if (first === undefined || second === undefined) throw new Error('missing points');
+    expect(first.efficiency).toBeCloseTo(0.5, 5);
+    expect(second.efficiency).toBeCloseTo(0.9, 5);
+    expect(first.location).toEqual({ x: 1, y: 2, z: 3 });
+  });
+
+  it('waitForSurvey() rejects with a timeout if no SurveyMessage arrives', async () => {
+    const { ctx } = createFakeContext();
+    await expect(ctx.waitForSurvey({ timeoutMs: 30 })).rejects.toThrow(/Timed out/);
+  });
+
+  it('survey() sends count toward sendsCount', async () => {
+    const { ctx } = createFakeContext();
+    const result = await runScript(async (c) => {
+      c.survey('mineral');
+      c.survey('flora');
+    }, ctx);
+    expect(result.sendsCount).toBe(2);
+  });
 });

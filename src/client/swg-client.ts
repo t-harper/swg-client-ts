@@ -50,6 +50,7 @@ import '../messages/game/obj-controller/index.js';
 import '../messages/game/scene-create-object-by-crc.js';
 import '../messages/game/scene-create-object-by-name.js';
 import '../messages/game/scene-end-baselines.js';
+import '../messages/game/survey/index.js';
 import '../messages/game/update-transform-message.js';
 import '../messages/game/update-transform-with-parent-message.js';
 

@@ -118,12 +118,36 @@ export const postureCycle: ScenarioFactory = (args) => {
   };
 };
 
+/**
+ * Trigger a survey for `resourceClass` and dwell briefly for any response.
+ *
+ * Server-side this requires the actor to have an activated survey tool of
+ * the matching type in inventory; a brand-new character probably doesn't,
+ * so the SurveyMessage may never come back. The scenario exercises the
+ * wire send unconditionally (useful as a regression check for the survey
+ * command-hash and the ObjController envelope) and tolerates silence.
+ *
+ * Args:
+ *   resourceClass (default 'mineral') the resource class to scan for
+ *   waitMs        (default 2000) how long to dwell after the request
+ */
+export const surveyScenario: ScenarioFactory = (args) => {
+  const resourceClass = args.resourceClass ?? 'mineral';
+  const waitMs = numArg(args, 'waitMs', 2_000);
+  return async (ctx) => {
+    ctx.survey(resourceClass);
+    // No assertion — server may not respond synchronously; just exercises the wire.
+    if (waitMs > 0) await ctx.wait(waitMs);
+  };
+};
+
 export const scenarios: Record<string, ScenarioFactory> = {
   'walk-line': walkLine,
   'walk-circle': walkCircle,
   'open-inventory': openInventory,
   'combat-attack': combatAttack,
   'posture-cycle': postureCycle,
+  survey: surveyScenario,
   dwell,
 };
 

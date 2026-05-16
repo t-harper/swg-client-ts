@@ -75,8 +75,8 @@ const ALL_DECODERS = [
 ];
 
 describe('message registration', () => {
-  it('exports 29 message classes', () => {
-    expect(ALL_DECODERS.length).toBe(29);
+  it('exports 30 message classes', () => {
+    expect(ALL_DECODERS.length).toBe(30);
   });
 
   it('every class has a non-empty messageName', () => {

@@ -13,12 +13,21 @@
  * Emits the full LifecycleResult (zone) or aggregated FleetSummary (swarm)
  * as JSON on stdout. Exits 0 on success, non-zero on failure.
  */
-import { Fleet, type FleetClientConfig, SwgClient, lifecycleResultToJSON } from '../src/index.js';
-import type { TranscriptEvent } from '../src/index.js';
+import {
+  Fleet,
+  type FleetClientConfig,
+  SwgClient,
+  captureLifecycle,
+  lifecycleResultToJSON,
+  readTranscript,
+  replay,
+  writeTranscript,
+} from '../src/index.js';
+import type { CapturedEvent, TranscriptEvent } from '../src/index.js';
 import { scenarios } from '../src/scenarios/index.js';
 
 interface CliArgs {
-  command: 'zone' | 'swarm' | 'help';
+  command: 'zone' | 'swarm' | 'capture' | 'replay' | 'help';
   host: string;
   port: number;
   user: string;
@@ -38,6 +47,11 @@ interface CliArgs {
   userPrefix: string;
   staggerMs: number;
   maxConcurrent: number;
+  // capture/replay
+  output?: string;
+  input?: string;
+  pacing: 'asFast' | 'asCaptured';
+  compare: 'names' | 'count';
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -58,6 +72,8 @@ function parseArgs(argv: string[]): CliArgs {
     userPrefix: 'fleet',
     staggerMs: 0,
     maxConcurrent: 0,
+    pacing: 'asFast',
+    compare: 'names',
   };
   const positional: string[] = [];
   for (const a of argv) {
@@ -126,6 +142,26 @@ function parseArgs(argv: string[]): CliArgs {
         case 'max-concurrent':
           args.maxConcurrent = Number.parseInt(val, 10);
           break;
+        case 'output':
+          args.output = val;
+          break;
+        case 'input':
+          args.input = val;
+          break;
+        case 'pacing':
+          if (val !== 'asFast' && val !== 'asCaptured') {
+            process.stderr.write(`--pacing must be 'asFast' or 'asCaptured' (got '${val}')\n`);
+            process.exit(2);
+          }
+          args.pacing = val;
+          break;
+        case 'compare':
+          if (val !== 'names' && val !== 'count') {
+            process.stderr.write(`--compare must be 'names' or 'count' (got '${val}')\n`);
+            process.exit(2);
+          }
+          args.compare = val;
+          break;
         case 'help':
           args.command = 'help';
           break;
@@ -137,8 +173,15 @@ function parseArgs(argv: string[]): CliArgs {
       positional.push(a);
     }
   }
-  if (positional[0] === 'zone' || positional[0] === 'swarm' || positional[0] === 'help') {
-    args.command = positional[0];
+  const cmd = positional[0];
+  if (
+    cmd === 'zone' ||
+    cmd === 'swarm' ||
+    cmd === 'capture' ||
+    cmd === 'replay' ||
+    cmd === 'help'
+  ) {
+    args.command = cmd;
   } else if (positional.length === 0) {
     args.command = 'help';
   } else {
@@ -163,6 +206,15 @@ function printHelp(): void {
       '                   [--user-prefix=fleet] [--stagger-ms=500]',
       '                   [--max-concurrent=10] [--hold-ms=5000]',
       '                   [--planet=mos_eisley] [--skip-game] [--verbose] [--no-pretty]',
+      '  swg-ts-cli capture --host=<host> --user=<account> --character=<name>',
+      '                     --output=<path>.ndjson [--hold-ms=5000] [--verbose]',
+      '      Run a full lifecycle and write the wire transcript to <path>.ndjson.',
+      '  swg-ts-cli replay --host=<host> --user=<account> --character=<name>',
+      '                    --input=<path>.ndjson [--pacing=asFast|asCaptured]',
+      '                    [--compare=names|count]',
+      '      Load a captured NDJSON file, run a fresh lifecycle that replays the',
+      '      captured sends, and compare observed inbound messages.',
+      '      Exits 1 if any expected recv name is missing from the observed stream.',
       '  swg-ts-cli help',
       '',
       `Available scripts: ${Object.keys(scenarios).sort().join(', ')}`,
@@ -255,6 +307,12 @@ async function main(): Promise<number> {
   if (args.command === 'swarm') {
     return runSwarm(args);
   }
+  if (args.command === 'capture') {
+    return runCapture(args);
+  }
+  if (args.command === 'replay') {
+    return runReplay(args);
+  }
   if (args.command !== 'zone') {
     printHelp();
     return 2;
@@ -335,6 +393,118 @@ async function main(): Promise<number> {
       ),
     };
     process.stdout.write(`${JSON.stringify(errorReport, null, 2)}\n`);
+    return 1;
+  }
+}
+
+async function runCapture(args: CliArgs): Promise<number> {
+  if (args.user === '') {
+    process.stderr.write('--user is required\n');
+    return 2;
+  }
+  if (args.output === undefined || args.output === '') {
+    process.stderr.write('--output=<path>.ndjson is required for capture\n');
+    return 2;
+  }
+  const events: CapturedEvent[] = [];
+  try {
+    const result = await captureLifecycle({
+      loginServer: { host: args.host, port: args.port },
+      account: args.user,
+      ...(args.password !== undefined ? { password: args.password } : {}),
+      ...(args.cluster !== undefined ? { clusterName: args.cluster } : {}),
+      ...(args.character !== undefined ? { characterName: args.character } : {}),
+      startingLocation: args.planet,
+      profession: args.profession,
+      holdZonedInMs: args.holdMs,
+      onEvent: (ev) => {
+        events.push(ev);
+        if (args.verbose) {
+          process.stderr.write(
+            `[capture] ${ev.direction} ${ev.messageName} ${ev.payload.length}b\n`,
+          );
+        }
+      },
+    });
+    await writeTranscript(result.events, args.output);
+    const summary = {
+      ok: true,
+      output: args.output,
+      eventCount: result.events.length,
+      sendCount: result.events.filter((e) => e.direction === 'send').length,
+      recvCount: result.events.filter((e) => e.direction === 'recv').length,
+      character: { name: result.character.name, networkId: result.character.networkId.toString() },
+      characterWasCreated: result.characterWasCreated,
+      receivedErrorMessage: result.receivedErrorMessage,
+      elapsedMs: result.elapsedMs,
+    };
+    process.stdout.write(
+      args.pretty ? `${JSON.stringify(summary, null, 2)}\n` : `${JSON.stringify(summary)}\n`,
+    );
+    return 0;
+  } catch (err) {
+    const errReport = {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+      partialEventCount: events.length,
+    };
+    process.stdout.write(`${JSON.stringify(errReport, null, 2)}\n`);
+    return 1;
+  }
+}
+
+async function runReplay(args: CliArgs): Promise<number> {
+  if (args.user === '') {
+    process.stderr.write('--user is required\n');
+    return 2;
+  }
+  if (args.input === undefined || args.input === '') {
+    process.stderr.write('--input=<path>.ndjson is required for replay\n');
+    return 2;
+  }
+  let capture: CapturedEvent[];
+  try {
+    capture = await readTranscript(args.input);
+  } catch (err) {
+    process.stderr.write(
+      `failed to load ${args.input}: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    return 1;
+  }
+  try {
+    const result = await replay({
+      loginServer: { host: args.host, port: args.port },
+      capture,
+      pacing: args.pacing,
+      compare: args.compare,
+      account: args.user,
+      ...(args.password !== undefined ? { password: args.password } : {}),
+      ...(args.cluster !== undefined ? { clusterName: args.cluster } : {}),
+      ...(args.character !== undefined ? { characterName: args.character } : {}),
+      startingLocation: args.planet,
+      profession: args.profession,
+    });
+    const out = {
+      succeeded: result.succeeded,
+      expectedRecvCount: result.expectedRecvNames.length,
+      observedRecvCount: result.observedRecvNames.length,
+      missing: result.missing,
+      unexpected: result.unexpected,
+      errors: result.errors,
+      replayedSendNames: result.replayedSendNames,
+      expectedRecvNames: result.expectedRecvNames,
+      observedRecvNames: result.observedRecvNames,
+    };
+    process.stdout.write(
+      args.pretty ? `${JSON.stringify(out, null, 2)}\n` : `${JSON.stringify(out)}\n`,
+    );
+    return result.missing.length === 0 ? 0 : 1;
+  } catch (err) {
+    const errReport = {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+    process.stdout.write(`${JSON.stringify(errReport, null, 2)}\n`);
     return 1;
   }
 }

@@ -62,3 +62,23 @@ export type {
   FleetRunOptions,
   FleetSummary,
 } from './client/fleet.js';
+
+// Wire capture + replay harness
+export {
+  attachCapture,
+  eventsFromTranscript,
+  readTranscript,
+  transcriptFromNdjson,
+  transcriptToNdjson,
+  writeTranscript,
+} from './client/transcript-io.js';
+export type { CapturedEvent } from './client/transcript-io.js';
+export { captureLifecycle, replay, replayScenario } from './client/replay.js';
+export type {
+  CaptureLifecycleOptions,
+  CaptureLifecycleResult,
+  ReplayOptions,
+  ReplayResult,
+  ReplayScenarioOptions,
+  ReplayScriptContext,
+} from './client/replay.js';

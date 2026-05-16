@@ -10,10 +10,11 @@ describe('CharacterCreationDisabled (INBOUND, GenericValueTypeMessage<std::set<s
     expect(CharacterCreationDisabled.typeCrc).toBe(0xf41a5265);
   });
 
-  it('encodes an empty set to [4 CRC][4 i32 LE 0]', () => {
+  it('encodes an empty set to [2 varCount][4 CRC][4 i32 LE 0]', () => {
     const msg = new CharacterCreationDisabled(new Set());
     const bytes = encodeMessage(msg);
     const expected = Buffer.concat([
+      Buffer.from([0x02, 0x00]),
       Buffer.from([0x65, 0x52, 0x1a, 0xf4]),
       Buffer.from([0, 0, 0, 0]),
     ]);

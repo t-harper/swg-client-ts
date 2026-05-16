@@ -15,11 +15,13 @@ describe('LoginClientId (OUTBOUND)', () => {
     const bytes = encodeMessage(msg);
 
     // Layout:
+    //   [2]    varCount = 4 (cmd + id + key + version) LE = 04 00
     //   [4]    CRC = 0x41131f96 LE = 96 1f 13 41
     //   [2+2]  id  = "hi"   → u16 LE 2 + 'h' 'i' = 02 00 68 69
     //   [2]    key = ""     → u16 LE 0 = 00 00
     //   [2+14] ver = "20100225-17:43"  → u16 LE 14 + 14 bytes
     const expected = Buffer.concat([
+      Buffer.from([0x04, 0x00]),
       Buffer.from([0x96, 0x1f, 0x13, 0x41]),
       Buffer.from([0x02, 0x00, 0x68, 0x69]),
       Buffer.from([0x00, 0x00]),
@@ -42,7 +44,8 @@ describe('LoginClientId (OUTBOUND)', () => {
 
   it('round-trips empty id/key/version', () => {
     const bytes = encodeMessage(new LoginClientId('', '', ''));
-    const { typeCrc, payload } = parseHeader(bytes);
+    const { varCount, typeCrc, payload } = parseHeader(bytes);
+    expect(varCount).toBe(LoginClientId.varCount);
     expect(typeCrc).toBe(LoginClientId.typeCrc);
     const decoded = LoginClientId.decodePayload(payload);
     expect(decoded.id).toBe('');

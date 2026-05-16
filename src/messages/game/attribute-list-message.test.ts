@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { StubByteStream, StubReadIterator } from '../../archive/_stub-byte-stream.js';
+import { ByteStream } from '../../archive/byte-stream.js';
+import { ReadIterator } from '../../archive/read-iterator.js';
 import { AttributeListMessage } from './attribute-list-message.js';
 
 describe('AttributeListMessage', () => {
@@ -10,9 +11,9 @@ describe('AttributeListMessage', () => {
 
   it('round-trips an empty list', () => {
     const m = new AttributeListMessage(42n, '', [], 1);
-    const s = new StubByteStream();
+    const s = new ByteStream();
     m.encodePayload(s);
-    const d = AttributeListMessage.decodePayload(new StubReadIterator(s.toBytes()));
+    const d = AttributeListMessage.decodePayload(new ReadIterator(s.toBytes()));
     expect(d.networkId).toBe(42n);
     expect(d.staticItemName).toBe('');
     expect(d.data.length).toBe(0);
@@ -29,9 +30,9 @@ describe('AttributeListMessage', () => {
       ],
       7,
     );
-    const s = new StubByteStream();
+    const s = new ByteStream();
     m.encodePayload(s);
-    const iter = new StubReadIterator(s.toBytes());
+    const iter = new ReadIterator(s.toBytes());
     const d = AttributeListMessage.decodePayload(iter);
     expect(iter.remaining).toBe(0);
     expect(d.data.length).toBe(2);

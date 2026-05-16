@@ -13,19 +13,13 @@
  *   /home/tharper/code/swg-main/src/external/ours/library/localizationArchive/src/shared/StringIdArchive.cpp
  */
 
-import {
-  readString,
-  readUnicodeString,
-  writeString,
-  writeUnicodeString,
-} from '../../archive/_stub-byte-stream.js';
-import {
-  GameNetworkMessage,
-  type IByteStream,
-  type IReadIterator,
-  constcrc,
-  registerMessage,
-} from '../_stub-base.js';
+import type { IByteStream, IReadIterator } from '../../archive/interface.js';
+import { readStdString, writeStdString } from '../../archive/string.js';
+import { readUnicodeString, writeUnicodeString } from '../../archive/unicode-string.js';
+import { GameNetworkMessage, asDecoder, defineMessageMeta } from '../base.js';
+import { registerMessage } from '../registry.js';
+
+const META = defineMessageMeta('ClientCreateCharacterFailed');
 
 /** SWG StringId — `(table, textIndex, name)` triple referenced by clients. */
 export interface StringId {
@@ -35,21 +29,23 @@ export interface StringId {
 }
 
 export function writeStringId(stream: IByteStream, s: StringId): void {
-  writeString(stream, s.table);
+  writeStdString(stream, s.table);
   stream.writeU32(s.textIndex);
-  writeString(stream, s.name);
+  writeStdString(stream, s.name);
 }
 
 export function readStringId(iter: IReadIterator): StringId {
-  const table = readString(iter);
+  const table = readStdString(iter);
   const textIndex = iter.readU32();
-  const name = readString(iter);
+  const name = readStdString(iter);
   return { table, textIndex, name };
 }
 
 export class ClientCreateCharacterFailed extends GameNetworkMessage {
-  static override readonly messageName = 'ClientCreateCharacterFailed';
-  static readonly typeCrc = constcrc(ClientCreateCharacterFailed.messageName);
+  static override readonly messageName = META.messageName;
+  static readonly typeCrc = META.typeCrc;
+  /** cmd + name + errorMessage (StringId is a single AutoVariable on the wire) */
+  static override readonly varCount = 3;
 
   constructor(
     public readonly name: string,
@@ -70,4 +66,6 @@ export class ClientCreateCharacterFailed extends GameNetworkMessage {
   }
 }
 
-registerMessage(ClientCreateCharacterFailed);
+export const ClientCreateCharacterFailedDecoder = registerMessage(
+  asDecoder(ClientCreateCharacterFailed),
+);

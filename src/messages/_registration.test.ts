@@ -1,14 +1,14 @@
 /**
- * Sanity check that all 20 message classes load cleanly and register
- * unique constcrcs. Catches collisions early — they'd indicate either
- * a typo in messageName or a bug in our constcrc port.
+ * Sanity check that all 20 connection + game message classes load cleanly
+ * and register unique constcrcs. Catches collisions early — they'd indicate
+ * either a typo in messageName or a bug in our constcrc port.
  *
- * Stream B's real registry.ts will likely have an equivalent test,
- * making this one redundant after Phase 2. That's fine; remove on merge.
+ * Complements `registry.test.ts` (which exercises the lookup API on login
+ * messages only) by enumerating every connection + game class and asserting
+ * that every one of them self-registered.
  */
 
 import { describe, expect, it } from 'vitest';
-import { _stubRegistry } from './_stub-base.js';
 import { ClientCreateCharacterFailed } from './connection/client-create-character-failed.js';
 import { ClientCreateCharacterSuccess } from './connection/client-create-character-success.js';
 import { ClientCreateCharacter } from './connection/client-create-character.js';
@@ -29,6 +29,7 @@ import { SceneCreateObjectByCrc } from './game/scene-create-object-by-crc.js';
 import { SceneCreateObjectByName } from './game/scene-create-object-by-name.js';
 import { SceneEndBaselines } from './game/scene-end-baselines.js';
 import { UpdateTransformMessage } from './game/update-transform-message.js';
+import { messageRegistry } from './registry.js';
 
 const ALL_DECODERS = [
   ClientIdMsg,
@@ -79,12 +80,17 @@ describe('message registration', () => {
     }
   });
 
-  it('all classes self-registered with the stub registry', () => {
-    const reg = _stubRegistry();
+  it('all classes self-registered with the singleton registry', () => {
     for (const d of ALL_DECODERS) {
-      const found = reg.get(d.typeCrc);
+      const found = messageRegistry.getByCrc(d.typeCrc);
       expect(found, `${d.messageName} not registered`).toBeDefined();
       expect(found?.messageName).toBe(d.messageName);
+    }
+  });
+
+  it('every class declares a varCount >= 1', () => {
+    for (const d of ALL_DECODERS) {
+      expect(d.varCount, `${d.messageName} varCount`).toBeGreaterThanOrEqual(1);
     }
   });
 });

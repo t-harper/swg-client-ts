@@ -17,13 +17,15 @@ describe('messageRegistry', () => {
   });
 
   it('decodeMessage returns null for unknown CRCs (non-strict)', () => {
-    // Synthesize a packet with an unknown CRC + empty payload
-    const bytes = new Uint8Array([0xef, 0xbe, 0xad, 0xde]);
+    // Synthesize a packet with an unknown CRC + empty payload:
+    //   [02 00] varCount=2
+    //   [ef be ad de] CRC = 0xdeadbeef
+    const bytes = new Uint8Array([0x02, 0x00, 0xef, 0xbe, 0xad, 0xde]);
     expect(decodeMessage(bytes)).toBeNull();
   });
 
   it('decodeMessageStrict throws for unknown CRCs', () => {
-    const bytes = new Uint8Array([0xef, 0xbe, 0xad, 0xde]);
+    const bytes = new Uint8Array([0x02, 0x00, 0xef, 0xbe, 0xad, 0xde]);
     expect(() => decodeMessageStrict(bytes)).toThrow(/unknown message crc/i);
   });
 

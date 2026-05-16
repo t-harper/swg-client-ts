@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { StubByteStream, StubReadIterator } from '../../archive/_stub-byte-stream.js';
+import { ByteStream } from '../../archive/byte-stream.js';
+import { ReadIterator } from '../../archive/read-iterator.js';
 import { type CharacterRow, EnumerateCharacterId } from './enumerate-character-id.js';
 
 describe('EnumerateCharacterId', () => {
@@ -10,10 +11,10 @@ describe('EnumerateCharacterId', () => {
 
   it('round-trips an empty list', () => {
     const m = new EnumerateCharacterId([]);
-    const s = new StubByteStream();
+    const s = new ByteStream();
     m.encodePayload(s);
     expect(Array.from(s.toBytes())).toEqual([0, 0, 0, 0]); // u32 zero count
-    const d = EnumerateCharacterId.decodePayload(new StubReadIterator(s.toBytes()));
+    const d = EnumerateCharacterId.decodePayload(new ReadIterator(s.toBytes()));
     expect(d.characters).toEqual([]);
   });
 
@@ -35,9 +36,9 @@ describe('EnumerateCharacterId', () => {
       },
     ];
     const m = new EnumerateCharacterId(chars);
-    const s = new StubByteStream();
+    const s = new ByteStream();
     m.encodePayload(s);
-    const iter = new StubReadIterator(s.toBytes());
+    const iter = new ReadIterator(s.toBytes());
     const d = EnumerateCharacterId.decodePayload(iter);
     expect(iter.remaining).toBe(0);
     expect(d.characters.length).toBe(2);
@@ -60,7 +61,7 @@ describe('EnumerateCharacterId', () => {
         characterType: 0,
       },
     ]);
-    const s = new StubByteStream();
+    const s = new ByteStream();
     m.encodePayload(s);
     // Expected:
     //   [u32 count=1: 01 00 00 00]

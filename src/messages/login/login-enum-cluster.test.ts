@@ -17,6 +17,7 @@ describe('LoginEnumCluster (INBOUND)', () => {
     const bytes = encodeMessage(msg);
 
     // Layout:
+    //   [2]  varCount = 3 (cmd + data + maxCharactersPerAccount) LE = 03 00
     //   [4]  CRC = 0xC11C63B9 LE = b9 63 1c c1
     //   [4]  AutoArray count = 1 LE
     //   [4]  clusterId = 1
@@ -24,6 +25,7 @@ describe('LoginEnumCluster (INBOUND)', () => {
     //   [4]  timeZone = 0
     //   [4]  maxCharactersPerAccount = 8
     const expected = Buffer.concat([
+      Buffer.from([0x03, 0x00]),
       Buffer.from([0xb9, 0x63, 0x1c, 0xc1]),
       Buffer.from([1, 0, 0, 0]),
       Buffer.from([1, 0, 0, 0]),

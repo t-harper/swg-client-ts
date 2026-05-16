@@ -10,31 +10,31 @@
  *   /home/tharper/code/swg-main/src/engine/shared/library/sharedNetworkMessages/src/shared/clientGameServer/ClientCentralMessages.{h,cpp}
  */
 
-import { readNetworkId, writeNetworkId } from '../../archive/_stub-byte-stream.js';
+import type { IByteStream, IReadIterator } from '../../archive/interface.js';
+import { NetworkIdCodec } from '../../archive/network-id.js';
 import type { NetworkId } from '../../types.js';
-import {
-  GameNetworkMessage,
-  type IByteStream,
-  type IReadIterator,
-  constcrc,
-  registerMessage,
-} from '../_stub-base.js';
+import { GameNetworkMessage, asDecoder, defineMessageMeta } from '../base.js';
+import { registerMessage } from '../registry.js';
+
+const META = defineMessageMeta('SelectCharacter');
 
 export class SelectCharacter extends GameNetworkMessage {
-  static override readonly messageName = 'SelectCharacter';
-  static readonly typeCrc = constcrc(SelectCharacter.messageName);
+  static override readonly messageName = META.messageName;
+  static readonly typeCrc = META.typeCrc;
+  /** cmd + id */
+  static override readonly varCount = 2;
 
   constructor(public readonly networkId: NetworkId) {
     super();
   }
 
   encodePayload(stream: IByteStream): void {
-    writeNetworkId(stream, this.networkId);
+    NetworkIdCodec.encode(stream, this.networkId);
   }
 
   static decodePayload(iter: IReadIterator): SelectCharacter {
-    return new SelectCharacter(readNetworkId(iter));
+    return new SelectCharacter(NetworkIdCodec.decode(iter));
   }
 }
 
-registerMessage(SelectCharacter);
+export const SelectCharacterDecoder = registerMessage(asDecoder(SelectCharacter));

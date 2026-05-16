@@ -16,24 +16,15 @@
  *   /home/tharper/code/swg-main/src/engine/shared/library/sharedNetworkMessages/src/shared/clientGameServer/AttributeListMessage.{h,cpp}
  */
 
-import {
-  readArray,
-  readNetworkId,
-  readString,
-  readUnicodeString,
-  writeArray,
-  writeNetworkId,
-  writeString,
-  writeUnicodeString,
-} from '../../archive/_stub-byte-stream.js';
+import type { IByteStream, IReadIterator } from '../../archive/interface.js';
+import { NetworkIdCodec } from '../../archive/network-id.js';
+import { readStdString, writeStdString } from '../../archive/string.js';
+import { readUnicodeString, writeUnicodeString } from '../../archive/unicode-string.js';
 import type { NetworkId } from '../../types.js';
-import {
-  GameNetworkMessage,
-  type IByteStream,
-  type IReadIterator,
-  constcrc,
-  registerMessage,
-} from '../_stub-base.js';
+import { GameNetworkMessage, asDecoder, defineMessageMeta } from '../base.js';
+import { registerMessage } from '../registry.js';
+
+const META = defineMessageMeta('AttributeListMessage');
 
 /** (attributeKey, localizedDisplayValue) — one entry in the attribute list. */
 export interface AttributePair {
@@ -42,19 +33,21 @@ export interface AttributePair {
 }
 
 function writePair(stream: IByteStream, p: AttributePair): void {
-  writeString(stream, p.key);
+  writeStdString(stream, p.key);
   writeUnicodeString(stream, p.value);
 }
 
 function readPair(iter: IReadIterator): AttributePair {
-  const key = readString(iter);
+  const key = readStdString(iter);
   const value = readUnicodeString(iter);
   return { key, value };
 }
 
 export class AttributeListMessage extends GameNetworkMessage {
-  static override readonly messageName = 'AttributeListMessage';
-  static readonly typeCrc = constcrc(AttributeListMessage.messageName);
+  static override readonly messageName = META.messageName;
+  static readonly typeCrc = META.typeCrc;
+  /** cmd + networkId + staticItemName + data + revision */
+  static override readonly varCount = 5;
 
   constructor(
     public readonly networkId: NetworkId,
@@ -66,19 +59,23 @@ export class AttributeListMessage extends GameNetworkMessage {
   }
 
   encodePayload(stream: IByteStream): void {
-    writeNetworkId(stream, this.networkId);
-    writeString(stream, this.staticItemName);
-    writeArray(stream, this.data, writePair);
+    NetworkIdCodec.encode(stream, this.networkId);
+    writeStdString(stream, this.staticItemName);
+    // AutoArray<pair<string, UnicodeString>>: [u32 count] + count * pair
+    stream.writeU32(this.data.length);
+    for (const p of this.data) writePair(stream, p);
     stream.writeI32(this.revision);
   }
 
   static decodePayload(iter: IReadIterator): AttributeListMessage {
-    const networkId = readNetworkId(iter);
-    const staticItemName = readString(iter);
-    const data = readArray(iter, readPair);
+    const networkId = NetworkIdCodec.decode(iter);
+    const staticItemName = readStdString(iter);
+    const n = iter.readU32();
+    const data: AttributePair[] = [];
+    for (let i = 0; i < n; i++) data.push(readPair(iter));
     const revision = iter.readI32();
     return new AttributeListMessage(networkId, staticItemName, data, revision);
   }
 }
 
-registerMessage(AttributeListMessage);
+export const AttributeListMessageDecoder = registerMessage(asDecoder(AttributeListMessage));

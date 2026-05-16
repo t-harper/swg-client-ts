@@ -28,6 +28,8 @@ export interface LoginEnumClusterData {
 export class LoginEnumCluster extends GameNetworkMessage {
   static override readonly messageName = META.messageName;
   static readonly typeCrc = META.typeCrc;
+  /** cmd + data + maxCharactersPerAccount */
+  static override readonly varCount = 3;
 
   constructor(
     public clusters: LoginEnumClusterData[] = [],

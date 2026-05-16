@@ -18,22 +18,15 @@
  *   /home/tharper/code/swg-main/src/engine/shared/library/sharedNetworkMessages/src/shared/clientGameServer/CommandChannelMessages.{h,cpp}
  */
 
-import {
-  readNetworkId,
-  readString,
-  readVector3,
-  writeNetworkId,
-  writeString,
-  writeVector3,
-} from '../../archive/_stub-byte-stream.js';
+import type { IByteStream, IReadIterator } from '../../archive/interface.js';
+import { NetworkIdCodec } from '../../archive/network-id.js';
+import { readStdString, writeStdString } from '../../archive/string.js';
+import { Vector3Codec } from '../../archive/transform.js';
 import type { NetworkId, Vector3 } from '../../types.js';
-import {
-  GameNetworkMessage,
-  type IByteStream,
-  type IReadIterator,
-  constcrc,
-  registerMessage,
-} from '../_stub-base.js';
+import { GameNetworkMessage, asDecoder, defineMessageMeta } from '../base.js';
+import { registerMessage } from '../registry.js';
+
+const META = defineMessageMeta('CmdStartScene');
 
 export interface CmdStartSceneParams {
   playerNetworkId: NetworkId;
@@ -47,8 +40,10 @@ export interface CmdStartSceneParams {
 }
 
 export class CmdStartScene extends GameNetworkMessage {
-  static override readonly messageName = 'CmdStartScene';
-  static readonly typeCrc = constcrc(CmdStartScene.messageName);
+  static override readonly messageName = META.messageName;
+  static readonly typeCrc = META.typeCrc;
+  /** cmd + 8 fields (disableWorldSnapshot, objectId, sceneName, startPosition, startYaw, templateName, timeSeconds, serverEpoch) */
+  static override readonly varCount = 9;
 
   readonly playerNetworkId: NetworkId;
   readonly sceneName: string;
@@ -73,22 +68,22 @@ export class CmdStartScene extends GameNetworkMessage {
 
   encodePayload(stream: IByteStream): void {
     stream.writeBool(this.disableWorldSnapshot);
-    writeNetworkId(stream, this.playerNetworkId);
-    writeString(stream, this.sceneName);
-    writeVector3(stream, this.startPosition);
+    NetworkIdCodec.encode(stream, this.playerNetworkId);
+    writeStdString(stream, this.sceneName);
+    Vector3Codec.encode(stream, this.startPosition);
     stream.writeF32(this.startYaw);
-    writeString(stream, this.templateName);
+    writeStdString(stream, this.templateName);
     stream.writeI64(this.serverTimeSeconds);
     stream.writeI32(this.serverEpoch);
   }
 
   static decodePayload(iter: IReadIterator): CmdStartScene {
     const disableWorldSnapshot = iter.readBool();
-    const playerNetworkId = readNetworkId(iter);
-    const sceneName = readString(iter);
-    const startPosition = readVector3(iter);
+    const playerNetworkId = NetworkIdCodec.decode(iter);
+    const sceneName = readStdString(iter);
+    const startPosition = Vector3Codec.decode(iter);
     const startYaw = iter.readF32();
-    const templateName = readString(iter);
+    const templateName = readStdString(iter);
     const serverTimeSeconds = iter.readI64();
     const serverEpoch = iter.readI32();
     return new CmdStartScene({
@@ -104,4 +99,4 @@ export class CmdStartScene extends GameNetworkMessage {
   }
 }
 
-registerMessage(CmdStartScene);
+export const CmdStartSceneDecoder = registerMessage(asDecoder(CmdStartScene));

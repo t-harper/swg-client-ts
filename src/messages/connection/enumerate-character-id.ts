@@ -17,23 +17,15 @@
  *     EnumerateCharacterId class + EnumerateCharacterId_Chardata struct
  */
 
-import {
-  readArray,
-  readNetworkId,
-  readUnicodeString,
-  writeArray,
-  writeNetworkId,
-  writeUnicodeString,
-} from '../../archive/_stub-byte-stream.js';
+import type { IByteStream, IReadIterator } from '../../archive/interface.js';
+import { NetworkIdCodec } from '../../archive/network-id.js';
+import { readUnicodeString, writeUnicodeString } from '../../archive/unicode-string.js';
 import type { CharacterInfo, NetworkId } from '../../types.js';
 import type { CharacterType } from '../../types.js';
-import {
-  GameNetworkMessage,
-  type IByteStream,
-  type IReadIterator,
-  constcrc,
-  registerMessage,
-} from '../_stub-base.js';
+import { GameNetworkMessage, asDecoder, defineMessageMeta } from '../base.js';
+import { registerMessage } from '../registry.js';
+
+const META = defineMessageMeta('EnumerateCharacterId');
 
 /** Single chardata row as it appears on the wire. */
 export interface CharacterRow {
@@ -47,7 +39,7 @@ export interface CharacterRow {
 function writeChardata(stream: IByteStream, c: CharacterRow): void {
   writeUnicodeString(stream, c.name);
   stream.writeI32(c.objectTemplateId);
-  writeNetworkId(stream, c.networkId);
+  NetworkIdCodec.encode(stream, c.networkId);
   stream.writeU32(c.clusterId);
   stream.writeI32(c.characterType);
 }
@@ -55,15 +47,17 @@ function writeChardata(stream: IByteStream, c: CharacterRow): void {
 function readChardata(iter: IReadIterator): CharacterRow {
   const name = readUnicodeString(iter);
   const objectTemplateId = iter.readI32();
-  const networkId = readNetworkId(iter);
+  const networkId = NetworkIdCodec.decode(iter);
   const clusterId = iter.readU32();
   const characterType = iter.readI32();
   return { name, objectTemplateId, networkId, clusterId, characterType };
 }
 
 export class EnumerateCharacterId extends GameNetworkMessage {
-  static override readonly messageName = 'EnumerateCharacterId';
-  static readonly typeCrc = constcrc(EnumerateCharacterId.messageName);
+  static override readonly messageName = META.messageName;
+  static readonly typeCrc = META.typeCrc;
+  /** cmd + data (AutoArray<Chardata>) */
+  static override readonly varCount = 2;
 
   constructor(public readonly characters: readonly CharacterRow[]) {
     super();
@@ -82,12 +76,17 @@ export class EnumerateCharacterId extends GameNetworkMessage {
   }
 
   encodePayload(stream: IByteStream): void {
-    writeArray(stream, this.characters, writeChardata);
+    // AutoArray<Chardata>: [u32 count] + count * Chardata
+    stream.writeU32(this.characters.length);
+    for (const c of this.characters) writeChardata(stream, c);
   }
 
   static decodePayload(iter: IReadIterator): EnumerateCharacterId {
-    return new EnumerateCharacterId(readArray(iter, readChardata));
+    const n = iter.readU32();
+    const rows: CharacterRow[] = [];
+    for (let i = 0; i < n; i++) rows.push(readChardata(iter));
+    return new EnumerateCharacterId(rows);
   }
 }
 
-registerMessage(EnumerateCharacterId);
+export const EnumerateCharacterIdDecoder = registerMessage(asDecoder(EnumerateCharacterId));

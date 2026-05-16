@@ -15,10 +15,12 @@ describe('LoginIncorrectClientId (INBOUND)', () => {
     const bytes = encodeMessage(msg);
 
     // Layout:
+    //   [2]    varCount = 3 (cmd + serverId + serverApplicationVersion) LE = 03 00
     //   [4]    CRC = 0x20E7E510 LE = 10 e5 e7 20
     //   [2+9]  serverId = "swg-login" → 09 00 + bytes
     //   [2+14] version = "20100225-17:43" → 0e 00 + bytes
     const expected = Buffer.concat([
+      Buffer.from([0x03, 0x00]),
       Buffer.from([0x10, 0xe5, 0xe7, 0x20]),
       Buffer.from([9, 0]),
       Buffer.from('swg-login', 'utf-8'),

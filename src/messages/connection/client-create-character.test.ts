@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { StubByteStream, StubReadIterator } from '../../archive/_stub-byte-stream.js';
+import { ByteStream } from '../../archive/byte-stream.js';
+import { ReadIterator } from '../../archive/read-iterator.js';
 import { ClientCreateCharacter } from './client-create-character.js';
 
 describe('ClientCreateCharacter', () => {
@@ -16,9 +17,9 @@ describe('ClientCreateCharacter', () => {
       startingLocation: 'tatooine',
       profession: 'combat_brawler',
     });
-    const s = new StubByteStream();
+    const s = new ByteStream();
     m.encodePayload(s);
-    const iter = new StubReadIterator(s.toBytes());
+    const iter = new ReadIterator(s.toBytes());
     const d = ClientCreateCharacter.decodePayload(iter);
     expect(iter.remaining).toBe(0);
     expect(d.characterName).toBe('Test Player');
@@ -43,7 +44,7 @@ describe('ClientCreateCharacter', () => {
       startingLocation: 's',
       profession: 'p',
     });
-    const s = new StubByteStream();
+    const s = new ByteStream();
     m.encodePayload(s);
     const bytes = s.toBytes();
     // The first field must be the appearance string (length-prefixed).
@@ -75,9 +76,9 @@ describe('ClientCreateCharacter', () => {
       skillTemplate: 'jedi_force_user',
       workingSkill: 'force_discipline_1a',
     });
-    const s = new StubByteStream();
+    const s = new ByteStream();
     m.encodePayload(s);
-    const d = ClientCreateCharacter.decodePayload(new StubReadIterator(s.toBytes()));
+    const d = ClientCreateCharacter.decodePayload(new ReadIterator(s.toBytes()));
     expect(d.jedi).toBe(true);
     expect(d.useNewbieTutorial).toBe(true);
     expect(d.scaleFactor).toBeCloseTo(1.25, 5);

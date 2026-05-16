@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { StubByteStream, StubReadIterator } from '../../archive/_stub-byte-stream.js';
+import { ByteStream } from '../../archive/byte-stream.js';
+import { ReadIterator } from '../../archive/read-iterator.js';
 import { CmdStartScene } from './cmd-start-scene.js';
 
 describe('CmdStartScene', () => {
@@ -19,7 +20,7 @@ describe('CmdStartScene', () => {
       serverEpoch: 0,
       disableWorldSnapshot: true,
     });
-    const s = new StubByteStream();
+    const s = new ByteStream();
     m.encodePayload(s);
     const bytes = s.toBytes();
     expect(bytes[0]).toBe(0x01); // disableWorldSnapshot = true
@@ -38,9 +39,9 @@ describe('CmdStartScene', () => {
       serverEpoch: 42,
       disableWorldSnapshot: false,
     });
-    const s = new StubByteStream();
+    const s = new ByteStream();
     m.encodePayload(s);
-    const iter = new StubReadIterator(s.toBytes());
+    const iter = new ReadIterator(s.toBytes());
     const d = CmdStartScene.decodePayload(iter);
     expect(iter.remaining).toBe(0);
     expect(d.disableWorldSnapshot).toBe(false);

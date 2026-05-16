@@ -16,18 +16,18 @@
  *   /home/tharper/code/swg-main/src/engine/shared/library/sharedNetworkMessages/src/shared/common/ErrorMessage.{h,cpp}
  */
 
-import { readString, writeString } from '../../archive/_stub-byte-stream.js';
-import {
-  GameNetworkMessage,
-  type IByteStream,
-  type IReadIterator,
-  constcrc,
-  registerMessage,
-} from '../_stub-base.js';
+import type { IByteStream, IReadIterator } from '../../archive/interface.js';
+import { readStdString, writeStdString } from '../../archive/string.js';
+import { GameNetworkMessage, asDecoder, defineMessageMeta } from '../base.js';
+import { registerMessage } from '../registry.js';
+
+const META = defineMessageMeta('ErrorMessage');
 
 export class ErrorMessage extends GameNetworkMessage {
-  static override readonly messageName = 'ErrorMessage';
-  static readonly typeCrc = constcrc(ErrorMessage.messageName);
+  static override readonly messageName = META.messageName;
+  static readonly typeCrc = META.typeCrc;
+  /** cmd + errorName + description + fatal */
+  static override readonly varCount = 4;
 
   constructor(
     public readonly errorName: string,
@@ -38,17 +38,17 @@ export class ErrorMessage extends GameNetworkMessage {
   }
 
   encodePayload(stream: IByteStream): void {
-    writeString(stream, this.errorName);
-    writeString(stream, this.description);
+    writeStdString(stream, this.errorName);
+    writeStdString(stream, this.description);
     stream.writeBool(this.fatal);
   }
 
   static decodePayload(iter: IReadIterator): ErrorMessage {
-    const errorName = readString(iter);
-    const description = readString(iter);
+    const errorName = readStdString(iter);
+    const description = readStdString(iter);
     const fatal = iter.readBool();
     return new ErrorMessage(errorName, description, fatal);
   }
 }
 
-registerMessage(ErrorMessage);
+export const ErrorMessageDecoder = registerMessage(asDecoder(ErrorMessage));

@@ -13,17 +13,17 @@
  *   /home/tharper/code/swg-main/src/engine/shared/library/sharedNetworkMessages/src/shared/clientGameServer/ClientPermissionsMessage.{h,cpp}
  */
 
-import {
-  GameNetworkMessage,
-  type IByteStream,
-  type IReadIterator,
-  constcrc,
-  registerMessage,
-} from '../_stub-base.js';
+import type { IByteStream, IReadIterator } from '../../archive/interface.js';
+import { GameNetworkMessage, asDecoder, defineMessageMeta } from '../base.js';
+import { registerMessage } from '../registry.js';
+
+const META = defineMessageMeta('ClientPermissionsMessage');
 
 export class ClientPermissionsMessage extends GameNetworkMessage {
-  static override readonly messageName = 'ClientPermissionsMessage';
-  static readonly typeCrc = constcrc(ClientPermissionsMessage.messageName);
+  static override readonly messageName = META.messageName;
+  static readonly typeCrc = META.typeCrc;
+  /** cmd + canLogin + canCreateRegular + canCreateJedi + canSkipTutorial + isAdmin */
+  static override readonly varCount = 6;
 
   constructor(
     public readonly canLogin: boolean,
@@ -59,4 +59,4 @@ export class ClientPermissionsMessage extends GameNetworkMessage {
   }
 }
 
-registerMessage(ClientPermissionsMessage);
+export const ClientPermissionsMessageDecoder = registerMessage(asDecoder(ClientPermissionsMessage));

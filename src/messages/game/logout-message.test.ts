@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { StubByteStream, StubReadIterator } from '../../archive/_stub-byte-stream.js';
+import { ByteStream } from '../../archive/byte-stream.js';
+import { ReadIterator } from '../../archive/read-iterator.js';
 import { LogoutMessage } from './logout-message.js';
 
 describe('LogoutMessage', () => {
@@ -9,13 +10,13 @@ describe('LogoutMessage', () => {
   });
 
   it('encodes empty', () => {
-    const s = new StubByteStream();
+    const s = new ByteStream();
     new LogoutMessage().encodePayload(s);
     expect(s.toBytes().length).toBe(0);
   });
 
   it('decodes empty', () => {
-    const d = LogoutMessage.decodePayload(new StubReadIterator(new Uint8Array(0)));
+    const d = LogoutMessage.decodePayload(new ReadIterator(new Uint8Array(0)));
     expect(d).toBeInstanceOf(LogoutMessage);
   });
 });

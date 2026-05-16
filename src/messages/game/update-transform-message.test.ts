@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { StubByteStream, StubReadIterator } from '../../archive/_stub-byte-stream.js';
+import { ByteStream } from '../../archive/byte-stream.js';
+import { ReadIterator } from '../../archive/read-iterator.js';
 import { UpdateTransformMessage } from './update-transform-message.js';
 
 describe('UpdateTransformMessage', () => {
@@ -21,11 +22,11 @@ describe('UpdateTransformMessage', () => {
       0,
       0,
     );
-    const s = new StubByteStream();
+    const s = new ByteStream();
     m.encodePayload(s);
     expect(s.toBytes().length).toBe(8 + 2 * 3 + 4 + 4); // 22
 
-    const iter = new StubReadIterator(s.toBytes());
+    const iter = new ReadIterator(s.toBytes());
     const d = UpdateTransformMessage.decodePayload(iter);
     expect(iter.remaining).toBe(0);
     expect(d.networkId).toBe(0x0011_2233_4455_6677n);
@@ -41,11 +42,11 @@ describe('UpdateTransformMessage', () => {
 
   it('drains trailing bytes defensively', () => {
     const m = new UpdateTransformMessage(1n, 0, 0, 0, 0, 0, 0, 0, 0);
-    const s = new StubByteStream();
+    const s = new ByteStream();
     m.encodePayload(s);
     const padded = new Uint8Array(s.toBytes().length + 4);
     padded.set(s.toBytes(), 0);
-    const iter = new StubReadIterator(padded);
+    const iter = new ReadIterator(padded);
     const d = UpdateTransformMessage.decodePayload(iter);
     expect(d.networkId).toBe(1n);
     expect(iter.remaining).toBe(0);

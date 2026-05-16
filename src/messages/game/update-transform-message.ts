@@ -22,19 +22,19 @@
  *   /home/tharper/code/swg-main/src/engine/shared/library/sharedNetworkMessages/src/shared/clientGameServer/UpdateTransformMessage.{h,cpp}
  */
 
-import { readNetworkId, writeNetworkId } from '../../archive/_stub-byte-stream.js';
+import type { IByteStream, IReadIterator } from '../../archive/interface.js';
+import { NetworkIdCodec } from '../../archive/network-id.js';
 import type { NetworkId } from '../../types.js';
-import {
-  GameNetworkMessage,
-  type IByteStream,
-  type IReadIterator,
-  constcrc,
-  registerMessage,
-} from '../_stub-base.js';
+import { GameNetworkMessage, asDecoder, defineMessageMeta } from '../base.js';
+import { registerMessage } from '../registry.js';
+
+const META = defineMessageMeta('UpdateTransformMessage');
 
 export class UpdateTransformMessage extends GameNetworkMessage {
-  static override readonly messageName = 'UpdateTransformMessage';
-  static readonly typeCrc = constcrc(UpdateTransformMessage.messageName);
+  static override readonly messageName = META.messageName;
+  static readonly typeCrc = META.typeCrc;
+  /** cmd + networkId + positionX/Y/Z + sequenceNumber + speed + yaw + lookAtYaw + useLookAtYaw */
+  static override readonly varCount = 10;
 
   constructor(
     public readonly networkId: NetworkId,
@@ -51,7 +51,7 @@ export class UpdateTransformMessage extends GameNetworkMessage {
   }
 
   encodePayload(stream: IByteStream): void {
-    writeNetworkId(stream, this.networkId);
+    NetworkIdCodec.encode(stream, this.networkId);
     stream.writeI16(this.positionX);
     stream.writeI16(this.positionY);
     stream.writeI16(this.positionZ);
@@ -63,7 +63,7 @@ export class UpdateTransformMessage extends GameNetworkMessage {
   }
 
   static decodePayload(iter: IReadIterator): UpdateTransformMessage {
-    const networkId = readNetworkId(iter);
+    const networkId = NetworkIdCodec.decode(iter);
     const positionX = iter.readI16();
     const positionY = iter.readI16();
     const positionZ = iter.readI16();
@@ -88,4 +88,4 @@ export class UpdateTransformMessage extends GameNetworkMessage {
   }
 }
 
-registerMessage(UpdateTransformMessage);
+export const UpdateTransformMessageDecoder = registerMessage(asDecoder(UpdateTransformMessage));

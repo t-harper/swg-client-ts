@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { StubByteStream, StubReadIterator } from '../../archive/_stub-byte-stream.js';
+import { ByteStream } from '../../archive/byte-stream.js';
+import { ReadIterator } from '../../archive/read-iterator.js';
 import { ClientPermissionsMessage } from './client-permissions-message.js';
 
 describe('ClientPermissionsMessage', () => {
@@ -10,7 +11,7 @@ describe('ClientPermissionsMessage', () => {
 
   it('encodes 5 bools in addVariable order: login, regular, jedi, tutorial, admin', () => {
     const m = new ClientPermissionsMessage(true, true, false, true, false);
-    const s = new StubByteStream();
+    const s = new ByteStream();
     m.encodePayload(s);
     expect(Array.from(s.toBytes())).toEqual([0x01, 0x01, 0x00, 0x01, 0x00]);
   });
@@ -24,9 +25,9 @@ describe('ClientPermissionsMessage', () => {
         Boolean(bits & 8),
         Boolean(bits & 16),
       );
-      const s = new StubByteStream();
+      const s = new ByteStream();
       m.encodePayload(s);
-      const iter = new StubReadIterator(s.toBytes());
+      const iter = new ReadIterator(s.toBytes());
       const d = ClientPermissionsMessage.decodePayload(iter);
       expect(d.canLogin).toBe(m.canLogin);
       expect(d.canCreateRegularCharacter).toBe(m.canCreateRegularCharacter);

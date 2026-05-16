@@ -19,12 +19,14 @@ describe('LoginClientToken (INBOUND)', () => {
     const bytes = encodeMessage(msg);
 
     // Layout:
+    //   [2]  varCount = 4 (cmd + token + stationId + username) LE = 04 00
     //   [4]  CRC = 0xAAB296C6 LE = c6 96 b2 aa
     //   [4]  token AutoArray count = 4 LE = 04 00 00 00
     //   [4]  token bytes = aa bb cc dd
     //   [4]  stationId = 0x12345678 LE = 78 56 34 12
     //   [2+7] username = 'ts-user' → 07 00 + 't' 's' '-' 'u' 's' 'e' 'r'
     const expected = Buffer.concat([
+      Buffer.from([0x04, 0x00]),
       Buffer.from([0xc6, 0x96, 0xb2, 0xaa]),
       Buffer.from([4, 0, 0, 0]),
       Buffer.from([0xaa, 0xbb, 0xcc, 0xdd]),

@@ -28,19 +28,19 @@
  *   /home/tharper/code/swg-main/src/engine/server/library/serverNetworkMessages/src/shared/centralPlanetServer/GameServerForLoginMessage.h
  */
 
-import { readNetworkId, writeNetworkId } from '../../archive/_stub-byte-stream.js';
+import type { IByteStream, IReadIterator } from '../../archive/interface.js';
+import { NetworkIdCodec } from '../../archive/network-id.js';
 import type { NetworkId } from '../../types.js';
-import {
-  GameNetworkMessage,
-  type IByteStream,
-  type IReadIterator,
-  constcrc,
-  registerMessage,
-} from '../_stub-base.js';
+import { GameNetworkMessage, asDecoder, defineMessageMeta } from '../base.js';
+import { registerMessage } from '../registry.js';
+
+const META = defineMessageMeta('GameServerForLoginMessage');
 
 export class GameServerForLoginMessage extends GameNetworkMessage {
-  static override readonly messageName = 'GameServerForLoginMessage';
-  static readonly typeCrc = constcrc(GameServerForLoginMessage.messageName);
+  static override readonly messageName = META.messageName;
+  static readonly typeCrc = META.typeCrc;
+  /** cmd + stationId + server + characterId */
+  static override readonly varCount = 4;
 
   constructor(
     public readonly stationId: number,
@@ -53,15 +53,17 @@ export class GameServerForLoginMessage extends GameNetworkMessage {
   encodePayload(stream: IByteStream): void {
     stream.writeU32(this.stationId);
     stream.writeU32(this.server);
-    writeNetworkId(stream, this.characterId);
+    NetworkIdCodec.encode(stream, this.characterId);
   }
 
   static decodePayload(iter: IReadIterator): GameServerForLoginMessage {
     const stationId = iter.readU32();
     const server = iter.readU32();
-    const characterId = readNetworkId(iter);
+    const characterId = NetworkIdCodec.decode(iter);
     return new GameServerForLoginMessage(stationId, server, characterId);
   }
 }
 
-registerMessage(GameServerForLoginMessage);
+export const GameServerForLoginMessageDecoder = registerMessage(
+  asDecoder(GameServerForLoginMessage),
+);

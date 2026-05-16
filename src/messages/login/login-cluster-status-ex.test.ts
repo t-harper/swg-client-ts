@@ -43,19 +43,19 @@ describe('LoginClusterStatusEx (INBOUND)', () => {
       },
     ]);
     const bytes = encodeMessage(msg);
-    // 4 CRC + 4 count + 4 clusterId + 2 empty branch + 2 empty netVer + 5 * 4 reserved = 8 + 28 = 36
-    expect(bytes.byteLength).toBe(36);
+    // 2 varCount + 4 CRC + 4 count + 4 clusterId + 2 empty branch + 2 empty netVer + 5 * 4 reserved = 10 + 28 = 38
+    expect(bytes.byteLength).toBe(38);
 
     const view = Buffer.from(bytes);
-    // clusterId at offset 8
-    expect(view.readUInt32LE(8)).toBe(0xdeadbeef);
-    // branch length (0) at offset 12
-    expect(view.readUInt16LE(12)).toBe(0);
-    // networkVersion length (0) at offset 14
+    // clusterId at offset 10 (after 2 varCount + 4 CRC + 4 count)
+    expect(view.readUInt32LE(10)).toBe(0xdeadbeef);
+    // branch length (0) at offset 14
     expect(view.readUInt16LE(14)).toBe(0);
-    // version at offset 16
-    expect(view.readUInt32LE(16)).toBe(1);
-    // reserved4 at offset 32
-    expect(view.readUInt32LE(32)).toBe(5);
+    // networkVersion length (0) at offset 16
+    expect(view.readUInt16LE(16)).toBe(0);
+    // version at offset 18
+    expect(view.readUInt32LE(18)).toBe(1);
+    // reserved4 at offset 34
+    expect(view.readUInt32LE(34)).toBe(5);
   });
 });

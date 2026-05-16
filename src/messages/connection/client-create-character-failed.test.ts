@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { StubByteStream, StubReadIterator } from '../../archive/_stub-byte-stream.js';
+import { ByteStream } from '../../archive/byte-stream.js';
+import { ReadIterator } from '../../archive/read-iterator.js';
 import {
   ClientCreateCharacterFailed,
   type StringId,
@@ -15,9 +16,9 @@ describe('ClientCreateCharacterFailed', () => {
 
   it('round-trips the StringId triple', () => {
     const sid: StringId = { table: 'ui_charcreate', textIndex: 0, name: 'name_too_long' };
-    const s = new StubByteStream();
+    const s = new ByteStream();
     writeStringId(s, sid);
-    const d = readStringId(new StubReadIterator(s.toBytes()));
+    const d = readStringId(new ReadIterator(s.toBytes()));
     expect(d).toEqual(sid);
   });
 
@@ -27,9 +28,9 @@ describe('ClientCreateCharacterFailed', () => {
       textIndex: 0,
       name: 'name_declined',
     });
-    const s = new StubByteStream();
+    const s = new ByteStream();
     m.encodePayload(s);
-    const iter = new StubReadIterator(s.toBytes());
+    const iter = new ReadIterator(s.toBytes());
     const d = ClientCreateCharacterFailed.decodePayload(iter);
     expect(iter.remaining).toBe(0);
     expect(d.name).toBe('BadName');

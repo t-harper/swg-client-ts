@@ -1,9 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import {
-  StubByteStream,
-  StubReadIterator,
-  type Transform,
-} from '../../archive/_stub-byte-stream.js';
+import { ByteStream } from '../../archive/byte-stream.js';
+import { ReadIterator } from '../../archive/read-iterator.js';
+import type { Transform } from '../../archive/transform.js';
 import { SceneCreateObjectByCrc } from './scene-create-object-by-crc.js';
 
 describe('SceneCreateObjectByCrc', () => {
@@ -24,11 +22,11 @@ describe('SceneCreateObjectByCrc', () => {
     // would round-trip to the equivalent negative bigint.
     const id = 0x0011_2233_4455_6677n;
     const m = new SceneCreateObjectByCrc(id, t, 0x12345678, false);
-    const s = new StubByteStream();
+    const s = new ByteStream();
     m.encodePayload(s);
     // Expected size: 8 (netid) + 28 (transform) + 4 (crc) + 1 (bool) = 41
     expect(s.toBytes().length).toBe(41);
-    const iter = new StubReadIterator(s.toBytes());
+    const iter = new ReadIterator(s.toBytes());
     const d = SceneCreateObjectByCrc.decodePayload(iter);
     expect(iter.remaining).toBe(0);
     expect(d.networkId).toBe(id);

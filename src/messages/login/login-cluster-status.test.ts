@@ -59,14 +59,17 @@ describe('LoginClusterStatus (INBOUND, 14-field post-2021 layout)', () => {
     ]);
     const bytes = encodeMessage(msg);
 
-    // 4-byte CRC + 4-byte count + (4 cluster + 2 empty string + 2 + 2 + 4*5 + 1 + 4 + 4 + 1 + 1) = 8 + 41
-    expect(bytes.byteLength).toBe(4 + 4 + 4 + 2 + 2 + 2 + 4 + 4 + 4 + 4 + 4 + 1 + 4 + 4 + 1 + 1);
+    // 2-byte varCount + 4-byte CRC + 4-byte count + (4 cluster + 2 empty string + 2 + 2 + 4*5 + 1 + 4 + 4 + 1 + 1) = 10 + 41
+    expect(bytes.byteLength).toBe(
+      2 + 4 + 4 + 4 + 2 + 2 + 2 + 4 + 4 + 4 + 4 + 4 + 1 + 4 + 4 + 1 + 1,
+    );
 
-    // Spot-check: byte 8 onwards should be 01 00 00 00 (clusterId=1 LE), then 00 00 (empty std::string length)
+    // Spot-check: post-header (offset 2+4=6) starts with count (01 00 00 00),
+    // then clusterId at offset 10 (01 00 00 00), then 00 00 (empty std::string length) at 14, then port at 16.
     const view = Buffer.from(bytes);
-    expect(view.readUInt32LE(8)).toBe(1);
-    expect(view.readUInt16LE(12)).toBe(0);
-    expect(view.readUInt16LE(14)).toBe(44463);
+    expect(view.readUInt32LE(10)).toBe(1);
+    expect(view.readUInt16LE(14)).toBe(0);
+    expect(view.readUInt16LE(16)).toBe(44463);
   });
 
   it('handles -1 (population not available)', () => {

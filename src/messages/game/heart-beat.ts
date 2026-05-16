@@ -13,17 +13,17 @@
  *   /home/tharper/code/swg-main/src/engine/shared/library/sharedNetworkMessages/src/shared/clientGameServer/HeartBeat.{h,cpp}
  */
 
-import {
-  GameNetworkMessage,
-  type IByteStream,
-  type IReadIterator,
-  constcrc,
-  registerMessage,
-} from '../_stub-base.js';
+import type { IByteStream, IReadIterator } from '../../archive/interface.js';
+import { GameNetworkMessage, asDecoder, defineMessageMeta } from '../base.js';
+import { registerMessage } from '../registry.js';
+
+const META = defineMessageMeta('HeartBeat');
 
 export class HeartBeat extends GameNetworkMessage {
-  static override readonly messageName = 'HeartBeat';
-  static readonly typeCrc = constcrc(HeartBeat.messageName);
+  static override readonly messageName = META.messageName;
+  static readonly typeCrc = META.typeCrc;
+  /** cmd only (empty body) */
+  static override readonly varCount = 1;
 
   encodePayload(_stream: IByteStream): void {
     // empty body
@@ -34,4 +34,4 @@ export class HeartBeat extends GameNetworkMessage {
   }
 }
 
-registerMessage(HeartBeat);
+export const HeartBeatDecoder = registerMessage(asDecoder(HeartBeat));

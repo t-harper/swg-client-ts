@@ -10,14 +10,16 @@ describe('ServerNowEpochTime (INBOUND, GenericValueTypeMessage<int32>)', () => {
     expect(ServerNowEpochTime.typeCrc).toBe(0x24b73893);
   });
 
-  it('encodes to [4 CRC][4 int32 LE]', () => {
+  it('encodes to [2 varCount][4 CRC][4 int32 LE]', () => {
     const time = 1_715_864_400; // 2024-05-16ish
     const msg = new ServerNowEpochTime(time);
     const bytes = encodeMessage(msg);
 
+    // [2] varCount = 2 (cmd + value) LE = 02 00
     // [4] CRC = 0x24B73893 LE = 93 38 b7 24
     // [4] int32 time LE
     const expected = Buffer.concat([
+      Buffer.from([0x02, 0x00]),
       Buffer.from([0x93, 0x38, 0xb7, 0x24]),
       (() => {
         const b = Buffer.alloc(4);
@@ -26,7 +28,7 @@ describe('ServerNowEpochTime (INBOUND, GenericValueTypeMessage<int32>)', () => {
       })(),
     ]);
     expect(Array.from(bytes)).toEqual(Array.from(expected));
-    expect(bytes.byteLength).toBe(8);
+    expect(bytes.byteLength).toBe(10);
   });
 
   it('round-trips a typical epoch second value', () => {

@@ -28,6 +28,8 @@ const META = defineMessageMeta('LoginClientToken');
 export class LoginClientToken extends GameNetworkMessage {
   static override readonly messageName = META.messageName;
   static readonly typeCrc = META.typeCrc;
+  /** cmd + token + stationId + username */
+  static override readonly varCount = 4;
 
   constructor(
     public token: Uint8Array = new Uint8Array(),

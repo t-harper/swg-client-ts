@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { StubByteStream, StubReadIterator } from '../../archive/_stub-byte-stream.js';
+import { ByteStream } from '../../archive/byte-stream.js';
+import { ReadIterator } from '../../archive/read-iterator.js';
 import { ClientIdMsg, DEFAULT_CLIENT_VERSION } from './client-id-msg.js';
 
 describe('ClientIdMsg', () => {
@@ -16,11 +17,11 @@ describe('ClientIdMsg', () => {
   it('round-trips encode + decode', () => {
     const token = new Uint8Array([0xde, 0xad, 0xbe, 0xef, 0x12, 0x34, 0x56, 0x78]);
     const msg = new ClientIdMsg(token, 0, DEFAULT_CLIENT_VERSION);
-    const stream = new StubByteStream();
+    const stream = new ByteStream();
     msg.encodePayload(stream);
     const bytes = stream.toBytes();
 
-    const iter = new StubReadIterator(bytes);
+    const iter = new ReadIterator(bytes);
     const decoded = ClientIdMsg.decodePayload(iter);
 
     expect(decoded.gameBitsToClear).toBe(0);
@@ -33,7 +34,7 @@ describe('ClientIdMsg', () => {
     // gameBitsToClear=0x01020304, token=[0xaa,0xbb], version="v1"
     const token = new Uint8Array([0xaa, 0xbb]);
     const msg = new ClientIdMsg(token, 0x01020304, 'v1');
-    const stream = new StubByteStream();
+    const stream = new ByteStream();
     msg.encodePayload(stream);
 
     // Expected wire bytes (little-endian):

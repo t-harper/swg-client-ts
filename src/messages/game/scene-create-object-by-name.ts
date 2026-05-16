@@ -12,27 +12,21 @@
  *   /home/tharper/code/swg-main/src/engine/shared/library/sharedNetworkMessages/src/shared/clientGameServer/SceneChannelMessages.{h,cpp}
  */
 
-import {
-  type Transform,
-  readNetworkId,
-  readString,
-  readTransform,
-  writeNetworkId,
-  writeString,
-  writeTransform,
-} from '../../archive/_stub-byte-stream.js';
+import type { IByteStream, IReadIterator } from '../../archive/interface.js';
+import { NetworkIdCodec } from '../../archive/network-id.js';
+import { readStdString, writeStdString } from '../../archive/string.js';
+import { type Transform, TransformCodec } from '../../archive/transform.js';
 import type { NetworkId } from '../../types.js';
-import {
-  GameNetworkMessage,
-  type IByteStream,
-  type IReadIterator,
-  constcrc,
-  registerMessage,
-} from '../_stub-base.js';
+import { GameNetworkMessage, asDecoder, defineMessageMeta } from '../base.js';
+import { registerMessage } from '../registry.js';
+
+const META = defineMessageMeta('SceneCreateObjectByName');
 
 export class SceneCreateObjectByName extends GameNetworkMessage {
-  static override readonly messageName = 'SceneCreateObjectByName';
-  static readonly typeCrc = constcrc(SceneCreateObjectByName.messageName);
+  static override readonly messageName = META.messageName;
+  static readonly typeCrc = META.typeCrc;
+  /** cmd + networkId + transform + templateName + hyperspace */
+  static override readonly varCount = 5;
 
   constructor(
     public readonly networkId: NetworkId,
@@ -44,19 +38,19 @@ export class SceneCreateObjectByName extends GameNetworkMessage {
   }
 
   encodePayload(stream: IByteStream): void {
-    writeNetworkId(stream, this.networkId);
-    writeTransform(stream, this.transform);
-    writeString(stream, this.templateName);
+    NetworkIdCodec.encode(stream, this.networkId);
+    TransformCodec.encode(stream, this.transform);
+    writeStdString(stream, this.templateName);
     stream.writeBool(this.hyperspace);
   }
 
   static decodePayload(iter: IReadIterator): SceneCreateObjectByName {
-    const networkId = readNetworkId(iter);
-    const transform = readTransform(iter);
-    const templateName = readString(iter);
+    const networkId = NetworkIdCodec.decode(iter);
+    const transform = TransformCodec.decode(iter);
+    const templateName = readStdString(iter);
     const hyperspace = iter.readBool();
     return new SceneCreateObjectByName(networkId, transform, templateName, hyperspace);
   }
 }
 
-registerMessage(SceneCreateObjectByName);
+export const SceneCreateObjectByNameDecoder = registerMessage(asDecoder(SceneCreateObjectByName));

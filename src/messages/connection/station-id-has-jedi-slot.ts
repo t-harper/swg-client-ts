@@ -16,17 +16,17 @@
  *   /home/tharper/code/swg-main/src/engine/shared/library/sharedNetworkMessages/src/shared/common/GenericValueTypeMessage.h
  */
 
-import {
-  GameNetworkMessage,
-  type IByteStream,
-  type IReadIterator,
-  constcrc,
-  registerMessage,
-} from '../_stub-base.js';
+import type { IByteStream, IReadIterator } from '../../archive/interface.js';
+import { GameNetworkMessage, asDecoder, defineMessageMeta } from '../base.js';
+import { registerMessage } from '../registry.js';
+
+const META = defineMessageMeta('StationIdHasJediSlot');
 
 export class StationIdHasJediSlot extends GameNetworkMessage {
-  static override readonly messageName = 'StationIdHasJediSlot';
-  static readonly typeCrc = constcrc(StationIdHasJediSlot.messageName);
+  static override readonly messageName = META.messageName;
+  static readonly typeCrc = META.typeCrc;
+  /** cmd + value (GenericValueTypeMessage<int>) */
+  static override readonly varCount = 2;
 
   constructor(public readonly value: number) {
     super();
@@ -41,4 +41,4 @@ export class StationIdHasJediSlot extends GameNetworkMessage {
   }
 }
 
-registerMessage(StationIdHasJediSlot);
+export const StationIdHasJediSlotDecoder = registerMessage(asDecoder(StationIdHasJediSlot));

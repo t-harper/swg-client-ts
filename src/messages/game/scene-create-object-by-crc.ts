@@ -13,25 +13,20 @@
  *   /home/tharper/code/swg-main/src/engine/shared/library/sharedNetworkMessages/src/shared/clientGameServer/SceneChannelMessages.{h,cpp}
  */
 
-import {
-  type Transform,
-  readNetworkId,
-  readTransform,
-  writeNetworkId,
-  writeTransform,
-} from '../../archive/_stub-byte-stream.js';
+import type { IByteStream, IReadIterator } from '../../archive/interface.js';
+import { NetworkIdCodec } from '../../archive/network-id.js';
+import { type Transform, TransformCodec } from '../../archive/transform.js';
 import type { NetworkId } from '../../types.js';
-import {
-  GameNetworkMessage,
-  type IByteStream,
-  type IReadIterator,
-  constcrc,
-  registerMessage,
-} from '../_stub-base.js';
+import { GameNetworkMessage, asDecoder, defineMessageMeta } from '../base.js';
+import { registerMessage } from '../registry.js';
+
+const META = defineMessageMeta('SceneCreateObjectByCrc');
 
 export class SceneCreateObjectByCrc extends GameNetworkMessage {
-  static override readonly messageName = 'SceneCreateObjectByCrc';
-  static readonly typeCrc = constcrc(SceneCreateObjectByCrc.messageName);
+  static override readonly messageName = META.messageName;
+  static readonly typeCrc = META.typeCrc;
+  /** cmd + networkId + transform + templateCrc + hyperspace */
+  static override readonly varCount = 5;
 
   constructor(
     public readonly networkId: NetworkId,
@@ -43,19 +38,19 @@ export class SceneCreateObjectByCrc extends GameNetworkMessage {
   }
 
   encodePayload(stream: IByteStream): void {
-    writeNetworkId(stream, this.networkId);
-    writeTransform(stream, this.transform);
+    NetworkIdCodec.encode(stream, this.networkId);
+    TransformCodec.encode(stream, this.transform);
     stream.writeU32(this.templateCrc);
     stream.writeBool(this.hyperspace);
   }
 
   static decodePayload(iter: IReadIterator): SceneCreateObjectByCrc {
-    const networkId = readNetworkId(iter);
-    const transform = readTransform(iter);
+    const networkId = NetworkIdCodec.decode(iter);
+    const transform = TransformCodec.decode(iter);
     const templateCrc = iter.readU32();
     const hyperspace = iter.readBool();
     return new SceneCreateObjectByCrc(networkId, transform, templateCrc, hyperspace);
   }
 }
 
-registerMessage(SceneCreateObjectByCrc);
+export const SceneCreateObjectByCrcDecoder = registerMessage(asDecoder(SceneCreateObjectByCrc));

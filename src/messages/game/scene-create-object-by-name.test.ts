@@ -1,9 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import {
-  StubByteStream,
-  StubReadIterator,
-  type Transform,
-} from '../../archive/_stub-byte-stream.js';
+import { ByteStream } from '../../archive/byte-stream.js';
+import { ReadIterator } from '../../archive/read-iterator.js';
+import type { Transform } from '../../archive/transform.js';
 import { SceneCreateObjectByName } from './scene-create-object-by-name.js';
 
 describe('SceneCreateObjectByName', () => {
@@ -23,9 +21,9 @@ describe('SceneCreateObjectByName', () => {
       'object/creature/player/shared_human_male.iff',
       true,
     );
-    const s = new StubByteStream();
+    const s = new ByteStream();
     m.encodePayload(s);
-    const iter = new StubReadIterator(s.toBytes());
+    const iter = new ReadIterator(s.toBytes());
     const d = SceneCreateObjectByName.decodePayload(iter);
     expect(iter.remaining).toBe(0);
     expect(d.networkId).toBe(42n);

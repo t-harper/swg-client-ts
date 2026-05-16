@@ -12,21 +12,21 @@
  *     ClientIdMsg::ClientIdMsg constructor
  */
 
-import { readString, writeString } from '../../archive/_stub-byte-stream.js';
-import {
-  GameNetworkMessage,
-  type IByteStream,
-  type IReadIterator,
-  constcrc,
-  registerMessage,
-} from '../_stub-base.js';
+import type { IByteStream, IReadIterator } from '../../archive/interface.js';
+import { readStdString, writeStdString } from '../../archive/string.js';
+import { GameNetworkMessage, asDecoder, defineMessageMeta } from '../base.js';
+import { registerMessage } from '../registry.js';
 
 /** SWG client-version string the server expects (default.cfg / NetworkVersionId). */
 export const DEFAULT_CLIENT_VERSION = '20100225-17:43';
 
+const META = defineMessageMeta('ClientIdMsg');
+
 export class ClientIdMsg extends GameNetworkMessage {
-  static override readonly messageName = 'ClientIdMsg';
-  static readonly typeCrc = constcrc(ClientIdMsg.messageName);
+  static override readonly messageName = META.messageName;
+  static readonly typeCrc = META.typeCrc;
+  /** cmd + gameBitsToClear + token + version */
+  static override readonly varCount = 4;
 
   constructor(
     public readonly token: Uint8Array,
@@ -41,16 +41,16 @@ export class ClientIdMsg extends GameNetworkMessage {
     // AutoArray<unsigned char>: [u32 count][bytes...]
     stream.writeU32(this.token.length);
     stream.writeBytes(this.token);
-    writeString(stream, this.version);
+    writeStdString(stream, this.version);
   }
 
   static decodePayload(iter: IReadIterator): ClientIdMsg {
     const gameBitsToClear = iter.readU32();
     const tokenLen = iter.readU32();
     const token = iter.readBytes(tokenLen);
-    const version = readString(iter);
+    const version = readStdString(iter);
     return new ClientIdMsg(token, gameBitsToClear, version);
   }
 }
 
-registerMessage(ClientIdMsg);
+export const ClientIdMsgDecoder = registerMessage(asDecoder(ClientIdMsg));

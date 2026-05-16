@@ -22,19 +22,13 @@
  *   /home/tharper/code/swg-main/src/engine/shared/library/sharedNetworkMessages/src/shared/clientGameServer/ClientCentralMessages.{h,cpp}
  */
 
-import {
-  readString,
-  readUnicodeString,
-  writeString,
-  writeUnicodeString,
-} from '../../archive/_stub-byte-stream.js';
-import {
-  GameNetworkMessage,
-  type IByteStream,
-  type IReadIterator,
-  constcrc,
-  registerMessage,
-} from '../_stub-base.js';
+import type { IByteStream, IReadIterator } from '../../archive/interface.js';
+import { readStdString, writeStdString } from '../../archive/string.js';
+import { readUnicodeString, writeUnicodeString } from '../../archive/unicode-string.js';
+import { GameNetworkMessage, asDecoder, defineMessageMeta } from '../base.js';
+import { registerMessage } from '../registry.js';
+
+const META = defineMessageMeta('ClientCreateCharacter');
 
 export interface ClientCreateCharacterParams {
   characterName: string;
@@ -53,8 +47,10 @@ export interface ClientCreateCharacterParams {
 }
 
 export class ClientCreateCharacter extends GameNetworkMessage {
-  static override readonly messageName = 'ClientCreateCharacter';
-  static readonly typeCrc = constcrc(ClientCreateCharacter.messageName);
+  static override readonly messageName = META.messageName;
+  static readonly typeCrc = META.typeCrc;
+  /** cmd + 13 fields */
+  static override readonly varCount = 14;
 
   readonly characterName: string;
   readonly templateName: string;
@@ -88,35 +84,35 @@ export class ClientCreateCharacter extends GameNetworkMessage {
   }
 
   encodePayload(stream: IByteStream): void {
-    writeString(stream, this.appearanceData);
+    writeStdString(stream, this.appearanceData);
     writeUnicodeString(stream, this.characterName);
-    writeString(stream, this.templateName);
-    writeString(stream, this.startingLocation);
-    writeString(stream, this.hairTemplateName);
-    writeString(stream, this.hairAppearanceData);
-    writeString(stream, this.profession);
+    writeStdString(stream, this.templateName);
+    writeStdString(stream, this.startingLocation);
+    writeStdString(stream, this.hairTemplateName);
+    writeStdString(stream, this.hairAppearanceData);
+    writeStdString(stream, this.profession);
     stream.writeBool(this.jedi);
     stream.writeF32(this.scaleFactor);
     writeUnicodeString(stream, this.biography);
     stream.writeBool(this.useNewbieTutorial);
-    writeString(stream, this.skillTemplate);
-    writeString(stream, this.workingSkill);
+    writeStdString(stream, this.skillTemplate);
+    writeStdString(stream, this.workingSkill);
   }
 
   static decodePayload(iter: IReadIterator): ClientCreateCharacter {
-    const appearanceData = readString(iter);
+    const appearanceData = readStdString(iter);
     const characterName = readUnicodeString(iter);
-    const templateName = readString(iter);
-    const startingLocation = readString(iter);
-    const hairTemplateName = readString(iter);
-    const hairAppearanceData = readString(iter);
-    const profession = readString(iter);
+    const templateName = readStdString(iter);
+    const startingLocation = readStdString(iter);
+    const hairTemplateName = readStdString(iter);
+    const hairAppearanceData = readStdString(iter);
+    const profession = readStdString(iter);
     const jedi = iter.readBool();
     const scaleFactor = iter.readF32();
     const biography = readUnicodeString(iter);
     const useNewbieTutorial = iter.readBool();
-    const skillTemplate = readString(iter);
-    const workingSkill = readString(iter);
+    const skillTemplate = readStdString(iter);
+    const workingSkill = readStdString(iter);
     return new ClientCreateCharacter({
       characterName,
       templateName,
@@ -135,4 +131,4 @@ export class ClientCreateCharacter extends GameNetworkMessage {
   }
 }
 
-registerMessage(ClientCreateCharacter);
+export const ClientCreateCharacterDecoder = registerMessage(asDecoder(ClientCreateCharacter));

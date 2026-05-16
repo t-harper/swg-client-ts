@@ -10,31 +10,31 @@
  *   /home/tharper/code/swg-main/src/engine/shared/library/sharedNetworkMessages/src/shared/clientGameServer/SceneChannelMessages.{h,cpp}
  */
 
-import { readNetworkId, writeNetworkId } from '../../archive/_stub-byte-stream.js';
+import type { IByteStream, IReadIterator } from '../../archive/interface.js';
+import { NetworkIdCodec } from '../../archive/network-id.js';
 import type { NetworkId } from '../../types.js';
-import {
-  GameNetworkMessage,
-  type IByteStream,
-  type IReadIterator,
-  constcrc,
-  registerMessage,
-} from '../_stub-base.js';
+import { GameNetworkMessage, asDecoder, defineMessageMeta } from '../base.js';
+import { registerMessage } from '../registry.js';
+
+const META = defineMessageMeta('SceneEndBaselines');
 
 export class SceneEndBaselines extends GameNetworkMessage {
-  static override readonly messageName = 'SceneEndBaselines';
-  static readonly typeCrc = constcrc(SceneEndBaselines.messageName);
+  static override readonly messageName = META.messageName;
+  static readonly typeCrc = META.typeCrc;
+  /** cmd + networkId */
+  static override readonly varCount = 2;
 
   constructor(public readonly networkId: NetworkId) {
     super();
   }
 
   encodePayload(stream: IByteStream): void {
-    writeNetworkId(stream, this.networkId);
+    NetworkIdCodec.encode(stream, this.networkId);
   }
 
   static decodePayload(iter: IReadIterator): SceneEndBaselines {
-    return new SceneEndBaselines(readNetworkId(iter));
+    return new SceneEndBaselines(NetworkIdCodec.decode(iter));
   }
 }
 
-registerMessage(SceneEndBaselines);
+export const SceneEndBaselinesDecoder = registerMessage(asDecoder(SceneEndBaselines));

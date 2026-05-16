@@ -37,6 +37,8 @@ export interface LoginClusterStatusExData {
 export class LoginClusterStatusEx extends GameNetworkMessage {
   static override readonly messageName = META.messageName;
   static readonly typeCrc = META.typeCrc;
+  /** cmd + data */
+  static override readonly varCount = 2;
 
   constructor(public clusters: LoginClusterStatusExData[] = []) {
     super();

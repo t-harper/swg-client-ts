@@ -23,6 +23,8 @@ const META = defineMessageMeta('LoginIncorrectClientId');
 export class LoginIncorrectClientId extends GameNetworkMessage {
   static override readonly messageName = META.messageName;
   static readonly typeCrc = META.typeCrc;
+  /** cmd + serverId + serverApplicationVersion */
+  static override readonly varCount = 3;
 
   constructor(
     public serverId = '',

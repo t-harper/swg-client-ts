@@ -15,6 +15,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { SwgClient } from '../../src/client/swg-client.js';
+import { ObjControllerMessage } from '../../src/messages/game/obj-controller-message.js';
 import { liveCredentials } from './helpers.js';
 
 const LIVE = process.env.LIVE === '1';
@@ -69,5 +70,25 @@ describe.skipIf(!LIVE)('live zone-in and logout (Stages 1 → 2 → 3 → 4)', (
     // No protocol errors mid-flow.
     expect(result.receivedErrorMessage, 'no ErrorMessage during run').toBe(false);
     expect(recvNames, 'no LoginIncorrectClientId').not.toContain('LoginIncorrectClientId');
+
+    // Sanity: ObjControllerMessage subtype dispatch should round-trip every
+    // ObjControllerMessage we received. The subtype registry might not have a
+    // decoder for every CRC seen on the live wire (we model the 8 most-common
+    // subtypes), so this isn't a hard "at least N decoded" assertion — but
+    // every event SHOULD carry a non-null `subtypeCrcHex` for diagnostics,
+    // and any `decodedSubtype` present must be well-formed.
+    const objControllerEvents = result.transcript.filter(
+      (e) => e.direction === 'recv' && e.messageName === 'ObjControllerMessage',
+    );
+    for (const e of objControllerEvents) {
+      const decoded = 'decoded' in e ? e.decoded : null;
+      if (decoded instanceof ObjControllerMessage) {
+        expect(decoded.subtypeCrcHex).toMatch(/^0x[0-9a-f]{8}$/);
+        if (decoded.decodedSubtype !== null) {
+          expect(typeof decoded.decodedSubtype.kind).toBe('string');
+          expect(decoded.decodedSubtype.kind.length).toBeGreaterThan(0);
+        }
+      }
+    }
   }, 60_000);
 });

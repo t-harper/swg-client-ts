@@ -3,15 +3,25 @@ import { ByteStream } from '../../../archive/byte-stream.js';
 import { ReadIterator } from '../../../archive/read-iterator.js';
 // Side-effect imports: every subtype self-registers on first load.
 import './index.js';
+import { encodeMessage, parseHeader } from '../../base.js';
+import { messageRegistry } from '../../registry.js';
+import { ObjControllerMessage } from '../obj-controller-message.js';
+import { GroupInviteDecoder } from './group-invite.js';
 import {
   type ObjControllerSubtypeDecoder,
   ObjControllerSubtypeIds,
   objControllerRegistry,
   tryDecodeSubtype,
 } from './registry.js';
+import {
+  type SpatialChatData,
+  SpatialChatReceiveDecoder,
+  SpatialChatType,
+} from './spatial-chat.js';
+import { StartDanceDecoder } from './start-dance.js';
 
 describe('ObjController subtype registry', () => {
-  it('has all 8 modeled subtypes registered', () => {
+  it('has every entry in ObjControllerSubtypeIds registered', () => {
     for (const [name, id] of Object.entries(ObjControllerSubtypeIds)) {
       const found = objControllerRegistry.getById(id);
       expect(found, `${name} (id=${id}) not registered`).toBeDefined();
@@ -63,5 +73,109 @@ describe('ObjController subtype registry', () => {
       (b) => new ReadIterator(b),
     );
     expect(result).toBeNull();
+  });
+});
+
+/**
+ * Full parent-message dispatch tests. Build an `ObjControllerMessage` whose
+ * `message` is the subtype id, encode it via the top-level `encodeMessage`,
+ * then parse it back through `parseHeader` + the message registry and assert
+ * the subtype dispatched correctly.
+ */
+describe('ObjController parent-message dispatch', () => {
+  it('dispatches a SpatialChat receive trailer (CM_spatialChatReceive)', () => {
+    const chat: SpatialChatData = {
+      sourceId: 0x100n,
+      targetId: 0n,
+      text: 'hello',
+      flags: 0,
+      volume: 0,
+      chatType: SpatialChatType.Say,
+      moodType: 0,
+      language: 0,
+      outOfBand: '',
+      sourceName: '',
+    };
+    const s = new ByteStream();
+    SpatialChatReceiveDecoder.encode(s, chat);
+
+    const parent = new ObjControllerMessage(
+      0x23, // typical CLIENT_TO_AUTH_SERVER flags
+      ObjControllerSubtypeIds.CM_spatialChatReceive,
+      0x100n, // sourceCreatureId
+      0,
+      s.toBytes(),
+    );
+    const bytes = encodeMessage(parent);
+
+    const { typeCrc, payload } = parseHeader(bytes);
+    const decoder = messageRegistry.getByCrc(typeCrc);
+    if (!decoder) throw new Error('ObjControllerMessage decoder not registered');
+    const decoded = decoder.decodePayload(payload);
+    expect(decoded).toBeInstanceOf(ObjControllerMessage);
+    const om = decoded as ObjControllerMessage;
+    expect(om.message).toBe(ObjControllerSubtypeIds.CM_spatialChatReceive);
+    expect(om.decodedSubtype).not.toBeNull();
+    expect(om.decodedSubtype?.kind).toBe('SpatialChat');
+    const data = om.decodedSubtype?.data as SpatialChatData;
+    expect(data.sourceId).toBe(0x100n);
+    expect(data.text).toBe('hello');
+    expect(data.chatType).toBe(SpatialChatType.Say);
+  });
+
+  it('dispatches a StartDance trailer (CM_setPerformanceType)', () => {
+    const s = new ByteStream();
+    StartDanceDecoder.encode(s, { performanceType: 12 });
+
+    const parent = new ObjControllerMessage(
+      0x23,
+      ObjControllerSubtypeIds.CM_setPerformanceType,
+      0xabcn, // actor creature id
+      0,
+      s.toBytes(),
+    );
+    const bytes = encodeMessage(parent);
+
+    const { typeCrc, payload } = parseHeader(bytes);
+    const decoder = messageRegistry.getByCrc(typeCrc);
+    if (!decoder) throw new Error('ObjControllerMessage decoder not registered');
+    const decoded = decoder.decodePayload(payload) as ObjControllerMessage;
+    expect(decoded.message).toBe(ObjControllerSubtypeIds.CM_setPerformanceType);
+    expect(decoded.decodedSubtype?.kind).toBe('StartDance');
+    const data = decoded.decodedSubtype?.data as { performanceType: number };
+    expect(data.performanceType).toBe(12);
+  });
+
+  it('dispatches a GroupInvite trailer (CM_setGroupInviter)', () => {
+    const s = new ByteStream();
+    GroupInviteDecoder.encode(s, {
+      inviterName: 'Wedge',
+      inviterId: 0xfeed_facen,
+      inviterShipId: 0n,
+    });
+
+    const parent = new ObjControllerMessage(
+      0x23,
+      ObjControllerSubtypeIds.CM_setGroupInviter,
+      0xabcdn, // invitee creature id
+      0,
+      s.toBytes(),
+    );
+    const bytes = encodeMessage(parent);
+
+    const { typeCrc, payload } = parseHeader(bytes);
+    const decoder = messageRegistry.getByCrc(typeCrc);
+    if (!decoder) throw new Error('ObjControllerMessage decoder not registered');
+    const decoded = decoder.decodePayload(payload) as ObjControllerMessage;
+    expect(decoded.message).toBe(ObjControllerSubtypeIds.CM_setGroupInviter);
+    expect(decoded.decodedSubtype?.kind).toBe('GroupInvite');
+    const data = decoded.decodedSubtype?.data as {
+      inviterName: string;
+      inviterId: bigint;
+      inviterShipId: bigint;
+    };
+    expect(data.inviterName).toBe('Wedge');
+    expect(data.inviterId).toBe(0xfeed_facen);
+    expect(data.inviterShipId).toBe(0n);
   });
 });

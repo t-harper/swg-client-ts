@@ -14,6 +14,7 @@
  *   };
  */
 
+import { ByteStream } from '../../archive/byte-stream.js';
 import {
   type ChatAvatarId,
   ChatInstantMessageToCharacter,
@@ -24,12 +25,20 @@ import {
 } from '../../messages/game/chat/index.js';
 import { ClientOpenContainerMessage } from '../../messages/game/client-open-container.js';
 import {
+  CLIENT_TO_AUTH_SERVER_FLAGS,
   CommandQueueEnqueue,
-  hashCommand,
   NO_TARGET,
+  hashCommand,
   wrapAsObjControllerMessage,
 } from '../../messages/game/command-queue/index.js';
 import { LogoutMessage } from '../../messages/game/logout-message.js';
+import { ObjControllerMessage } from '../../messages/game/obj-controller-message.js';
+import {
+  ObjControllerSubtypeIds,
+  SpatialChatSendDecoder,
+  SpatialChatType,
+  makeSpatialChatData,
+} from '../../messages/game/obj-controller/index.js';
 import type { GameNetworkMessage } from '../../messages/interface.js';
 import type { NetworkId, SceneStart, Vector3 } from '../../types.js';
 import type { MessageDispatcher } from '../dispatcher.js';
@@ -55,6 +64,22 @@ const POSTURE_COMMAND: Record<Posture, string> = {
 };
 
 export type ScenarioFn = (ctx: ScriptContext) => Promise<void>;
+
+/** Optional overrides for `ctx.say()` — directed chat, shout, mood, etc. */
+export interface SayOptions {
+  /** Directed chat (e.g. `/whisper`); `0n` ⇒ broadcast. Default: 0n. */
+  targetId?: NetworkId;
+  /** Chat type — Say (0), Shout (1), Whisper (2), or other. Default: Say. */
+  chatType?: number;
+  /** Mood index (from moodAnimation.iff). Default: 0 (no mood). */
+  moodType?: number;
+  /** Language enum (0..255). Default: 0 (basic). */
+  language?: number;
+  /** Bit-flags. Default: 0. */
+  flags?: number;
+  /** Volume hint. Default: 0. */
+  volume?: number;
+}
 
 export interface ScriptResult {
   /** Wall-clock elapsed time the scenario function took, in ms. */
@@ -159,12 +184,17 @@ export interface ScriptContext {
   /** Send in-game mail (persistent message) to `target`. */
   sendMail(target: string | ChatAvatarId, subject: string, body: string): number;
   /**
-   * Best-effort spatial-chat sugar. Today this routes through tell-to-self
-   * because true spatial chat is an ObjControllerMessage subtype
-   * (CM_spatialChat). When that decoder lands the implementation can switch
-   * without changing call sites.
+   * Speak spatial chat (the wire path behind `/say`). Sends a single
+   * `ObjControllerMessage` whose `message = CM_spatialChatSend` and whose
+   * trailer is a `MessageQueueSpatialChat` (sourceId = player, targetId = 0,
+   * chatType = Say, all other fields default). Returns the chat-sequence id
+   * used so callers can correlate with any future sequence-based ack.
+   *
+   * For directed `/whisper`-style chat pass a non-zero `targetId` via the
+   * `opts` argument; for `/shout` set `chatType`. Most callers want the
+   * defaults — say(text).
    */
-  say(text: string): number;
+  say(text: string, opts?: SayOptions): number;
   /** Request the server's chat-room list (server responds with ChatRoomList). */
   requestChannelList(): void;
 }
@@ -306,8 +336,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
 
     tell(targetName, text): number {
       const seq = ctx.nextChatSequence();
-      const avatar =
-        typeof targetName === 'string' ? chatAvatarId(targetName) : targetName;
+      const avatar = typeof targetName === 'string' ? chatAvatarId(targetName) : targetName;
       ctx.send(new ChatInstantMessageToCharacter(avatar, text, '', seq));
       return seq;
     },
@@ -325,14 +354,33 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
       return seq;
     },
 
-    say(text): number {
-      // Tell-to-self as a placeholder until spatial-chat subtype lands in
-      // ObjController. Exercises the chat pipeline end-to-end.
-      const selfName = (opts.sceneStart.templateName.split('/').pop() ?? 'self').replace(
-        /\.iff$/,
-        '',
+    say(text, sayOpts): number {
+      const seq = ctx.nextChatSequence();
+      const playerId = opts.sceneStart.playerNetworkId;
+      const data = makeSpatialChatData(playerId, text, {
+        targetId: sayOpts?.targetId ?? 0n,
+        chatType: sayOpts?.chatType ?? SpatialChatType.Say,
+        moodType: sayOpts?.moodType ?? 0,
+        language: sayOpts?.language ?? 0,
+        flags: sayOpts?.flags ?? 0,
+        volume: sayOpts?.volume ?? 0,
+      });
+      // Pack the spatial-chat trailer
+      const stream = new ByteStream();
+      SpatialChatSendDecoder.encode(stream, data);
+      // Wrap in an ObjControllerMessage with message = CM_spatialChatSend.
+      // Pre-populate `decodedSubtype` so transcripts & test introspection
+      // see the structured data without round-tripping through the wire.
+      const wrapped = new ObjControllerMessage(
+        CLIENT_TO_AUTH_SERVER_FLAGS,
+        ObjControllerSubtypeIds.CM_spatialChatSend,
+        playerId,
+        0,
+        stream.toBytes(),
+        { kind: SpatialChatSendDecoder.kind, data },
       );
-      return ctx.tell(selfName, text);
+      ctx.send(wrapped);
+      return seq;
     },
 
     requestChannelList(): void {

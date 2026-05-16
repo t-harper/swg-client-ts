@@ -16,6 +16,12 @@ import {
 import { HeartBeat } from '../../messages/game/heart-beat.js';
 import { LogoutMessage } from '../../messages/game/logout-message.js';
 import { ObjControllerMessage } from '../../messages/game/obj-controller-message.js';
+import {
+  ObjControllerSubtypeIds,
+  type SpatialChatData,
+  SpatialChatSendKind,
+  SpatialChatType,
+} from '../../messages/game/obj-controller/index.js';
 import { didScriptLogout, runScript } from './context.js';
 import { createFakeContext } from './test-helpers.js';
 
@@ -237,6 +243,52 @@ describe('ScriptContext: chat primitives', () => {
       c.requestChannelList();
     }, ctx);
     expect(result.sendsCount).toBe(3);
+  });
+
+  it('say sends one ObjControllerMessage with CM_spatialChatSend and embedded text', () => {
+    const playerId = 0x501n;
+    const { ctx, sent } = createFakeContext({ playerNetworkId: playerId });
+    const seq = ctx.say('hello world');
+    expect(seq).toBe(1);
+    expect(sent.length).toBe(1);
+    const wrapped = sent[0];
+    expect(wrapped).toBeInstanceOf(ObjControllerMessage);
+    const om = wrapped as ObjControllerMessage;
+    expect(om.message).toBe(ObjControllerSubtypeIds.CM_spatialChatSend);
+    expect(om.networkId).toBe(playerId);
+    // The decoded subtype should be SpatialChatSend (kind set on the
+    // send-side decoder) with our text and sane defaults.
+    expect(om.decodedSubtype?.kind).toBe(SpatialChatSendKind);
+    const data = om.decodedSubtype?.data as SpatialChatData;
+    expect(data.sourceId).toBe(playerId);
+    expect(data.targetId).toBe(0n);
+    expect(data.text).toBe('hello world');
+    expect(data.chatType).toBe(SpatialChatType.Say);
+  });
+
+  it('say with chatType=Shout overrides the default', () => {
+    const { ctx, sent } = createFakeContext({ playerNetworkId: 0x42n });
+    ctx.say('WHAT?!', { chatType: SpatialChatType.Shout });
+    const om = sent[0] as ObjControllerMessage;
+    const data = om.decodedSubtype?.data as SpatialChatData;
+    expect(data.chatType).toBe(SpatialChatType.Shout);
+    expect(data.text).toBe('WHAT?!');
+  });
+
+  it('say with targetId issues a whisper-style directed chat', () => {
+    const { ctx, sent } = createFakeContext({ playerNetworkId: 0x42n });
+    ctx.say('psst', { targetId: 0x100n, chatType: SpatialChatType.Whisper });
+    const om = sent[0] as ObjControllerMessage;
+    const data = om.decodedSubtype?.data as SpatialChatData;
+    expect(data.targetId).toBe(0x100n);
+    expect(data.chatType).toBe(SpatialChatType.Whisper);
+  });
+
+  it('say uses the chat-sequence counter (shared with tell/sendToChannel)', () => {
+    const { ctx } = createFakeContext();
+    expect(ctx.say('a')).toBe(1);
+    expect(ctx.tell('Friend', 'b')).toBe(2);
+    expect(ctx.say('c')).toBe(3);
   });
 
   // ReadIterator is imported for parity with combat tests if future chat

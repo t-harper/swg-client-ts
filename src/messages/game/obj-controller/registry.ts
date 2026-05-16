@@ -127,7 +127,7 @@ export function tryDecodeSubtype(
 }
 
 /**
- * The 8 controller-message ids we model. Exported as named constants so
+ * The controller-message ids we model. Exported as named constants so
  * tests and consumers can reference them by name rather than literal int.
  *
  * Source line numbers refer to entry order in GameControllerMessage.def
@@ -135,11 +135,19 @@ export function tryDecodeSubtype(
  */
 export const ObjControllerSubtypeIds = {
   CM_combatAction: 204,
+  CM_spatialChatSend: 243,
+  CM_spatialChatReceive: 244,
+  CM_secureTrade: 277,
   CM_setPosture: 305,
   CM_combatSpam: 308,
   CM_sitOnObject: 315,
   CM_objectMenuRequest: 326,
   CM_objectMenuResponse: 327,
+  CM_setGroupInviter: 351,
+  CM_setPerformanceType: 352,
+  CM_scriptTransferMoney: 364,
   CM_alterHitPoints: 384,
+  CM_setCombatTarget: 386,
+  CM_setGroup: 421,
   CM_setMood: 422,
 } as const;

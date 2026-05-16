@@ -27,6 +27,12 @@ export type {
   CombatSpamMissDetails,
   StringIdValue,
 } from './combat-spam.js';
+export { DefenderStatusDecoder, DefenderStatusKind } from './defender-status.js';
+export type { DefenderStatusData } from './defender-status.js';
+export { GroupAcceptDecoder, GroupAcceptKind } from './group-accept.js';
+export type { GroupAcceptData } from './group-accept.js';
+export { GroupInviteDecoder, GroupInviteKind } from './group-invite.js';
+export type { GroupInviteData } from './group-invite.js';
 export { MoodChangeDecoder, MoodChangeKind } from './mood-change.js';
 export type { MoodChangeData } from './mood-change.js';
 export {
@@ -48,3 +54,18 @@ export {
 } from './registry.js';
 export { SitOnObjectDecoder, SitOnObjectKind } from './sit-on-object.js';
 export type { SitOnObjectData } from './sit-on-object.js';
+export {
+  makeSpatialChatData,
+  SpatialChatKind,
+  SpatialChatReceiveDecoder,
+  SpatialChatSendDecoder,
+  SpatialChatSendKind,
+  SpatialChatType,
+} from './spatial-chat.js';
+export type { SpatialChatData } from './spatial-chat.js';
+export { StartDanceDecoder, StartDanceKind } from './start-dance.js';
+export type { StartDanceData } from './start-dance.js';
+export { TipDecoder, TipKind } from './tip.js';
+export type { TipData } from './tip.js';
+export { TradeMessageId, TradeStartDecoder, TradeStartKind } from './trade-start.js';
+export type { TradeStartData } from './trade-start.js';

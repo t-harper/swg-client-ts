@@ -31,7 +31,16 @@ export enum EncryptMethod {
   Xor = 4,
 }
 
-/** SOE UDP packet types from UdpLibrary.hpp lines 1387-1395 */
+/**
+ * SOE UDP packet types from UdpLibrary.hpp lines 1387-1395.
+ *
+ * The C++ enum declares values WITHOUT explicit numbers, so they're sequential
+ * from 0. Confirmed against captured wire fixtures: Reliable1 = 9 (NOT 10).
+ *
+ * The authoritative implementation in src/soe/packet-types.ts uses these same
+ * values via a local enum (intentionally — Stream A discovered this discrepancy
+ * during the build and wrote its own to avoid the bug).
+ */
 export enum UdpPacketType {
   ZeroEscape = 0,
   Connect = 1,
@@ -42,28 +51,28 @@ export enum UdpPacketType {
   KeepAlive = 6,
   ClockSync = 7,
   ClockReflect = 8,
-  Reliable1 = 10,
-  Reliable2 = 11,
-  Reliable3 = 12,
-  Reliable4 = 13,
-  Fragment1 = 14,
-  Fragment2 = 15,
-  Fragment3 = 16,
-  Fragment4 = 17,
-  Ack1 = 18,
-  Ack2 = 19,
-  Ack3 = 20,
-  Ack4 = 21,
-  AckAll1 = 22,
-  AckAll2 = 23,
-  AckAll3 = 24,
-  AckAll4 = 25,
-  Group = 26,
-  Ordered = 27,
-  Ordered2 = 28,
-  PortAlive = 29,
-  UnreachableConnection = 30,
-  RequestRemap = 31,
+  Reliable1 = 9,
+  Reliable2 = 10,
+  Reliable3 = 11,
+  Reliable4 = 12,
+  Fragment1 = 13,
+  Fragment2 = 14,
+  Fragment3 = 15,
+  Fragment4 = 16,
+  Ack1 = 17,
+  Ack2 = 18,
+  Ack3 = 19,
+  Ack4 = 20,
+  AckAll1 = 21,
+  AckAll2 = 22,
+  AckAll3 = 23,
+  AckAll4 = 24,
+  Group = 25,
+  Ordered = 26,
+  Ordered2 = 27,
+  PortAlive = 28,
+  UnreachableConnection = 29,
+  RequestRemap = 30,
 }
 
 /** A cluster row as advertised by LoginEnumCluster + LoginClusterStatus */

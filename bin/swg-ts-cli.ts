@@ -14,8 +14,10 @@
  * as JSON on stdout. Exits 0 on success, non-zero on failure.
  */
 import {
+  CharacterPool,
   Fleet,
   type FleetClientConfig,
+  type PooledCharacter,
   SwgClient,
   captureLifecycle,
   lifecycleResultToJSON,
@@ -27,7 +29,7 @@ import type { CapturedEvent, TranscriptEvent } from '../src/index.js';
 import { scenarios } from '../src/scenarios/index.js';
 
 interface CliArgs {
-  command: 'zone' | 'swarm' | 'capture' | 'replay' | 'help';
+  command: 'zone' | 'swarm' | 'capture' | 'replay' | 'pool' | 'help';
   host: string;
   port: number;
   user: string;
@@ -52,6 +54,13 @@ interface CliArgs {
   input?: string;
   pacing: 'asFast' | 'asCaptured';
   compare: 'names' | 'count';
+  // pool subcommand
+  poolAction: 'list' | 'add' | 'remove' | 'stock' | 'checkout' | 'sweep' | 'help';
+  poolAccount?: string;
+  poolCharacter?: string;
+  poolPath?: string;
+  poolLeasedBy?: string;
+  poolLeaseMs?: number;
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -74,6 +83,7 @@ function parseArgs(argv: string[]): CliArgs {
     maxConcurrent: 0,
     pacing: 'asFast',
     compare: 'names',
+    poolAction: 'help',
   };
   const positional: string[] = [];
   for (const a of argv) {
@@ -162,6 +172,18 @@ function parseArgs(argv: string[]): CliArgs {
           }
           args.compare = val;
           break;
+        case 'account':
+          args.poolAccount = val;
+          break;
+        case 'pool-path':
+          args.poolPath = val;
+          break;
+        case 'leased-by':
+          args.poolLeasedBy = val;
+          break;
+        case 'lease-ms':
+          args.poolLeaseMs = Number.parseInt(val, 10);
+          break;
         case 'help':
           args.command = 'help';
           break;
@@ -182,6 +204,27 @@ function parseArgs(argv: string[]): CliArgs {
     cmd === 'help'
   ) {
     args.command = cmd;
+  } else if (cmd === 'pool') {
+    args.command = 'pool';
+    const sub = positional[1];
+    if (
+      sub === 'list' ||
+      sub === 'add' ||
+      sub === 'remove' ||
+      sub === 'stock' ||
+      sub === 'checkout' ||
+      sub === 'sweep' ||
+      sub === 'help'
+    ) {
+      args.poolAction = sub;
+    } else if (sub === undefined) {
+      args.poolAction = 'help';
+    } else {
+      process.stderr.write(`Unknown pool action: ${sub}\n`);
+      process.exit(2);
+    }
+    // `--character=X` is reused for the pool sub-action's character argument.
+    args.poolCharacter = args.character;
   } else if (positional.length === 0) {
     args.command = 'help';
   } else {
@@ -215,6 +258,16 @@ function printHelp(): void {
       '      Load a captured NDJSON file, run a fresh lifecycle that replays the',
       '      captured sends, and compare observed inbound messages.',
       '      Exits 1 if any expected recv name is missing from the observed stream.',
+      '  swg-ts-cli pool <action>',
+      '      Manage the persistent character pool at ~/.swg-ts-client/character-pool.json',
+      '      (override with --pool-path=<path>). Actions:',
+      '        list                                       — show all pooled chars + lease state',
+      '        add --account=X --character=Y              — add an existing char to the pool',
+      '        remove --account=X                         — remove from the pool',
+      '        stock --count=N --host=... [--user-prefix=pool]',
+      '                                                   — create N new chars on the server + pool them',
+      '        checkout [--leased-by=X] [--lease-ms=N]    — claim one char + print {account,...,leaseExpiresAt}',
+      '        sweep                                      — clear expired leases',
       '  swg-ts-cli help',
       '',
       `Available scripts: ${Object.keys(scenarios).sort().join(', ')}`,
@@ -225,6 +278,10 @@ function printHelp(): void {
       '  swg-ts-cli zone --host=10.254.0.253 --user=ci-test --character=TsTest \\',
       '                  --script=walk-circle --script-arg=radius=8 --script-arg=durationMs=3000',
       '  swg-ts-cli swarm --host=10.254.0.253 --count=3 --user-prefix=fleet --stagger-ms=500',
+      '  swg-ts-cli pool stock --host=10.254.0.253 --count=5 --user-prefix=pool',
+      '  swg-ts-cli pool list',
+      '  swg-ts-cli pool checkout --leased-by=manual --lease-ms=60000',
+      '  swg-ts-cli pool sweep',
       '',
       'Exits 0 on success, 1 on failure. Always emits JSON on stdout.',
       '',
@@ -312,6 +369,9 @@ async function main(): Promise<number> {
   }
   if (args.command === 'replay') {
     return runReplay(args);
+  }
+  if (args.command === 'pool') {
+    return runPool(args);
   }
   if (args.command !== 'zone') {
     printHelp();
@@ -507,6 +567,184 @@ async function runReplay(args: CliArgs): Promise<number> {
     process.stdout.write(`${JSON.stringify(errReport, null, 2)}\n`);
     return 1;
   }
+}
+
+async function runPool(args: CliArgs): Promise<number> {
+  const poolOpts: { path?: string } = {};
+  if (args.poolPath !== undefined) poolOpts.path = args.poolPath;
+  const pool = new CharacterPool(poolOpts);
+
+  switch (args.poolAction) {
+    case 'list': {
+      const characters = await pool.list();
+      writeJson(args, {
+        path: pool.filePath,
+        count: characters.length,
+        characters: characters.map(pooledToJson),
+      });
+      return 0;
+    }
+    case 'add': {
+      if (args.poolAccount === undefined || args.poolCharacter === undefined) {
+        process.stderr.write('pool add: --account and --character are required\n');
+        return 2;
+      }
+      const metadata: Record<string, string> = {};
+      if (args.planet) metadata.planet = args.planet;
+      if (args.profession) metadata.profession = args.profession;
+      const added = await pool.add(args.poolAccount, args.poolCharacter, metadata);
+      writeJson(args, { ok: true, character: pooledToJson(added) });
+      return 0;
+    }
+    case 'remove': {
+      if (args.poolAccount === undefined) {
+        process.stderr.write('pool remove: --account is required\n');
+        return 2;
+      }
+      const removed = await pool.remove(args.poolAccount);
+      writeJson(args, { ok: true, removed });
+      return removed ? 0 : 1;
+    }
+    case 'stock': {
+      return runPoolStock(args, pool);
+    }
+    case 'checkout': {
+      const opts: { leasedBy?: string; leaseMs?: number } = {};
+      if (args.poolLeasedBy !== undefined) opts.leasedBy = args.poolLeasedBy;
+      if (args.poolLeaseMs !== undefined && !Number.isNaN(args.poolLeaseMs)) {
+        opts.leaseMs = args.poolLeaseMs;
+      }
+      try {
+        const { character } = await pool.checkout(opts);
+        writeJson(args, {
+          ok: true,
+          account: character.account,
+          characterName: character.characterName,
+          leasedBy: character.leasedBy,
+          leaseExpiresAt: character.leaseExpiresAt?.toISOString() ?? null,
+          warning:
+            'lease will expire automatically; CLI does not auto-release. ' +
+            'Re-run `pool sweep` to reclaim if the caller never releases.',
+        });
+        return 0;
+      } catch (err) {
+        writeJson(args, {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return 1;
+      }
+    }
+    case 'sweep': {
+      const reclaimed = await pool.sweepExpired();
+      writeJson(args, { ok: true, reclaimed });
+      return 0;
+    }
+    default: {
+      printHelp();
+      return 0;
+    }
+  }
+}
+
+async function runPoolStock(args: CliArgs, pool: CharacterPool): Promise<number> {
+  if (args.count <= 0) {
+    process.stderr.write('pool stock: --count must be a positive integer\n');
+    return 2;
+  }
+  if (args.host === '127.0.0.1') {
+    process.stderr.write(
+      'pool stock: --host is required (e.g. --host=10.254.0.253 — the test cluster)\n',
+    );
+    return 2;
+  }
+  const prefix = args.userPrefix === 'fleet' ? 'pool' : args.userPrefix;
+  const runTag = ((Date.now() / 1000) | 0).toString(36);
+  const fleet = new Fleet({ loginServer: { host: args.host, port: args.port } });
+
+  const configs: FleetClientConfig[] = [];
+  for (let i = 0; i < args.count; i++) {
+    const account = `${prefix}${runTag}${i}`.slice(0, 15);
+    const characterName = `Pool${prefix}${i}`;
+    configs.push({
+      account,
+      characterName,
+      planet: args.planet === 'tatooine' ? 'mos_eisley' : args.planet,
+      profession: args.profession,
+      // Keep dwell short — we just need the character to zone-in once so we
+      // can mark it proven, then log out cleanly.
+      holdZonedInMs: 1_500,
+    });
+  }
+
+  if (args.verbose) {
+    process.stderr.write(`[pool stock] creating ${args.count} characters on ${args.host}\n`);
+  }
+
+  const runOpts: { staggerMs?: number; maxConcurrent?: number } = {};
+  if (args.staggerMs > 0) runOpts.staggerMs = args.staggerMs;
+  if (args.maxConcurrent > 0) runOpts.maxConcurrent = args.maxConcurrent;
+
+  const fleetResult = await fleet.run(configs, runOpts);
+
+  // Register every successful lifecycle into the pool. Even partial successes
+  // are valuable — the failed ones are reported but don't block.
+  const added: PooledCharacter[] = [];
+  const failures: { account: string; error: string }[] = [];
+
+  for (let i = 0; i < fleetResult.outcomes.length; i++) {
+    const outcome = fleetResult.outcomes[i];
+    const config = configs[i];
+    if (outcome === undefined || config === undefined) continue;
+    if (outcome.error !== undefined || outcome.lifecycleResult === undefined) {
+      failures.push({
+        account: config.account,
+        error: outcome.error?.message ?? 'no lifecycleResult',
+      });
+      continue;
+    }
+    const metadata: Record<string, string> = {
+      planet: config.planet ?? 'mos_eisley',
+      profession: config.profession ?? 'combat_brawler',
+      stockedAt: new Date().toISOString(),
+    };
+    const pooled = await pool.add(config.account, config.characterName ?? '', metadata);
+    // Zone-in succeeded → mark proven immediately so checkout() prefers them.
+    if (outcome.lifecycleResult.zonedInAt !== null) {
+      await pool.markProven(config.account);
+      pooled.proven = true;
+    }
+    added.push(pooled);
+  }
+
+  writeJson(args, {
+    ok: failures.length === 0,
+    requested: args.count,
+    added: added.length,
+    failed: failures.length,
+    failures,
+    characters: added.map(pooledToJson),
+    poolPath: pool.filePath,
+  });
+  return failures.length === 0 ? 0 : 1;
+}
+
+function pooledToJson(c: PooledCharacter): Record<string, unknown> {
+  return {
+    account: c.account,
+    characterName: c.characterName,
+    proven: c.proven,
+    lastSeenAt: c.lastSeenAt?.toISOString() ?? null,
+    leasedBy: c.leasedBy,
+    leaseExpiresAt: c.leaseExpiresAt?.toISOString() ?? null,
+    ...(c.metadata !== undefined ? { metadata: c.metadata } : {}),
+  };
+}
+
+function writeJson(args: CliArgs, payload: unknown): void {
+  process.stdout.write(
+    args.pretty ? `${JSON.stringify(payload, null, 2)}\n` : `${JSON.stringify(payload)}\n`,
+  );
 }
 
 /** Shallow-stringify a decoded message for diagnostic output (handles BigInt, Uint8Array). */

@@ -64,6 +64,19 @@ export type {
   FleetSummary,
 } from './client/fleet.js';
 
+// Character pool — persistent check-out database for live-test accounts.
+// Pre-create N characters once; tests check them out for the duration of
+// a run and check them back in on completion. See docs/character-pool
+// section in CLAUDE.md.
+export { CharacterPool } from './client/character-pool.js';
+export type {
+  CheckoutManyResult,
+  CheckoutOptions,
+  CheckoutResult,
+  PooledCharacter,
+  PoolOptions,
+} from './client/character-pool.js';
+
 // Survey message classes — for receiving the survey-tool radial result and
 // the available-resources list.
 export {

@@ -29,6 +29,18 @@ export {
   ZoneState,
 } from './types.js';
 
-// The high-level client API will live at src/client/swg-client.ts after Phase 2.
-// Re-export here when implemented:
-// export { SwgClient } from './client/swg-client.js';
+// High-level client API
+export { SwgClient, lifecycleResultToJSON } from './client/swg-client.js';
+export type {
+  FullLifecycleOptions,
+  LifecycleResult,
+  SwgClientOptions,
+} from './client/swg-client.js';
+export type { TranscriptEvent } from './client/dispatcher.js';
+export type { LoginStageResult, LoginStageOptions } from './client/login-stage.js';
+export type {
+  ConnectionStageResult,
+  ConnectionStageOptions,
+  CreateCharacterOptions,
+} from './client/connection-stage.js';
+export type { GameStageResult, GameStageOptions, BaselineSummary } from './client/game-stage.js';

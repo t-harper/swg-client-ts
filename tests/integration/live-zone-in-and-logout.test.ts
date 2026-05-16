@@ -16,7 +16,7 @@ import { describe, expect, it } from 'vitest';
 
 import { SwgClient } from '../../src/client/swg-client.js';
 import { ObjControllerMessage } from '../../src/messages/game/obj-controller-message.js';
-import { liveCredentials } from './helpers.js';
+import { liveCredentials, sessionSettle } from './helpers.js';
 
 const LIVE = process.env.LIVE === '1';
 const HOST = process.env.SWG_HOST ?? '10.254.0.253';
@@ -26,6 +26,7 @@ describe.skipIf(!LIVE)('live zone-in and logout (Stages 1 → 2 → 3 → 4)', (
   it('runs the full lifecycle: login → connect → select → zone in → hold → logout', async () => {
     // Set CI_REUSE_ACCOUNT + CI_REUSE_CHARACTER to reuse instead of leaking.
     const { account, characterName } = liveCredentials('zn');
+    await sessionSettle();
     const client = new SwgClient({ loginServer: { host: HOST, port: PORT } });
 
     const result = await client.fullLifecycle({

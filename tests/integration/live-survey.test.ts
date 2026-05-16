@@ -17,7 +17,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { SwgClient } from '../../src/client/swg-client.js';
-import { liveCredentials } from './helpers.js';
+import { liveCredentials, sessionSettle } from './helpers.js';
 
 const LIVE = process.env.LIVE === '1';
 const HOST = process.env.SWG_HOST ?? '10.254.0.253';
@@ -26,6 +26,7 @@ const PORT = Number(process.env.SWG_LOGIN_PORT ?? 44453);
 describe.skipIf(!LIVE)('live survey command', () => {
   it('emits a requestSurvey command without server-side error', async () => {
     const { account, characterName } = liveCredentials('sv');
+    await sessionSettle();
     const client = new SwgClient({ loginServer: { host: HOST, port: PORT } });
 
     const result = await client.fullLifecycle({

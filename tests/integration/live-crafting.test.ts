@@ -21,7 +21,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ScenarioFn } from '../../src/client/script/context.js';
 import { SwgClient } from '../../src/client/swg-client.js';
-import { liveCredentials } from './helpers.js';
+import { liveCredentials, sessionSettle } from './helpers.js';
 
 const LIVE = process.env.LIVE === '1';
 const HOST = process.env.SWG_HOST ?? '10.254.0.253';
@@ -30,6 +30,7 @@ const PORT = Number(process.env.SWG_LOGIN_PORT ?? 44453);
 describe.skipIf(!LIVE)('live crafting wire test', () => {
   it('sends beginCrafting against a non-existent tool and survives the round-trip', async () => {
     const { account, characterName } = liveCredentials('cr');
+    await sessionSettle();
     const client = new SwgClient({ loginServer: { host: HOST, port: PORT } });
 
     const script: ScenarioFn = async (ctx) => {

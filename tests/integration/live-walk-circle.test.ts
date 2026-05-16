@@ -12,7 +12,7 @@ import { describe, expect, it } from 'vitest';
 
 import { SwgClient } from '../../src/client/swg-client.js';
 import { scenarios } from '../../src/scenarios/index.js';
-import { liveCredentials } from './helpers.js';
+import { liveCredentials, sessionSettle } from './helpers.js';
 
 const LIVE = process.env.LIVE === '1';
 const HOST = process.env.SWG_HOST ?? '10.254.0.253';
@@ -22,6 +22,7 @@ describe.skipIf(!LIVE)('live walk-circle script', () => {
   it('runs a 3-second walk-circle then logs out cleanly', async () => {
     // Set CI_REUSE_ACCOUNT + CI_REUSE_CHARACTER to reuse instead of leaking.
     const { account, characterName } = liveCredentials('wc');
+    await sessionSettle();
     const client = new SwgClient({ loginServer: { host: HOST, port: PORT } });
 
     const script = scenarios['walk-circle']?.({

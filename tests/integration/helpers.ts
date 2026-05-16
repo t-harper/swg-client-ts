@@ -51,6 +51,21 @@ export function liveCredentials(prefix: string): LiveCredentials {
 }
 
 /**
+ * Wait briefly to let any prior session on the SAME reuse character finish
+ * tearing down server-side. Only meaningful in reuse mode — the server
+ * holds a GameConnection open ~5-10s after LogoutMessage before allowing
+ * the same character to re-attach.
+ *
+ * Tests that immediately call `client.fullLifecycle()` after another live
+ * test on the pinned character should `await sessionSettle()` first.
+ */
+export async function sessionSettle(ms = 8_000): Promise<void> {
+  if (process.env.CI_REUSE_ACCOUNT === undefined || process.env.CI_REUSE_ACCOUNT === '') return;
+  await new Promise((r) => setTimeout(r, ms));
+}
+
+
+/**
  * For Stage-1-only tests (live-login) — returns just an account name.
  * Honors CI_REUSE_ACCOUNT; ignores CI_REUSE_CHARACTER.
  */

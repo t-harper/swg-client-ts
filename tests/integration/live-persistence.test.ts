@@ -65,10 +65,12 @@ describe.skipIf(!LIVE)('live persistence (snapshot before/after reconnect)', () 
     expect(first.zonedInAt, 'first lifecycle zoned in').not.toBeNull();
     const snapA = snapshot(first);
 
-    // Brief wait to give the server's save pipeline time to flush. The
-    // Windows client uses a 1s settle; we use 2s for headroom. This is
-    // longer than strictly necessary in dev, but defensive against load.
-    await new Promise((r) => setTimeout(r, 2_000));
+    // Wait for the server's save pipeline to flush AND for the prior
+    // session's TCP/SOE state to release. The Windows client uses a 1s
+    // settle, but on dev clusters under load the server can keep the
+    // GameConnection around for ~10s after LogoutMessage before allowing
+    // the same character to re-attach. 12s gives comfortable headroom.
+    await new Promise((r) => setTimeout(r, 12_000));
 
     // Second lifecycle on the same character. The login flow re-reads from
     // DB; we snapshot what the server replays back to us.

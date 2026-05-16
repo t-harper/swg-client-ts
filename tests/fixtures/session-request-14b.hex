@@ -1,0 +1,11 @@
+# SessionRequest (cUdpPacketConnect) captured from real SwgClient_r.exe during this session's tcpdump.
+# Server: 10.254.0.253:44453
+# Client: 10.254.0.254:63958
+# Timestamp: 22:49:57.525247
+#
+# Field decode:
+#   00 01            opcode cUdpPacketConnect
+#   00 00 00 02      protocolVersion = 2
+#   00 29 48 23      connectionCode (client-chosen random, big-endian uint32)
+#   00 00 01 f0      maxRawPacketSize = 496
+00 01 00 00 00 02 00 29 48 23 00 00 01 f0

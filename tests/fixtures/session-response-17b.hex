@@ -1,0 +1,14 @@
+# SessionResponse (cUdpPacketConfirm) captured from real swg-server during this session's tcpdump.
+# Server: 10.254.0.253:44453 (LoginServer)
+# Client: 10.254.0.254:63958
+# Timestamp: 22:49:57.526201 (May 16 2026)
+#
+# Field decode:
+#   00 02            opcode cUdpPacketConfirm
+#   00 29 48 23      connectionCode (big-endian uint32 = 0x00294823)
+#   fe 7b 48 73      encryptCode    (big-endian uint32 = 0xfe7b4873)
+#   02               crcBytes = 2
+#   01               encryptMethod[0] = cEncryptMethodUserSupplied (zlib)
+#   04               encryptMethod[1] = cEncryptMethodXor (rolling XOR)
+#   00 00 01 f0      maxRawPacketSize = 496
+00 02 00 29 48 23 fe 7b 48 73 02 01 04 00 00 01 f0

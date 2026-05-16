@@ -1,0 +1,34 @@
+{
+  "_comment": "Ground truth from this session's Python decoder. The 223-byte encrypted reliable packet decodes to this plaintext. Used as the golden expected output for the SOE transport unit tests.",
+  "sessionResponseFixture": "session-response-17b.hex",
+  "encryptedFixture": "login-enum-cluster-223b.hex",
+  "encryptCode": "0xfe7b4873",
+  "afterCrcStrip": {
+    "lengthBytes": 221,
+    "lastTwoBytesCrc": "56 f9"
+  },
+  "afterXorDecrypt": {
+    "_comment": "Bytes 0-1 unchanged (00 09 = cUdpPacketReliable1), bytes 2.. XOR-decrypted with seed 0xfe7b4873",
+    "firstFourBytes": "0009 [zlib-stream-starts: 78 9c]",
+    "lengthBytes": 221
+  },
+  "afterUserSuppliedDecrypt": {
+    "_comment": "Strip trailing compression flag byte (= 0x01 = compressed), then zlib decompress",
+    "trailingFlag": "0x01",
+    "decompressedLengthApprox": 254,
+    "decompressedFirstBytes": "00 01 [LoginEnumCluster CRC] ..."
+  },
+  "extractedStrings": [
+    "swg",
+    "10.254.0.253",
+    "swg-main",
+    "20100225-17:43"
+  ],
+  "expectedFields": {
+    "clusterName": "swg",
+    "clusterAddress": "10.254.0.253",
+    "clusterPort": 44463,
+    "branch": "swg-main",
+    "networkVersion": "20100225-17:43"
+  }
+}

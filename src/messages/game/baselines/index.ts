@@ -74,6 +74,20 @@ export {
   CreatureObjectFirstParentClientServerNpKind,
 } from './creature-object-baseline-9.js';
 export {
+  type LocationValue,
+  type WaypointValue,
+  EMPTY_LOCATION,
+  EMPTY_WAYPOINT,
+  LocationCodec,
+  WaypointCodec,
+  WaypointColor,
+} from './location.js';
+export {
+  type MissionObjectSharedBaseline,
+  MissionObjectSharedDecoder,
+  MissionObjectSharedKind,
+} from './mission-object-baseline-3.js';
+export {
   type PackedBuffValue,
   PackedBuffCodec,
 } from './packed-buff.js';

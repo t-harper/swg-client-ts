@@ -5,6 +5,9 @@ import { ReadIterator } from '../../../archive/read-iterator.js';
 import './index.js';
 // Side-effect: the crafting-folder subtypes register through this registry too.
 import '../crafting/index.js';
+// Side-effect: the mission-folder subtypes register through this registry too
+// (CM_missionListRequest, CM_missionAcceptRequest, etc.).
+import '../missions/index.js';
 import { encodeMessage, parseHeader } from '../../base.js';
 import { messageRegistry } from '../../registry.js';
 import { ObjControllerMessage } from '../obj-controller-message.js';

@@ -32,6 +32,7 @@ import { CmdSceneReady } from './game/cmd-scene-ready.js';
 import { CmdStartScene } from './game/cmd-start-scene.js';
 import { HeartBeat } from './game/heart-beat.js';
 import { LogoutMessage } from './game/logout-message.js';
+import { PopulateMissionBrowserMessage } from './game/missions/populate-mission-browser-message.js';
 import { ObjControllerMessage } from './game/obj-controller-message.js';
 import { SceneCreateObjectByCrc } from './game/scene-create-object-by-crc.js';
 import { SceneCreateObjectByName } from './game/scene-create-object-by-name.js';
@@ -76,11 +77,12 @@ const ALL_DECODERS = [
   ChatPersistentMessageToServer,
   SurveyMessage,
   ResourceListForSurveyMessage,
+  PopulateMissionBrowserMessage,
 ];
 
 describe('message registration', () => {
-  it('exports 32 message classes', () => {
-    expect(ALL_DECODERS.length).toBe(32);
+  it('exports 33 message classes', () => {
+    expect(ALL_DECODERS.length).toBe(33);
   });
 
   it('every class has a non-empty messageName', () => {

@@ -50,3 +50,15 @@ export type { ScenarioFn, ScriptContext, ScriptResult } from './client/script/co
 export type { WalkToOptions, CircleOptions } from './client/script/movement.js';
 export { scenarios } from './scenarios/index.js';
 export type { ScenarioFactory } from './scenarios/index.js';
+
+// Fleet multi-client orchestrator
+export { Fleet } from './client/fleet.js';
+export type {
+  FleetClientConfig,
+  FleetMessageCount,
+  FleetOptions,
+  FleetOutcome,
+  FleetResult,
+  FleetRunOptions,
+  FleetSummary,
+} from './client/fleet.js';

@@ -126,17 +126,32 @@ describe('SpatialChat (CM_spatialChatSend / CM_spatialChatReceive)', () => {
     expect(decoded).toEqual(data);
   });
 
-  it('makeSpatialChatData provides neutral defaults', () => {
+  it('makeSpatialChatData provides server-compatible defaults', () => {
     const d = makeSpatialChatData(7n, 'hi');
     expect(d.sourceId).toBe(7n);
     expect(d.targetId).toBe(0n);
     expect(d.text).toBe('hi');
     expect(d.flags).toBe(0);
-    expect(d.volume).toBe(0);
+    // Volume defaults to the chatType-canonical radius (50m for Say).
+    // Volume = 0 server-side means a zero-radius sphere → nobody hears it.
+    expect(d.volume).toBe(50);
     expect(d.chatType).toBe(SpatialChatType.Say);
     expect(d.moodType).toBe(0);
     expect(d.language).toBe(0);
     expect(d.outOfBand).toBe('');
     expect(d.sourceName).toBe('');
+  });
+
+  it('makeSpatialChatData picks the canonical volume per chat type', () => {
+    expect(makeSpatialChatData(1n, 'a').volume).toBe(50); // Say (default)
+    expect(makeSpatialChatData(1n, 'a', { chatType: SpatialChatType.Shout }).volume).toBe(100);
+    expect(makeSpatialChatData(1n, 'a', { chatType: SpatialChatType.Whisper }).volume).toBe(25);
+  });
+
+  it('makeSpatialChatData honors an explicit volume override (incl. 0 for tests)', () => {
+    const explicit = makeSpatialChatData(1n, 'a', { volume: 7 });
+    expect(explicit.volume).toBe(7);
+    const zero = makeSpatialChatData(1n, 'a', { volume: 0 });
+    expect(zero.volume).toBe(0);
   });
 });

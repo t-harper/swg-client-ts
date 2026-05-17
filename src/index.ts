@@ -453,8 +453,19 @@ export type {
 // surface (e.g. typed test helpers, snapshot tooling). The instance lives on
 // `ScriptContext`, not on `LifecycleResult` (the script-context lifetime is
 // shorter than the lifecycle's).
-export type { DatapadItem, DatapadItemKind, DatapadView } from './client/script/datapad-view.js';
+export type {
+  DatapadItem,
+  DatapadItemKind,
+  DatapadView,
+  PetState,
+} from './client/script/datapad-view.js';
 export { classifyDatapadItem } from './client/script/datapad-view.js';
+
+// Bank view — `ctx.bank` types. Mirrors {@link InventoryView}; the bank
+// is auto-discovered from the player's `'bank'` slot child but its
+// contents only populate after `bank.use(terminalId)` is called.
+export { BankViewImpl } from './client/bank-view.js';
+export type { BankItem, BankView } from './client/bank-view.js';
 
 // Container inspection — walk the transcript and answer "what's inside the
 // inventory / backpack / bank / etc.?" Pair with extractInventoryContainerId
@@ -466,8 +477,12 @@ export type { ContainerItem } from './client/container-view.js';
 // player's inventory. Exposed on `ScriptContext.inventory`. Reads through
 // the live WorldModel so contents always reflect the latest server-pushed
 // containment / baseline / delta / scene-destroy traffic.
-export { InventoryViewImpl } from './client/inventory-view.js';
-export type { InventoryItem, InventoryView } from './client/inventory-view.js';
+export { DEFAULT_PLAYER_INVENTORY_VOLUME, InventoryViewImpl } from './client/inventory-view.js';
+export type {
+  InventoryItem,
+  InventoryResourceCrate,
+  InventoryView,
+} from './client/inventory-view.js';
 
 // Character snapshot + diff — hashable, deterministic projection of the
 // persisted character state from a LifecycleResult. Used by the reconnect

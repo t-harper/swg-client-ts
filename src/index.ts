@@ -247,7 +247,6 @@ export {
   decodeGroupInviterDelta,
   readFirstDirtyIndex,
   BaselinePackageIds,
-  DeltasMessage,
   ObjectTypeTags,
   baselineRegistry,
   deltaRegistry,

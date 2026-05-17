@@ -120,7 +120,12 @@ import {
 import type { GameNetworkMessage } from '../../messages/interface.js';
 import type { NetworkId, SceneStart, Vector3 } from '../../types.js';
 import type { MessageDispatcher } from '../dispatcher.js';
-import type { WorldModel } from '../world-model.js';
+import type { WorldModel, WorldObject } from '../world-model.js';
+import {
+  BaselinePackageIds,
+  ObjectTypeTags,
+} from '../../messages/game/baselines/registry.js';
+import type { TangibleObjectSharedNpBaseline } from '../../messages/game/baselines/tangible-object-baseline-6.js';
 import {
   type ExpectOptions,
   expectAbsent as expectAbsentImpl,
@@ -396,6 +401,43 @@ export interface ScriptContext {
    * reference to a `WorldObject` is safe: it's mutated in place.
    */
   readonly world: WorldModel;
+  /**
+   * Find the nearest `WorldObject` matching `typeId` (one of `ObjectTypeTags`),
+   * sorted by 2D distance from the player. Excludes the player itself by
+   * default. `maxRadiusM` caps the search; omit to consider the whole world.
+   *
+   * Sugar over `world.byType(typeId)` + distance sort. Returns `undefined`
+   * if nothing matches in range.
+   */
+  findNearest(
+    typeId: number,
+    opts?: { maxRadiusM?: number; excludeSelf?: boolean },
+  ): WorldObject | undefined;
+  /**
+   * Find the nearest CREO with `inCombat === true` (from its SHARED_NP
+   * baseline) that isn't us. Use this for auto-targeting in combat scripts
+   * instead of asking the user to paste a hardcoded `--targetId`.
+   *
+   * Returns `undefined` if no hostile is in range (or no SHARED_NP baselines
+   * have arrived yet, which can happen very early in zone-in).
+   */
+  nearestHostile(opts?: { maxRadiusM?: number }): WorldObject | undefined;
+  /**
+   * Every `WorldObject` whose `containerId === containerId`. Mid-script
+   * accuracy — reflects the current containment graph (as last reported by
+   * `UpdateContainmentMessage`), not a stale transcript scan.
+   *
+   * Combine with `extractInventoryContainerId(transcript, playerId)` from
+   * `baseline-helpers.js` to enumerate inventory contents:
+   *   `const items = ctx.findInContainer(inventoryId);`
+   */
+  findInContainer(containerId: NetworkId): WorldObject[];
+  /**
+   * Every `PLAY`-type object within `radiusM` of the player, sorted by
+   * ascending distance. Convenience over `world.byType(ObjectTypeTags.PLAY)
+   * + distance filter`. Excludes us.
+   */
+  playersInRange(radiusM: number): WorldObject[];
   /** Live cursor — current best estimate of the player's position. */
   position(): Readonly<Vector3>;
   /** Live cursor — current best estimate of the player's heading (radians). */
@@ -1305,6 +1347,76 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     signal: opts.signal,
     world: opts.world,
     _state: state,
+
+    findNearest(
+      typeId: number,
+      findOpts?: { maxRadiusM?: number; excludeSelf?: boolean },
+    ): WorldObject | undefined {
+      const selfId = opts.sceneStart.playerNetworkId;
+      const excludeSelf = findOpts?.excludeSelf ?? true;
+      const maxR = findOpts?.maxRadiusM;
+      const here = { x: state.pose.x, y: state.pose.y, z: state.pose.z };
+      let best: WorldObject | undefined;
+      let bestD2 = Infinity;
+      const maxR2 = maxR !== undefined ? maxR * maxR : Infinity;
+      for (const o of opts.world.byType(typeId)) {
+        if (excludeSelf && o.id === selfId) continue;
+        const dx = o.position.x - here.x;
+        const dz = o.position.z - here.z;
+        const d2 = dx * dx + dz * dz;
+        if (d2 > maxR2) continue;
+        if (d2 < bestD2) {
+          best = o;
+          bestD2 = d2;
+        }
+      }
+      return best;
+    },
+
+    nearestHostile(findOpts?: { maxRadiusM?: number }): WorldObject | undefined {
+      const selfId = opts.sceneStart.playerNetworkId;
+      const maxR = findOpts?.maxRadiusM;
+      const here = { x: state.pose.x, y: state.pose.y, z: state.pose.z };
+      let best: WorldObject | undefined;
+      let bestD2 = Infinity;
+      const maxR2 = maxR !== undefined ? maxR * maxR : Infinity;
+      for (const o of opts.world.byType(ObjectTypeTags.CREO)) {
+        if (o.id === selfId) continue;
+        const tanoNp = o.baselines.get(BaselinePackageIds.SHARED_NP) as
+          | TangibleObjectSharedNpBaseline
+          | undefined;
+        if (tanoNp?.inCombat !== true) continue;
+        const dx = o.position.x - here.x;
+        const dz = o.position.z - here.z;
+        const d2 = dx * dx + dz * dz;
+        if (d2 > maxR2) continue;
+        if (d2 < bestD2) {
+          best = o;
+          bestD2 = d2;
+        }
+      }
+      return best;
+    },
+
+    findInContainer(containerId: NetworkId): WorldObject[] {
+      return opts.world.filter((o) => o.containerId === containerId);
+    },
+
+    playersInRange(radiusM: number): WorldObject[] {
+      const selfId = opts.sceneStart.playerNetworkId;
+      const here = { x: state.pose.x, y: state.pose.y, z: state.pose.z };
+      const r2 = radiusM * radiusM;
+      const out: Array<[WorldObject, number]> = [];
+      for (const o of opts.world.byType(ObjectTypeTags.PLAY)) {
+        if (o.id === selfId) continue;
+        const dx = o.position.x - here.x;
+        const dz = o.position.z - here.z;
+        const d2 = dx * dx + dz * dz;
+        if (d2 <= r2) out.push([o, d2]);
+      }
+      out.sort((a, b) => a[1] - b[1]);
+      return out.map(([o]) => o);
+    },
 
     position(): Readonly<Vector3> {
       return { x: state.pose.x, y: state.pose.y, z: state.pose.z };

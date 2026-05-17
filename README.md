@@ -43,9 +43,17 @@ What's available beyond the basic lifecycle:
   scan. `fetchResourceAttributes()` returns full OQ/CR/DR/... stats for any
   ResourceTypeObject via `getAttributesBatch` — no physical core-sampling
   required.
-- **Crafting session** — open a tool/station, select a draft schematic,
-  assign/clear resource ingredients, run experimentation passes, finalize a
-  prototype. Decodes all crafting-result messages for assertion.
+- **Resource harvesting** — `sample(toolId, resourceTypeName)` starts the
+  server's ~30s-tick sample loop; `waitForSampleEvent()` classifies each
+  tick (`located` / `failed` / `cancel` / `in_progress` / `mind` / `density`
+  / `trace`). Units stack into matching inventory containers automatically.
+  `cancelSampling()` terminates the loop cleanly.
+- **Crafting session (discovery-driven)** — open a session, walk the
+  available draft schematics (`waitForDraftSchematics`), pick one, read its
+  slot requirements (`waitForDraftSlots`), assign/clear resource
+  ingredients, run experimentation passes, finalize a prototype. See
+  `scripts/craft-a-tool.ts` for a complete end-to-end demo that crafts a
+  survey tool from harvested resources.
 - **Missions** — request mission list from a terminal, accept, abort, remove.
 - **Group + trade** — invite/join/disband + secure-trade two-client flows.
   See `scripts/group-trade-demo.ts`.
@@ -74,9 +82,9 @@ example scenarios.
 # Requires Node 24 (see .nvmrc) and pnpm
 nvm use
 pnpm install
-pnpm test                                              # ~924 unit tests, no server needed
+pnpm test                                              # ~930 unit tests, no server needed
 LIVE=1 pnpm test tests/integration/live-login.test.ts  # one live test
-LIVE=1 pnpm test                                       # full suite (~945 tests)
+LIVE=1 pnpm test                                       # full suite (~951 tests)
 
 # Plain zone-in
 pnpm cli zone --host=10.254.0.253 --user=ci-test --character=TsTest

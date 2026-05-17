@@ -76,7 +76,7 @@ pnpm cli zone --host=10.254.0.253 --user=ci-test --character=TsTest
                   constcrc.ts                  ← CrcConstexpr.hpp custom CRC, NOT standard CRC32
 ```
 
-183 test files, **~945 tests (~924 unit + ~21 LIVE)**, all currently green. (Counts grow as features land — `pnpm test` to confirm.)
+183+ test files, **~951 tests (~930 unit + ~21 LIVE)**, all currently green. (Counts grow as features land — `pnpm test` to confirm.)
 
 ## High-level features
 
@@ -88,8 +88,9 @@ The client started as just `SwgClient.fullLifecycle()` and is now a full program
 | **Scripting engine** | `opts.script: ScenarioFn` | Async function gets a `ScriptContext` during the dwell. See `docs/scripting.md`. |
 | **Movement (working)** | `ctx.walkTo` / `walkCircle` / `walkToCell` | Real `ObjControllerMessage(CM_netUpdateTransform=113)` wire path with auto teleport-ack bootstrap. Float positions, server-validated speed. Character actually moves in-game. |
 | **Survey flow** | `ctx.fetchSurveyResources(toolId)` → `ctx.survey(toolId, name)` → `ctx.waitForSurvey()` | Two-step radial-menu Use → ResourceListForSurveyMessage → per-type requestsurvey → SurveyMessage. Returns 9 sample points per type. |
-| **Resource stats** | `ctx.fetchResourceAttributes([ids])` | Batched `getAttributesBatch` → AttributeListMessage per id. Full OQ/CR/DR/HR/SR/UT/ER/PE/MA/CD stats for any ResourceTypeObject; no physical core-sampling needed. |
-| **Crafting session** | `ctx.beginCrafting` / `selectCraftingSchematic` / `assignCraftingSlot` / `clearCraftingSlot` / `craftExperiment` / `finishCrafting` | End-to-end crafting flow with decoded result messages |
+| **Sampling / harvest** | `ctx.sample(toolId, name)` / `ctx.waitForSampleEvent()` / `ctx.cancelSampling()` | `requestcoresample` wire path with sample-loop event classification (`located`, `failed`, `cancel`, `in_progress`, `mind`, `density`, `trace`, `start`). Units stack into existing same-type inventory containers. |
+| **Resource stats** | `ctx.fetchResourceAttributes([ids])` | Batched `getAttributesBatch` → AttributeListMessage per id, chunked at 25 ids/call to stay under wire ceiling. Full OQ/CR/DR/HR/SR/UT/ER/PE/MA/CD stats for any ResourceTypeObject; no physical core-sampling needed. |
+| **Crafting session** | `ctx.beginCrafting` → `ctx.waitForDraftSchematics` → `selectCraftingSchematic` → `ctx.waitForDraftSlots` → `assignCraftingSlot` × N → optional `craftExperiment` → `finishCrafting` | Full discovery-driven flow with decoded `DraftSchematicsMessage` (server's schematic list) and `ManufactureSchematicMessage` (slot requirements). End-to-end demo in `scripts/craft-a-tool.ts`. |
 | **Missions** | `ctx.requestMissionList` / `acceptMission` / `removeMission` / `abortMission` | Driven through `MissionObject` baselines + the four `CM_mission*` subtypes |
 | **Group + trade** | `ctx.useAbility('invite'|'join'|...)` + `CM_setGroup` / `CM_secureTrade` decoders | Two-client coordination via Fleet — see `scripts/group-trade-demo.ts` |
 | **Chat** | `ctx.say` / `tell` / `sendMail` / `sendToChannel` / `requestChannelList` | `say` uses the server-side `spatialChatInternal` CommandQueue command (the path the real Windows client uses) |
@@ -254,7 +255,9 @@ Individual stage drivers and the `dispatcher` are also exported as types — use
 | Understand wire bytes | `docs/wire-spec.md` (distilled spec) |
 | Trace the 4-stage lifecycle | `docs/lifecycle.md` (state diagram + per-stage tables + script hook) |
 | Survey resources at a location | `scripts/check-resources-at-location.ts` (full radial → list → per-type survey → stats flow) |
-| Fetch resource stats without sampling | `ctx.fetchResourceAttributes([ids])` (uses `getAttributesBatch`) |
+| Harvest resources via sampling | `ctx.sample(toolId, resourceTypeName)` + `ctx.waitForSampleEvent` loop; cancel with `ctx.cancelSampling()`. New units stack into matching inventory container automatically. |
+| Craft a tool / item end-to-end | `scripts/craft-a-tool.ts` (open session → list schematics → pick recipe → assign slots → finishCrafting) |
+| Fetch resource stats without sampling | `ctx.fetchResourceAttributes([ids])` (uses `getAttributesBatch`, chunked at 25 ids/call) |
 | Implement movement in a custom script | `ctx.walkTo` / `walkCircle` / `walkToCell` auto-handle teleport-ack; for raw `ctx.send(...)` of transforms call `await ctx.ackPendingTeleports()` once first |
 | Run N clients in parallel (load test) | `docs/scripting.md` → "Fleet" section + `src/client/fleet.ts` |
 | Capture a wire transcript / replay it | `docs/scripting.md` → "Capture and replay" + `src/client/replay.ts` |
@@ -279,6 +282,8 @@ Individual stage drivers and the `dispatcher` are also exported as types — use
 - ClockSync/ClockReflect are received and silently dropped. No ping stats. Not needed for any current test.
 - Replay compares `recv` shape, not bytes. Live servers emit non-deterministic neighbor updates between runs, so strict order-equality (`--compare=names`) often surfaces "missing"/"unexpected" diffs even on a clean replay. Use `--compare=count` (multiset) for a more permissive check.
 - Only `swg`–`swg5` accounts can create characters (admin allowlist at `dsrc/.../datatables/admin/stella_admin.tab`). Other accounts will see `canCreateRegularCharacter=false` and `ClientCreateCharacterFailed`. Fleet tests using arbitrary `--user-prefix` accounts therefore need the character pool or pre-existing characters.
+- **Crafting + sampling stale-state**: server-side `m_craftingStage` and `surveying.takingSamples` persist on the player/tool across disconnects. If a previous session ended mid-flow, the next `requestCraftingSession` / `requestcoresample` succeeds but the follow-up step (`selectDraftSchematic` → `requestDraftSlots`, or sample-loop tick) silently fails until a fresh tool is used or the cluster is restarted. `craft-a-tool.ts` tries multiple tools as a workaround; ultimately a `podman restart swg-server` is the most reliable reset.
+- **NGE profession picker maps to a legacy wire string + skillTemplate**: the Windows client's "Domestics Trader" picker sends `profession="social_entertainer"` + `skillTemplate="trader_0a"` + `workingSkill="class_domestics_phase1_novice"` on the wire. Only 7 legacy profession strings (`crafting_artisan`/`combat_brawler`/`social_entertainer`/`combat_marksman`/`science_medic`/`outdoors_scout`/`jedi`) are accepted by `PlayerCreationManager`. NGE class items come from the NPE roadmap (driven by skillTemplate), not from character creation. `connection-stage.ts` `ClientCreateCharacterOptions` accepts both `profession` and `skillTemplate`/`workingSkill`.
 
 ## When you next sit down
 

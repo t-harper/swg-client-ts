@@ -415,6 +415,7 @@ Reference: `GenericValueTypeMessage.h`. Our impl: `src/messages/base.ts:defineGe
 | `ObjectMenuSelectMessage` | constcrc of `"ObjectMenuSelectMessage::MESSAGE_TYPE"` | 3 | Client → server: trigger an OnObjectMenuSelect on a target. Trailer: `[NetworkId target][u16 itemId]`. itemId values from `RadialMenuTypes` (ITEM_USE=21, EXAMINE=7, etc.). |
 | `SurveyMessage` | 0x877f79ac | varies | Server → client survey response with sample points |
 | `ResourceListForSurveyMessage` | 0x8a64b1d5 | 4 | Server → client list of resource types currently spawned for a tool's class |
+| `ChatSystemMessage` | 0x6d2a6413 | 4 | Server → client system-message prose. Trailer: `[u8 flags][UnicodeString message][UnicodeString outOfBand]`. The `outOfBand` field is a packed-bytes binary (each `u16` codepoint holds 2 wire bytes in LE order) carrying STF references like `survey/sample_located` — see `decodeSampleOob()` for unpacking. |
 
 ### ObjController subtypes
 

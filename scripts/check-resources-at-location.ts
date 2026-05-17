@@ -138,7 +138,7 @@ interface Args {
   walkSpeed: number;
   pretty: boolean;
   verbose: boolean;
-  /** Minimum efficiency % to fetch resource stats for. Default 30. */
+  /** Minimum efficiency % to fetch resource stats for. Default 0 (fetch for every type that returned samples). */
   statsThreshold: number;
 }
 
@@ -171,7 +171,7 @@ function parseArgs(argv: string[]): Args {
     walkSpeed: 8,
     pretty: true,
     verbose: false,
-    statsThreshold: 30,
+    statsThreshold: 0,
   };
   for (const arg of argv) {
     if (!arg.startsWith('--')) continue;
@@ -220,7 +220,7 @@ function usage(): void {
       'Usage:',
       '  tsx scripts/check-resources-at-location.ts --host=<host> --user=<account>',
       '       [--character=<name>] [--x=<n> --z=<n>] [--classes=<a,b,c>]',
-      '       [--per-class-timeout-ms=5000] [--walk-speed=8]',
+      '       [--per-class-timeout-ms=5000] [--walk-speed=8] [--stats-threshold=0]',
       '       [--planet=mos_eisley] [--no-pretty] [--verbose]',
       '',
       'Examples:',
@@ -361,19 +361,24 @@ function makeScenario(args: Args, results: Map<string, PerClassResult>, target: 
         }
       }
 
-      // Step 3: for each resource above the stats threshold, fetch its
-      // attributes via getAttributesBatch (TaskGetAttributes routes
-      // ResourceTypeObject ids through ResourceTypeObject::getResourceAttributes
-      // — no sampling needed). Batch them all in one request.
-      const highDensity = typeResults.filter((t) => t.maxPct >= args.statsThreshold);
-      if (highDensity.length > 0) {
-        log(`  fetching stats for ${highDensity.length} resources ≥ ${args.statsThreshold}%`);
+      // Step 3: fetch attributes for every type that returned at least one
+      // sample AND meets the (optional) density threshold. TaskGetAttributes
+      // routes ResourceTypeObject ids through getResourceAttributes — no
+      // physical sampling needed. ctx.fetchResourceAttributes chunks
+      // internally (default 25 ids per useAbility call) so we can request
+      // hundreds of types in one call without hitting the single-packet
+      // wire-size ceiling.
+      const wantStats = typeResults.filter(
+        (t) => t.samples > 0 && t.maxPct >= args.statsThreshold,
+      );
+      if (wantStats.length > 0) {
+        log(`  fetching stats for ${wantStats.length} resources${args.statsThreshold > 0 ? ` ≥ ${args.statsThreshold}%` : ''}`);
         try {
           const attrs = await ctx.fetchResourceAttributes(
-            highDensity.map((t) => t.resourceId),
-            { timeoutMs: 15_000 },
+            wantStats.map((t) => t.resourceId),
+            { timeoutMs: 30_000 },
           );
-          for (const t of highDensity) {
+          for (const t of wantStats) {
             const pairs = attrs.get(t.resourceId);
             if (pairs === undefined) {
               log(`    ${t.name}: stats not received`);

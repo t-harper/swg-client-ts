@@ -502,14 +502,21 @@ export interface ScriptContext {
   }>;
 
   /**
-   * Fetch the server-side attribute list for one or more objects in a single
-   * batched request. Wraps `useAbility('getAttributesBatch', 0n, '<id1> -1
-   * <id2> -1 ...')` (CommandCppFuncs.cpp:5451) — the server queues one
-   * `TaskGetAttributes` per id which responds with `AttributeListMessage`.
+   * Fetch the server-side attribute list for one or more objects via the
+   * batched `useAbility('getAttributesBatch', 0n, '<id1> -1 <id2> -1 ...')`
+   * (CommandCppFuncs.cpp:5451). The server queues one `TaskGetAttributes`
+   * per id which responds with `AttributeListMessage`.
    *
    * Works for any object id the server can look up: ServerObjects (items,
    * creatures, structures), **ResourceTypeObjects** (returns resource stats
    * like OQ/CR/DR/...), and waypoints — see TaskGetAttributes.cpp:47-114.
+   *
+   * Large batches are **split into chunks of `maxBatchSize` ids (default 25)
+   * and sent as multiple `useAbility` calls** to stay under the
+   * single-packet wire-size ceiling (our `SoeConnection.sendApp` doesn't
+   * fragment outbound; the Windows client fragments at this layer instead).
+   * A single subscriber collects responses for all chunks under one
+   * `timeoutMs` budget.
    *
    * The optional `clientRevision` is the cache-busting hint the real client
    * uses; -1 forces a fresh response (server sends if `serverRevision !=
@@ -519,11 +526,12 @@ export interface ScriptContext {
    * Ids that didn't receive a response by `timeoutMs` are omitted from the
    * map (the caller can diff against the input to find them).
    *
-   * Default timeout 8_000ms.
+   * Default timeout 8_000ms; default `maxBatchSize` 25 (≈350 chars of
+   * params per chunk, well under the ~480-byte safe ceiling).
    */
   fetchResourceAttributes(
     objectIds: NetworkId[],
-    opts?: { timeoutMs?: number; clientRevision?: number },
+    opts?: { timeoutMs?: number; clientRevision?: number; maxBatchSize?: number },
   ): Promise<Map<NetworkId, readonly AttributePair[]>>;
 
   // --- Mission primitives ---
@@ -1124,16 +1132,17 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
 
     async fetchResourceAttributes(
       objectIds: NetworkId[],
-      attrOpts?: { timeoutMs?: number; clientRevision?: number },
+      attrOpts?: { timeoutMs?: number; clientRevision?: number; maxBatchSize?: number },
     ): Promise<Map<NetworkId, readonly AttributePair[]>> {
       const timeoutMs = attrOpts?.timeoutMs ?? 8_000;
       const clientRevision = attrOpts?.clientRevision ?? -1;
+      const maxBatchSize = attrOpts?.maxBatchSize ?? 25;
       const result = new Map<NetworkId, readonly AttributePair[]>();
       if (objectIds.length === 0) return result;
 
       const pending = new Set<bigint>(objectIds);
       // Subscribe to AttributeListMessage BEFORE sending. We collect every
-      // response whose networkId is in our pending set; we resolve when the
+      // response whose networkId is in our pending set; resolve when the
       // set is empty or the timeout fires.
       const collected = new Promise<void>((resolve) => {
         const unsub = opts.dispatcher.onMessage(AttributeListMessage, (m) => {
@@ -1152,9 +1161,15 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
         timer.unref?.();
       });
 
-      // Build the params string: "<id1> <revision> <id2> <revision> ...".
-      const params = objectIds.map((id) => `${id.toString()} ${clientRevision}`).join(' ');
-      ctx.useAbility('getAttributesBatch', 0n, params);
+      // Send in chunks of maxBatchSize. Each useAbility carries a
+      // CommandQueueEnqueue whose `params` string is "<id1> <rev> <id2> <rev> ..."
+      // — at ~12 chars per id, a chunk of 25 stays comfortably under the
+      // single-packet ceiling.
+      for (let i = 0; i < objectIds.length; i += maxBatchSize) {
+        const chunk = objectIds.slice(i, i + maxBatchSize);
+        const params = chunk.map((id) => `${id.toString()} ${clientRevision}`).join(' ');
+        ctx.useAbility('getAttributesBatch', 0n, params);
+      }
 
       await collected;
       return result;

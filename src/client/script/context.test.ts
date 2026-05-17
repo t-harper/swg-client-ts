@@ -527,6 +527,38 @@ describe('ScriptContext: survey primitives', () => {
     expect(sent.length).toBe(0);
   });
 
+  it('fetchResourceAttributes() splits a large id list into chunks of maxBatchSize', async () => {
+    const { ctx, sent, simulateRecv } = createFakeContext();
+    // 60 ids with default maxBatchSize=25 → 3 chunks (25, 25, 10).
+    const ids = Array.from({ length: 60 }, (_, i) => BigInt(0x1000 + i));
+    const promise = ctx.fetchResourceAttributes(ids, { timeoutMs: 1_000 });
+    expect(sent.length).toBe(3);
+    const { AttributeListMessage } = await import('../../messages/game/attribute-list-message.js');
+    // Verify each chunk's params has the right number of id-rev pairs.
+    for (const msg of sent) {
+      const obj = msg as ObjControllerMessage;
+      const cq = CommandQueueEnqueue.unpack(new ReadIterator(obj.data));
+      expect(cq.commandHash).toBe(hashCommand('getAttributesBatch'));
+      const pairs = cq.params.split(' ').length / 2;
+      expect(pairs).toBeGreaterThanOrEqual(10);
+      expect(pairs).toBeLessThanOrEqual(25);
+    }
+    // Respond for every id.
+    for (const id of ids) {
+      simulateRecv(new AttributeListMessage(id, '', [{ key: 'oq', value: String(id) }], 0));
+    }
+    const result = await promise;
+    expect(result.size).toBe(60);
+  });
+
+  it('fetchResourceAttributes() respects custom maxBatchSize', async () => {
+    const { ctx, sent } = createFakeContext();
+    const ids = Array.from({ length: 10 }, (_, i) => BigInt(i));
+    ctx.fetchResourceAttributes(ids, { timeoutMs: 50, maxBatchSize: 3 });
+    // 10 / 3 → 4 chunks (3, 3, 3, 1)
+    expect(sent.length).toBe(4);
+  });
+
   it('fetchSurveyResources() filters by surveyToolId — ignores responses for a different tool', async () => {
     const OTHER_TOOL = 0x999n;
     const { ctx, simulateRecv } = createFakeContext();

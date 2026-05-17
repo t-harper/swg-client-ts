@@ -213,13 +213,23 @@ async function findContainersForClass(
     // matches a known parent.
     const requested = resourceClass.toLowerCase();
     const klass = rclass.toLowerCase();
+    // Heuristic class-chain match: the spawned-resource class names usually
+    // start with the root-class token followed by `_<subclass>` (e.g.
+    // "steel_arveshian" is a kind of "steel" → "ferrous_metal" → "metal" →
+    // "mineral"). We use `^token(_|$)` rather than `\btoken\b` because `_`
+    // is a word character in JS regex (\b doesn't match between letter and _).
+    const startsWith = (tokens: string[]): boolean =>
+      tokens.some((t) => klass === t || klass.startsWith(`${t}_`));
     const matches =
-      klass.includes(requested) ||
-      (requested === 'metal' && /\b(steel|aluminum|iron|copper|tin|chromium|chromite|polysteel|duralloy|kelmarian|carbon)\b/.test(klass)) ||
-      (requested === 'mineral' && /steel|aluminum|iron|copper|tin|chromium|carbon|ore|polysteel|duralloy|granite|gemstone|crystal|silicate/.test(klass)) ||
-      (requested === 'ferrous_metal' && /steel|iron/.test(klass)) ||
-      (requested === 'non_ferrous_metal' && /aluminum|copper|tin|chromium/.test(klass)) ||
-      (requested === 'inorganic_chemical' && /aluminum|copper|tin|chromium|carbon|silicon/.test(klass));
+      klass === requested ||
+      klass.startsWith(`${requested}_`) ||
+      (requested === 'metal' &&
+        startsWith(['steel', 'aluminum', 'iron', 'copper', 'tin', 'chromium', 'chromite', 'polysteel', 'duralloy', 'kelmarian', 'carbonate', 'ferrous_metal', 'non_ferrous_metal'])) ||
+      (requested === 'mineral' &&
+        startsWith(['steel', 'aluminum', 'iron', 'copper', 'tin', 'chromium', 'chromite', 'polysteel', 'duralloy', 'carbonate', 'granite', 'gemstone', 'crystal', 'silicate', 'sandstone', 'ferrous_metal', 'non_ferrous_metal', 'inorganic_mineral', 'metal'])) ||
+      (requested === 'ferrous_metal' && startsWith(['steel', 'iron'])) ||
+      (requested === 'non_ferrous_metal' && startsWith(['aluminum', 'copper', 'tin', 'chromium', 'polysteel', 'duralloy'])) ||
+      (requested === 'inorganic_chemical' && startsWith(['aluminum', 'copper', 'tin', 'chromium', 'carbonate', 'silicate', 'sandstone', 'inorganic_chemical']));
     if (matches) {
       out.push({ id: it.id, resourceName: rname, resourceClass: rclass, units });
     }

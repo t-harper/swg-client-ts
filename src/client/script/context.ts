@@ -1011,9 +1011,10 @@ export interface ScriptContext {
   /**
    * Wait for the next `SuiCreatePageMessage` from the server. SUI pages are
    * dialogs the server opens on the client (banker / vendor / quest /
-   * list-picker). The page's widget tree is opaque bytes on the
-   * `pageData` field — the leading 4 bytes are the `pageId` (LE i32)
-   * which the client echoes back in `respondToSui`.
+   * list-picker). The page's widget tree is decoded into a typed
+   * `SuiPageData` struct (`pageData.pageId`, `pageData.pageName`,
+   * `pageData.commands`, etc.) which the client echoes back via the
+   * `pageId` field in `respondToSui`.
    *
    * Default timeout 8_000ms.
    */

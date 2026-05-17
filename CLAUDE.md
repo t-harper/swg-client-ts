@@ -65,6 +65,7 @@ pnpm cli zone --host=10.254.0.253 --user=ci-test --character=TsTest
                         ↑
                 src/soe/                       ← UDP transport
                   connection.ts                ← SoeConnection class (one per UDP socket)
+                                                  send-side auto-fragments payloads > mMaxDataBytes
                   session/encrypt/reliable/fragment/multipacket
                         ↑
                 src/archive/                   ← wire serialization
@@ -277,7 +278,6 @@ Individual stage drivers and the `dispatcher` are also exported as types — use
 - `ObjControllerMessage` subtype decoding covers 25+ subtypes (combat, movement, posture, mood, chat, crafting, missions, groups, trade, menus, dance, tip, etc.). Anything not registered flows as opaque bytes with a diagnostic `subtypeCrcHex`. Add more in `src/messages/game/obj-controller/`.
 - **Spatial chat** is fully wire-modeled. `ctx.say(text, opts?)` wraps the server's `spatialChatInternal` CommandQueue command — the same path the real Windows client uses. The direct `CM_spatialChatSend(243)` ObjController subtype is NOT a viable client→server path: the server's `ControllerMessageFactory::allowFromClient` registry has it set to `false` (MessageQueueSpatialChat.cpp:26), so anything sent via that subtype is logged as a HackAttempts entry and dropped (Client.cpp:972). Inbound broadcasts arrive as `ObjControllerMessage` with `message=CM_spatialChatReceive(244)`, decoded via `SpatialChatReceiveDecoder`. `tests/integration/live-spatial-chat.test.ts` exercises the round-trip end-to-end.
 - **Survey tools spawned via admin `/object createIn` work** (they have the right `VAR_SURVEY_CLASS` objvar). Fresh characters created via `domestics_trader` profession (or any non-NGE legacy profession) do NOT come with tools — the NPE roadmap reward table grants tools as the player completes phase-1 novice tasks, not at character creation. For scripted tests use a character that already has tools (admin-spawned or pre-NPE).
-- Send-path fragmentation isn't plumbed into `SoeConnection.sendApp`. Client→server messages from this codebase are all small (< 200 bytes typical, max ~1KB for ClientCreateCharacter). If you ever need to send something > ~480 bytes, this will need fixing. (The real Windows client DOES fragment — its initial SUI-list `getAttributesBatch` call can be ~1800 bytes — but ours collapses naturally because we don't issue those.)
 - AckAll uses raw 16-bit wire seq rather than reconstructed 64-bit ID. Fine until we accumulate > 65k outstanding reliables (never happens).
 - ClockSync/ClockReflect are received and silently dropped. No ping stats. Not needed for any current test.
 - Replay compares `recv` shape, not bytes. Live servers emit non-deterministic neighbor updates between runs, so strict order-equality (`--compare=names`) often surfaces "missing"/"unexpected" diffs even on a clean replay. Use `--compare=count` (multiset) for a more permissive check.

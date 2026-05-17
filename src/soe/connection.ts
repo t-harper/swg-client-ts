@@ -32,7 +32,7 @@ import { appendCrc, verifyCrc } from '../crc/crc32.js';
 import { EncryptMethod } from '../types.js';
 import type { EncryptionParams } from '../types.js';
 import { applyEncryption, reverseEncryption } from './encrypt.js';
-import { FragmentBuffer } from './fragment.js';
+import { FragmentBuffer, buildFragmentPackets } from './fragment.js';
 import type {
   AppMessageHandler,
   ConnectionEvent,
@@ -193,27 +193,49 @@ export class SoeConnection implements ISoeConnection {
   /**
    * Send an application-level payload. Wraps in Reliable1, encrypts, CRCs, sends.
    *
-   * Currently does NOT fragment automatically. If you pass a payload that
-   * doesn't fit in `maxRawPacketSize - encryption-overhead - 4 (header) -
-   * crcBytes`, this will throw. Stream B will plumb fragmentation through here
-   * when it needs to send LoginEnumCluster-sized messages (it doesn't, the
-   * client-to-server messages are all small).
+   * If the payload exceeds `maxDataBytesForFragment(params)` it is automatically
+   * split across multiple Fragment1 packets (UdpLibrary.cpp:3173-3220). Each
+   * fragment is its own reliable packet with its own seq, independently encrypted
+   * and CRCd, and tracked separately by `outgoingCh0` so re-send works per-packet.
+   *
+   * Small sends (the typical < 200 byte case) take the unchanged fast path —
+   * one reliable packet, no fragmentation involved.
    */
   sendApp(payload: Uint8Array): void {
     if (this.status.kind !== 'connected') {
       throw new Error('sendApp: not connected');
     }
     const params = this.status.params;
-    const seq = this.outgoingCh0.allocate();
-    const reliablePacket = buildReliablePacket(0, seq, payload);
-    const cooked = this.cookOutgoing(reliablePacket, params);
-    if (cooked.length > params.maxRawPacketSize) {
-      throw new Error(
-        `sendApp: cooked packet ${cooked.length}b > maxRawPacketSize ${params.maxRawPacketSize}; fragmentation not yet implemented in SoeConnection`,
-      );
+    const maxDataBytes = maxDataBytesForFragment(params);
+
+    // Fast path: the unencrypted payload fits in a single reliable packet.
+    // The C++ uses the same comparison (payload size vs mMaxDataBytes) before
+    // deciding to fragment; only when it doesn't fit do we walk the fragment path.
+    if (payload.length <= maxDataBytes) {
+      const seq = this.outgoingCh0.allocate();
+      const reliablePacket = buildReliablePacket(0, seq, payload);
+      const cooked = this.cookOutgoing(reliablePacket, params);
+      this.outgoingCh0.track(seq, cooked, Date.now());
+      void this.rawSend(cooked);
+      return;
     }
-    this.outgoingCh0.track(seq, cooked, Date.now());
-    void this.rawSend(cooked);
+
+    // Fragment path: split the unencrypted payload across N Fragment1 packets.
+    // Fragmentation happens BEFORE encryption (UdpLibrary.cpp:3347-3351 builds
+    // the fragment packet, then PhysicalSend encrypts the whole thing at 2455).
+    const fragments = buildFragmentPackets(
+      0,
+      payload,
+      () => this.outgoingCh0.allocate(),
+      maxDataBytes,
+    );
+    const now = Date.now();
+    for (const fragment of fragments) {
+      const seq = readReliableSeq(fragment);
+      const cooked = this.cookOutgoing(fragment, params);
+      this.outgoingCh0.track(seq, cooked, now);
+      void this.rawSend(cooked);
+    }
   }
 
   async disconnect(): Promise<void> {
@@ -617,6 +639,56 @@ export class SoeConnection implements ISoeConnection {
 
 function randomU32(): number {
   return Math.floor(Math.random() * 0x100000000) >>> 0;
+}
+
+/**
+ * Worst-case expansion (in bytes) the encryption stack may add to an
+ * unencrypted reliable payload. Mirrors `mEncryptExpansionBytes` in
+ * UdpLibrary.cpp:2808-2867 — `cEncryptMethodUserSupplied` adds the configured
+ * `userSuppliedEncryptExpansionBytes` (always 1 for SWG; see
+ * `sharedNetwork/.../Service.cpp:113` and `Connection.cpp:220`); the other
+ * methods add 0.
+ *
+ * We use this to budget per-fragment data so the cooked datagram never
+ * overflows `maxRawPacketSize` even when zlib decides not to shrink.
+ */
+function encryptExpansionFor(methods: ReadonlyArray<EncryptMethod>): number {
+  let total = 0;
+  for (const m of methods) {
+    if (m === EncryptMethod.UserSupplied || m === EncryptMethod.UserSupplied2) {
+      total += 1;
+    }
+  }
+  return total;
+}
+
+/**
+ * Max payload data bytes per reliable/fragment packet for a given session.
+ * Mirrors `mMaxDataBytes = fragmentSize - cUdpPacketReliableSize - crcBytes -
+ * mEncryptExpansionBytes` (UdpLibrary.cpp:2938). For SWG defaults
+ * (maxRawPacketSize=496, crcBytes=2, UserSupplied+Xor expansion=1) this is 489.
+ */
+function maxDataBytesForFragment(params: EncryptionParams): number {
+  const RELIABLE_HEADER = 4; // [opcode u8 x2][seq BE u16]
+  return (
+    params.maxRawPacketSize -
+    RELIABLE_HEADER -
+    params.crcBytes -
+    encryptExpansionFor(params.encryptMethods)
+  );
+}
+
+/**
+ * Read the BE u16 reliable seq from a `[opcode u8 x2][seq BE u16][...]` packet.
+ * Used after `buildFragmentPackets` allocates the seq so we can re-track it.
+ */
+function readReliableSeq(packet: Uint8Array): number {
+  const hi = packet[2];
+  const lo = packet[3];
+  if (hi === undefined || lo === undefined) {
+    throw new Error('readReliableSeq: packet too short');
+  }
+  return ((hi << 8) | lo) & 0xffff;
 }
 
 // Re-export the EncryptMethod enum for downstream test convenience

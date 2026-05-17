@@ -53,7 +53,8 @@ ZoningIn                ─── Accumulating baseline flood:
    │   Send CmdSceneReady()
    ▼
 ZonedIn                 ─── If `opts.script` is set, the scenario function
-   │                        runs here (movement, combat, chat, inventory, ...).
+   │                        runs here (movement, survey/sample, crafting,
+   │                        missions, group/trade, chat, combat, etc.).
    │                        Otherwise / afterwards, hold for any remaining
    │                        `holdZonedInMs` (default 5s). Heartbeats every 30s
    │                        underneath. See docs/scripting.md.
@@ -204,7 +205,7 @@ the wait for SceneEndBaselines resolves.
 
 #### Scripting hook
 
-If `FullLifecycleOptions.script` is set, the scenario function runs **after** `CmdSceneReady` is sent and **before** any remaining `holdZonedInMs` is awaited. Inside the script, primitives on the `ScriptContext` (movement, combat, chat, inventory) translate to the appropriate client→server `GameNetworkMessage`s. If the script calls `ctx.logout()`, the stage suppresses its own implicit `LogoutMessage` send so logout happens exactly once. See `docs/scripting.md`.
+If `FullLifecycleOptions.script` is set, the scenario function runs **after** `CmdSceneReady` is sent and **before** any remaining `holdZonedInMs` is awaited. Inside the script, primitives on the `ScriptContext` translate to the appropriate client→server `GameNetworkMessage`s — movement (over `CM_netUpdateTransform=113` with automatic teleport-ack bootstrap), survey + resource stats, crafting sessions, missions, group/trade flows, chat, combat, posture/dance, inventory ops, and an expectation system for assertions tied to inbound messages. If the script calls `ctx.logout()`, the stage suppresses its own implicit `LogoutMessage` send so logout happens exactly once. See `docs/scripting.md`.
 
 ---
 
@@ -225,7 +226,7 @@ delay matches what the real Windows client uses.
 
 ## Architecture corrections (original plan was wrong)
 
-The original MVP plan called for **3 UDP sockets** (LoginServer,
+The original plan called for **3 UDP sockets** (LoginServer,
 ConnectionServer, GameServer). Investigation of
 `ConnectionServer/src/shared/ClientConnection.cpp` showed this is wrong:
 

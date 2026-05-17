@@ -44,19 +44,23 @@ Declared in `src/client/script/context.ts`.
 |---|---|
 | `position(): Vector3` | Live cursor (best estimate from movement primitives) |
 | `yaw(): number` | Live heading in radians |
-| `nextSequenceNumber()` / `nextCommandSequence()` / `nextChatSequence()` | Per-channel monotonic counters (movement vs command queue vs chat) |
+| `cellPosition(): Vector3` / `parentCell(): NetworkId` / `setCellPose(...)` | Cell-relative cursor (when inside a building) |
+| `nextSequenceNumber()` / `nextCommandSequence()` / `nextChatSequence()` / `nextMissionSequence()` | Per-channel monotonic counters |
+| `nextSyncStamp()` | Monotonic ms-since-script-start, wrapped u32 — used as `MessageQueueDataTransform.syncStamp` |
 | `send(msg)` | Escape hatch: send any `GameNetworkMessage` and count it in `sendsCount` |
 | `wait(ms)` | Sleep; rejects with `aborted` if the signal fires |
 | `waitForMessage(ctor, { timeoutMs?, predicate? })` | Resolve on next matching inbound message |
 | **Movement** | |
-| `walkTo({ x, z, y? }, { speed?, tickMs?, y? })` | Linear walk at ~5Hz, fixed-point quantized |
-| `walkCircle({ centerX, centerZ, radius, durationMs, speed?, tickMs?, direction?, y? })` | Parametric circle |
+| `walkTo({ x, z, y? }, { speed?, tickMs?, y? })` | Linear walk; defaults: speed 4 m/s, tickMs 500. Uses `ObjControllerMessage(CM_netUpdateTransform=113)` with float positions, server-validated speed window. |
+| `walkCircle({ centerX, centerZ, radius, durationMs, speed?, tickMs?, direction?, y? })` | Parametric circle, same wire path as `walkTo` |
+| `walkToCell(parentId, { x, z, y? }, ...)` | Cell-relative walk via `CM_netUpdateTransformWithParent=241`; cell cursor tracked separately from world cursor |
+| `ackPendingTeleports()` | Auto-called by the walk primitives on first invocation. Scans the transcript for inbound `CM_netUpdateTransform` with negative `sequenceNumber` (zone-in teleport-lockout signals from `PlayerCreatureController::resyncMovementUpdates`) and replies with `CM_teleportAck=319`. Manual `ctx.send(...)` paths that build their own transforms MUST `await ctx.ackPendingTeleports()` once after zone-in. |
 | **Inventory / containers** | |
 | `openContainer(containerId, slot?)` | Send `ClientOpenContainerMessage` |
 | `openPlayerInventory()` | Sugar for `openContainer(playerNetworkId, 'inventory')` |
 | `closeContainer(id)` | Documentation no-op (no wire close exists; server infers from next action) |
 | **Combat / command queue** | |
-| `useAbility(name, targetId?, params?)` | Queue `CommandQueueEnqueue` wrapped in `ObjControllerMessage` |
+| `useAbility(name, targetId?, params?)` | Queue `CommandQueueEnqueue` wrapped in `ObjControllerMessage(CM_commandQueueEnqueue=278)` |
 | `attackTarget(targetId)` | Sugar for `useAbility('attack', targetId)` |
 | `changePosture('standing'\|'crouched'\|'prone'\|'sitting')` | Posture commands |
 | **Chat** | |
@@ -65,6 +69,25 @@ Declared in `src/client/script/context.ts`.
 | `sendMail(target, subject, body)` | In-game mail via `ChatPersistentMessageToServer` |
 | `say(text, opts?)` | Speak real spatial chat — uses the server-side `spatialChatInternal` CommandQueue command (the path the real Windows client uses; `CM_spatialChatSend=243` is `allowFromClient=false` server-side and would be dropped). Server-side: `commandFuncSpatialChatInternal` builds the `MessageQueueSpatialChat`, looks up the right volume from `chat/spatial_chat_types.iff`, runs the chat-spam limiter, and broadcasts `CM_spatialChatReceive(244)` to observers. Defaults to `/say`; pass `chatType: SpatialChatType.Shout`/`Whisper` or a `targetId` for directed chat. Inbound broadcasts arrive as `ObjControllerMessage` with `message=CM_spatialChatReceive`, decoded by `SpatialChatReceiveDecoder` |
 | `requestChannelList()` | Request `ChatRoomList` from server |
+| **Survey** | |
+| `fetchSurveyResources(toolId, { timeoutMs? })` | Two-step radial-Use flow: sends `ObjControllerMessage(CM_objectMenuRequest=326)` then `ObjectMenuSelectMessage(targetId=tool, ITEM_USE=21)`, waits for `ResourceListForSurveyMessage`, returns `ResourceListItem[]` (name/resourceId/parentClassName). Requires the tool's `VAR_SURVEY_CLASS` objvar to be set (crafted tools and admin-spawned templates have it). |
+| `survey(toolId, resourceTypeName)` | `useAbility('requestsurvey', toolId, resourceTypeName)`. **`resourceTypeName` is a specific spawned type** (e.g. `"Resotine"`), NOT a class name like `"mineral"` — the server's `TaskSurvey` looks the type up by exact name. Use `fetchSurveyResources` first to discover legal values. |
+| `waitForSurvey({ timeoutMs? })` | Resolve next `SurveyMessage` (default 60s). Returns 9 sample points per survey: `{ location: Vector3, efficiency: 0..1 }`. |
+| `fetchResourceAttributes([ids], { timeoutMs?, clientRevision? })` | Batched `useAbility('getAttributesBatch', 0n, '<id> -1 <id> -1 ...')`. Server queues one `TaskGetAttributes` per id; ResourceTypeObject ids route through `getResourceAttributes()` and return the full OQ/CR/DR/HR/SR/UT/ER/PE/MA/CD stat block as `AttributeListMessage`. Returns `Map<NetworkId, AttributePair[]>`; ids that didn't respond by `timeoutMs` are omitted. |
+| **Missions** | |
+| `requestMissionList(terminalId, { flags? })` / `acceptMission` / `removeMission` / `abortMission` | Driven through `CM_mission*` subtypes; server replies with `MissionObject` baselines + `PopulateMissionBrowserMessage` + `CM_missionAcceptResponse` |
+| **Crafting** | |
+| `beginCrafting(toolId, schematicCrc?)` | `useAbility('requestCraftingSession', toolId, ...)`. Server opens session and replies with `CM_craftingResult` + `CM_draftSchematicsMessage`. |
+| `selectCraftingSchematic(index)` | `useAbility('selectDraftSchematic', 0n, String(index))`. Server replies with `CM_draftSlotsMessage`. |
+| `assignCraftingSlot(slotIndex, ingredientId, { optionIndex?, quantity? })` | `CM_fillSchematicSlotMessage` |
+| `clearCraftingSlot(slotIndex, targetContainer?)` | `CM_emptySchematicSlotMessage` |
+| `craftExperiment([{ attribute, points }], { coreLevel? })` | `CM_experimentMessage`; server responds via `CM_experimentResult` (275) |
+| `finishCrafting(toolId, { realPrototype? })` | `useAbility('createPrototype', toolId, '<seq> <real>')` |
+| **Expectations** | |
+| `expectWithin(ctor, timeoutMs, { predicate?, soft? })` | Wait for inbound message; soft mode records `assertionFailures` instead of throwing |
+| `expectAbsent(ctor, windowMs, { predicate? })` | Assert nothing matching arrives in the window |
+| `expectAfter(trigger, ctor, { withinMs, predicate?, soft? })` | Trigger an action, then assert the response arrives |
+| `fail(reason)` / `assertionFailures()` | Manual soft-failure recording |
 | **Lifecycle** | |
 | `logout()` | Send `LogoutMessage` + brief settle |
 
@@ -79,19 +102,25 @@ Registered in `src/scenarios/index.ts`. Pass `--script=<name>` and zero or more 
 | `open-inventory` | `holdMs=2000` | Open inventory, hold, close (no-op) |
 | `combat-attack` | `targetId=(required) durationMs=5000 tickMs=1000` | Queue `attack` against `targetId` every tickMs |
 | `posture-cycle` | `durationMs=5000 tickMs=1000` | Cycle standing → crouched → prone → standing |
+| `survey` | `toolId=(required) resourceTypeName=(required) waitMs=2000` | One-shot `requestsurvey` (assumes the tool is already activated; use `ctx.fetchSurveyResources` to discover legal `resourceTypeName` values) |
+| `group-trade` | `role=leader|invitee otherId=(required) tradeAmount?` | Two-client coordination — invite, form group, optional secure-trade, disband. See `scripts/group-trade-demo.ts`. |
 | `dwell` | `durationMs=5000` | Idle baseline |
 
 `NetworkId` args accept hex (`0x...`) or decimal.
 
 To add a scenario, drop a new factory in `src/scenarios/index.ts`, add it to the `scenarios` map. Unit-test it with `createFakeContext()` from `src/client/script/test-helpers.ts`.
 
+Looking for more advanced examples? `scripts/examples/` has ~25 ready-to-run scripts: walking patterns (figure-eight, spiral-out, square-patrol, random-walk, parade), survey loops (survey-loop, survey-walking-grid, gradient-ascent-survey, multi-resource-survey, find-best-resource), chat/mail (channel-bot, mail-blast, chat-spam, town-crier, welcome-greeter), combat (combat-then-flee, endless-combat, target-acquisition), crafting (crafting-bench-soak, experiment-spam), social (dance-party, synchronized-dance, parade), and infrastructure (capture-soak, idle-fleet, reconnect-loop, swarm-circle, whirlwind).
+
 ### Wire details worth knowing
 
-- **Position** is meters → `int16` via `Math.round(meters * 4)` (0.25m resolution). Wire range is roughly ±8192m per axis.
-- **Yaw** is radians → `int8` via `Math.round(yaw * 16)`. SWG uses `atan2(dx, dz)` (z = north).
-- Movement primitives clamp per-tick distance ≤ 90m to stay under server `getMoveMaxDistance` (~100m).
-- The default tick cadence is **200ms (~5Hz)**, matching what the real Windows client emits while running.
-- The command-queue path wraps `CommandQueueEnqueue` inside an `ObjControllerMessage` with subtype `CM_commandQueueEnqueue` (278) and flags `0x23` (SEND|RELIABLE|DEST_AUTH_SERVER). See `src/messages/game/command-queue/`.
+- **Client→server movement is `ObjControllerMessage(CM_netUpdateTransform=113)`**, NOT top-level `UpdateTransformMessage` (that's the server-broadcast form). Trailer is the 45-byte `MessageQueueDataTransform`: `[u32 syncStamp][i32 seq][Quat 4×f32][Vec3 3×f32][f32 speed=0][f32 lookAtYaw=0][u8 useLookAtYaw=0]`. Cell-relative variant is `CM_netUpdateTransformWithParent=241`, prefixed with `[NetworkId parentCell]`. See `src/messages/game/obj-controller/data-transform.ts` and `data-transform-with-parent.ts`.
+- **Speed on the wire is 0.** The server derives effective speed from `position_delta / (syncStamp_delta_ms / 1000)` and validates against the creature's anti-cheat speed cap. Sending non-zero can trip the validator for fresh characters. The `WalkToOptions.speed` field controls our local pacing (m/s) but always encodes 0 on the wire.
+- **Zone-in teleport-lockout**: `PlayerCreatureController::resyncMovementUpdates` inserts negative sequence ids into `m_teleportIds` during zone-in. Until the client ACKs them via `ObjControllerMessage(message=CM_teleportAck=319, data=[i32 LE seq])`, every client→server transform is silently rejected by `handleMove`'s `isTeleporting()` check. The built-in walk primitives call `ctx.ackPendingTeleports()` automatically on first invocation. Manual `ctx.send(...)` of transforms must do it themselves.
+- **Position is float**, not fixed-point — write directly as `f32`. Wire range is whatever the planet's coordinate system allows (-8192..8192 on most ground zones).
+- **Yaw → quaternion** about the Y axis via `yawToQuat(yaw)`. SWG world heading is `atan2(dx, dz)` (z = north).
+- Default movement cadence is **500ms** with **4 m/s** speed (matches the real Windows client's sparse cadence; produces position deltas of ~2m per tick which the server's anti-cheat tolerates easily).
+- The command-queue path wraps `CommandQueueEnqueue` inside an `ObjControllerMessage` with subtype `CM_commandQueueEnqueue=278` and flags `0x23` (`CLIENT_TO_AUTH_SERVER_FLAGS = SEND|RELIABLE|DEST_AUTH_SERVER`). See `src/messages/game/command-queue/`.
 - Chat strings are `Unicode::String` (UTF-16 LE), not `std::string` (UTF-8). The chat helpers handle this — only matters if you build chat messages by hand.
 
 ---
@@ -175,28 +204,38 @@ Exit code 1 if `missing.length > 0`. This is a **drift detector**, not a strict 
 ## How the pieces fit together
 
 ```
-                                          ┌──────────────────────┐
-                                          │ Bundled scenarios    │
-                                          │ src/scenarios/       │
-                                          └──────────┬───────────┘
+                                          ┌────────────────────────────┐
+                                          │ Bundled scenarios          │
+                                          │ src/scenarios/             │
+                                          │ scripts/examples/ (25+)    │
+                                          └──────────┬─────────────────┘
                                                      │ ScenarioFn
                                                      ▼
-SwgClient.fullLifecycle({ script })       ┌──────────────────────┐
-   ├── Stage 1: LoginServer               │ ScriptContext        │
-   ├── Stage 2: ConnectionServer          │ src/client/script/   │
-   ├── Stage 3: GameServer (zone-in)      │  • walkTo/walkCircle │
-   │      ├── CmdStartScene               │  • useAbility/attack │
-   │      ├── baseline flood              │  • tell/sendMail     │
-   │      ├── CmdSceneReady               │  • openContainer     │
-   │      │                               │  • wait/logout       │
-   │      ├── *** script runs here ***  ──┤                      │
-   │      │                               └──────────────────────┘
+SwgClient.fullLifecycle({ script })       ┌────────────────────────────┐
+   ├── Stage 1: LoginServer               │ ScriptContext              │
+   ├── Stage 2: ConnectionServer          │ src/client/script/         │
+   ├── Stage 3: GameServer (zone-in)      │  Movement:                 │
+   │      ├── CmdStartScene               │   walkTo / walkCircle /    │
+   │      ├── baseline flood              │   walkToCell (auto         │
+   │      ├── CmdSceneReady               │   teleport-ack bootstrap)  │
+   │      │                               │  Survey:                   │
+   │      ├── *** script runs here *** ───┤   fetchSurveyResources →   │
+   │      │                               │   survey → waitForSurvey   │
+   │      │                               │   fetchResourceAttributes  │
+   │      │                               │  Crafting / missions /     │
+   │      │                               │   group / trade / chat /   │
+   │      │                               │   combat / posture / dance │
+   │      │                               │  Expectations:             │
+   │      │                               │   expectWithin / Absent /  │
+   │      │                               │   After                    │
+   │      │                               │  Lifecycle: wait / logout  │
    │      └── (remaining hold + LogoutMessage)
    └── Stage 4: SOE Terminate
 
 Fleet({...}).run([cfgs])  →  N parallel SwgClient.fullLifecycle calls
 captureLifecycle()        →  records events, writes NDJSON
 replay({ capture })       →  SwgClient.fullLifecycle({ script: replayScenario })
+CharacterPool             →  JSON-backed pre-stocked character lease DB
 ```
 
 ---

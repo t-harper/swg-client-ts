@@ -2,9 +2,11 @@
 
 Headless TypeScript SWG wire-compatible client. Speaks the SOE UDP protocol +
 SWG's `GameNetworkMessage` layer well enough to perform the full login →
-zone-in → logout lifecycle against a running SWG-Source server. Built for CI,
-load testing, regression detection, fuzzing, and protocol documentation —
-**not** for actually playing the game (no rendering, no audio, no animation).
+zone-in → logout lifecycle against a running SWG-Source server, then drive
+realistic in-world behavior — movement, surveying, sampling, crafting, chat,
+combat, group/trade flows. Built for CI, load testing, regression detection,
+fuzzing, scripted bots, and protocol documentation — **not** for actually
+playing the game (no rendering, no audio, no animation).
 
 ## What it does
 
@@ -20,31 +22,51 @@ GameServer (assigned by PlanetServer)
     → SessionRequest → ClientIdMsg → CmdStartScene
         → consume SceneCreateObjectByCrc flood → SceneEndBaselines
         → CmdSceneReady (now "zoned in")
-        → optional script (walk, attack, chat, open inventory, ...)
+        → optional script (walk, survey, craft, attack, chat, ...)
         → LogoutMessage → SOE Terminate
 ```
 
 Exercises every server in the cluster (LoginServer, CentralServer,
-ConnectionServer, SwgDatabaseServer, PlanetServer, SwgGameServer) and would
-have caught the [Aug 2021 wire-format mismatch bug](
-../swg-main/CLAUDE.md#the-big-one--submodule-pin-must-match-the-prebuilt-client)
-instantly on any submodule bump.
+ConnectionServer, SwgDatabaseServer, PlanetServer, SwgGameServer). Catches
+wire-format drift instantly on any submodule bump — a struct-shape mismatch
+that would crash the Windows client at frame 600 fails `pnpm test` in seconds.
 
-Beyond the basic lifecycle, you get:
+What's available beyond the basic lifecycle:
 
-- **Scripting engine** — async scenario functions with primitives for movement
-  (`walkTo`, `walkCircle`), inventory (`openPlayerInventory`), combat
-  (`attackTarget`, `useAbility`, `changePosture`), chat (`tell`, `sendMail`,
-  `sendToChannel`), and lifecycle (`wait`, `logout`).
-- **Fleet** — run N clients in parallel with staggered launches and a
-  concurrency cap. Per-outcome error isolation; per-message-name summary stats.
+- **Working movement** — `walkTo` / `walkCircle` / `walkToCell` drive the
+  real `ObjControllerMessage(CM_netUpdateTransform=113)` wire path with auto
+  teleport-ack bootstrap. Characters actually move in-game; positions are
+  validated by the server's anti-cheat speed window.
+- **Survey + sample flow** — `fetchSurveyResources(toolId)` triggers the
+  radial-menu "Use" flow to get the spawned resource list, then
+  `survey(toolId, resourceTypeName)` + `waitForSurvey()` rounds out the full
+  scan. `fetchResourceAttributes()` returns full OQ/CR/DR/... stats for any
+  ResourceTypeObject via `getAttributesBatch` — no physical core-sampling
+  required.
+- **Crafting session** — open a tool/station, select a draft schematic,
+  assign/clear resource ingredients, run experimentation passes, finalize a
+  prototype. Decodes all crafting-result messages for assertion.
+- **Missions** — request mission list from a terminal, accept, abort, remove.
+- **Group + trade** — invite/join/disband + secure-trade two-client flows.
+  See `scripts/group-trade-demo.ts`.
+- **Chat** — spatial `say` (uses the server's `spatialChatInternal` command,
+  the same path the real Windows client uses), `tell`, mail, channel post.
+- **Combat / posture / dance** — `attackTarget`, `useAbility`,
+  `changePosture`, `startDance`.
+- **Fleet** — run N independent clients in parallel with staggered launches,
+  per-outcome error isolation, per-message-name summary stats.
 - **Capture + replay** — record any session as NDJSON, replay against a fresh
-  server to detect wire-format drift. Powerful regression tool after submodule
-  bumps.
-- **ObjController subtype decoders** — 8 most common in-game messages
-  (CombatAction, PostureChange, AttributeChanged, …) decoded for assertion.
+  server to detect wire-format drift.
+- **Character pool** — JSON-backed, lockfile-coordinated pool of pre-created
+  characters for tests that need many accounts without leaking new chars per
+  run.
+- **ObjController subtype decoders** — 25+ in-game message subtypes decoded
+  for assertion (combat, movement, posture, mood, chat, crafting, missions,
+  groups, trade, menus, etc.).
 
-See `docs/scripting.md` for the full surface.
+See `docs/scripting.md` for the full `ScriptContext` API, `docs/wire-spec.md`
+for the byte-level reference, and `scripts/examples/` for ~25 ready-to-run
+example scenarios.
 
 ## Quickstart
 
@@ -52,9 +74,9 @@ See `docs/scripting.md` for the full surface.
 # Requires Node 24 (see .nvmrc) and pnpm
 nvm use
 pnpm install
-pnpm test                                              # 413 unit tests, no server needed
+pnpm test                                              # ~924 unit tests, no server needed
 LIVE=1 pnpm test tests/integration/live-login.test.ts  # one live test
-LIVE=1 pnpm test                                       # full suite (419 tests)
+LIVE=1 pnpm test                                       # full suite (~945 tests)
 
 # Plain zone-in
 pnpm cli zone --host=10.254.0.253 --user=ci-test --character=TsTest
@@ -95,7 +117,7 @@ success, 1 on failure. JSON always goes to stdout; logs to stderr.
 | `--planet` | `mos_eisley` | `starting_locations.iff` key (NOT a planet name); for character creation only |
 | `--profession` | `combat_brawler` | for character creation only |
 | `--hold-ms` | `5000` | Time to dwell in the zoned-in state before logging out |
-| `--script` | optional | Name of a bundled scenario to run during the dwell: `walk-line`, `walk-circle`, `open-inventory`, `combat-attack`, `posture-cycle`, `dwell` |
+| `--script` | optional | Name of a bundled scenario to run during the dwell: `walk-line`, `walk-circle`, `open-inventory`, `combat-attack`, `posture-cycle`, `survey`, `dwell` |
 | `--script-arg=k=v` | repeatable | Scenario args (e.g. `--script-arg=radius=8`) |
 | `--verbose` | off | Stream message names + state transitions to stderr |
 | `--skip-game` | off | Stop after `SelectCharacter` (skip zone-in + logout) |
@@ -155,11 +177,18 @@ const result = await client.fullLifecycle({
 import { SwgClient, ScenarioFn } from '@swg/ts-client';
 
 const myScenario: ScenarioFn = async (ctx) => {
-  await ctx.walkTo({ x: -100, z: 50 }, { speed: 5 });
+  // Movement primitives use the real CM_netUpdateTransform wire path and
+  // auto-ack the zone-in teleport lockout on first call.
+  await ctx.walkTo({ x: -100, z: 50 }, { speed: 4 });
   await ctx.walkCircle({ centerX: -100, centerZ: 50, radius: 10, durationMs: 5_000 });
+
+  // Inventory / chat
   ctx.openPlayerInventory();
   ctx.tell('SomeFriend', 'hi');
-  ctx.attackTarget(targetNetworkId);
+  ctx.say('hello world');
+
+  // Combat
+  ctx.attackTarget(someTargetNetworkId);
   await ctx.wait(1_000);
   await ctx.logout();
 };
@@ -170,6 +199,39 @@ const result = await client.fullLifecycle({
 
 // result.scriptResult — { elapsedMs, sendsCount, didLogout, error? }
 ```
+
+### Survey + resource stats
+
+```typescript
+const surveyScenario: ScenarioFn = async (ctx) => {
+  // Walk to the spot you want to survey
+  await ctx.walkTo({ x: 3527, z: -4806 });
+
+  // For each survey tool in inventory, fetch the spawned resource types
+  // (server replies with ResourceListForSurveyMessage), then survey each
+  // type by name.
+  const types = await ctx.fetchSurveyResources(mineralToolId);
+  for (const type of types) {
+    ctx.survey(mineralToolId, type.resourceName);
+    const survey = await ctx.waitForSurvey({ timeoutMs: 30_000 });
+    console.log(type.resourceName, 'max efficiency =',
+      Math.max(...survey.points.map(p => p.efficiency)));
+  }
+
+  // For any resource type, fetch its full OQ/CR/DR/HR/SR/UT/... stat block
+  // in one batched request — no physical core-sampling needed.
+  const stats = await ctx.fetchResourceAttributes(
+    types.map(t => t.resourceId),
+  );
+  for (const [id, attrs] of stats) {
+    console.log(id, attrs.map(p => `${p.key}=${p.value}`).join(' '));
+  }
+};
+```
+
+`scripts/check-resources-at-location.ts` is a ready-to-run CLI that uses all
+of the above to survey every resource class at a given coordinate and dump
+stats for anything above a density threshold.
 
 ### Multi-client load test
 
@@ -223,10 +285,11 @@ ObjController subtype dispatch.
 | CRC | `src/crc/` | `Crc32` (with encryptCode seed scramble) + `constcrc` (custom CRC for message names — NOT standard CRC32) |
 | Archive | `src/archive/` | The wire serialization library: `ByteStream`, `ReadIterator`, primitives, `std::string`, `Unicode::String`, `NetworkId`, `Transform`, `AutoArray<T>`, `AutoVariable<T>` |
 | SOE | `src/soe/` | UDP transport: SessionRequest/Response, XOR encrypt, UserSupplied (zlib) encrypt, CRC32, reliable channel, multipacket, fragment reassembly |
-| Messages | `src/messages/` | 32 top-level GameNetworkMessages (login/connection/game/chat/command-queue) + 8 ObjController subtype decoders |
-| Client | `src/client/` | Orchestrator (`swg-client.ts`), dispatcher, per-stage drivers (`login-stage`, `connection-stage`, `game-stage`), `fleet.ts`, `transcript-io.ts`, `replay.ts` |
-| Script | `src/client/script/` | `ScriptContext` interface + movement primitives (`walkTo`, `walkCircle`) |
-| Scenarios | `src/scenarios/` | CLI-loadable scenario factories (`walk-line`, `walk-circle`, `open-inventory`, `combat-attack`, `posture-cycle`, `dwell`) |
+| Messages | `src/messages/` | 35+ top-level GameNetworkMessages (login/connection/game/chat/command-queue/survey) + 25+ ObjController subtype decoders (combat, movement, posture, mood, chat, crafting, missions, groups, menus, etc.) |
+| Client | `src/client/` | Orchestrator (`swg-client.ts`), dispatcher, per-stage drivers (`login-stage`, `connection-stage`, `game-stage`), `fleet.ts`, `transcript-io.ts`, `replay.ts`, `character-pool.ts` |
+| Script | `src/client/script/` | `ScriptContext` interface + primitives (`movement.ts` — `walkTo`/`walkCircle`/`walkToCell` over `CM_netUpdateTransform=113` with auto teleport-ack; survey/sample helpers; crafting; chat; combat; missions; groups; expectations) |
+| Scenarios | `src/scenarios/` | CLI-loadable scenario factories (`walk-line`, `walk-circle`, `open-inventory`, `combat-attack`, `posture-cycle`, `survey`, `group-trade`, `dwell`) |
+| Examples | `scripts/examples/` | ~25 ready-to-run example scripts: walking patterns, surveying loops, chat bots, parade/dance, crafting soak, mail-blast, combat-then-flee, etc. |
 
 ## Reference
 

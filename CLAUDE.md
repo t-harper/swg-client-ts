@@ -4,11 +4,11 @@ What this is, how to navigate, and the wire-format gotchas worth remembering. Qu
 
 ## What this is
 
-A headless TypeScript SWG wire-compatible client at `~/code/swg-ts-client/`. Built for CI smoke tests, load testing, fuzzing, and protocol documentation — **not** for actually playing the game. Drives a full **login → ConnectionServer auth → character create → SelectCharacter → zone-in → 5s dwell → clean logout** lifecycle against a real `swg-server` in ~5 seconds.
+A headless TypeScript SWG wire-compatible client at `~/code/swg-ts-client/`. Drives a full **login → ConnectionServer auth → character create → SelectCharacter → zone-in → scripted in-world behavior → clean logout** lifecycle against a real `swg-server`. The basic lifecycle finishes in ~5 seconds; scripted scenarios run for as long as you want (movement, surveying, sampling, crafting, chat, combat, missions, groups — all driven through real wire paths).
 
-Its raison d'être is catching wire-format regressions like the **bug-7 Admin Account Routing Refactor** mismatch (documented in `~/code/swg-main/CLAUDE.md`) — server `src` submodule pinned older than the client `LoginClusterStatus_ClusterData` struct → silent `Archive::ReadException` crash at title-screen frame 600. With this client, that becomes a `pnpm test` failure within seconds.
+Originally built for CI smoke tests + wire-format regression detection, now a full programmatic SWG bot framework. Catches wire-format drift instantly: a struct-shape mismatch between the client encoding and the server's `Archive::ReadException` parser (the kind that crashes the Windows client at frame 600) fails `pnpm test` in seconds. **Not** for actually playing the game (no rendering, no audio, no animation).
 
-The server side lives at `~/code/swg-main/`. **Read `~/code/swg-main/CLAUDE.md` first** for context on the running server, the 8 bring-up failure modes, the Oracle XE setup, etc.
+The server side lives at `~/code/swg-main/`. **Read `~/code/swg-main/CLAUDE.md` first** for context on the running server, bring-up failure modes, the Oracle XE setup, etc.
 
 ## Quickstart
 
@@ -16,8 +16,8 @@ The server side lives at `~/code/swg-main/`. **Read `~/code/swg-main/CLAUDE.md` 
 cd ~/code/swg-ts-client
 nvm use                # Node 24 (LTS as of 2026-05)
 pnpm install
-pnpm test              # 234 unit tests — no server needed
-LIVE=1 pnpm test       # 234 unit + 4 integration tests against 10.254.0.253
+pnpm test              # ~924 unit tests — no server needed
+LIVE=1 pnpm test       # ~945 total under LIVE (includes ~21 integration tests against 10.254.0.253)
 pnpm cli zone --host=10.254.0.253 --user=ci-test --character=TsTest
 ```
 
@@ -35,23 +35,32 @@ pnpm cli zone --host=10.254.0.253 --user=ci-test --character=TsTest
                   connection-stage.ts          ← Stage 2: ConnectionServer
                   game-stage.ts                ← Stage 3+4: zone-in (+ script hook) + logout
                   fleet.ts                     ← N parallel SwgClients (multi-client load)
+                  character-pool.ts            ← persistent check-out DB for pre-created chars
                   transcript-io.ts             ← NDJSON capture I/O
                   replay.ts                    ← capture + replay harness
                   script/
-                    context.ts                 ← ScriptContext (walk/chat/combat/inventory/logout)
-                    movement.ts                ← walkTo / walkCircle implementations
+                    context.ts                 ← ScriptContext (movement/survey/craft/chat/...)
+                    movement.ts                ← walkTo / walkCircle / walkToCell over CM_netUpdateTransform
+                    expectations.ts            ← expectWithin / expectAbsent / expectAfter
                 src/scenarios/                 ← bundled CLI-loadable scenarios
                                                   (walk-line, walk-circle, open-inventory,
-                                                   combat-attack, posture-cycle, dwell)
+                                                   combat-attack, posture-cycle, survey,
+                                                   group-trade, dwell)
                         ↑
-                src/messages/                  ← 32 top-level + 8 ObjController subtypes
+                src/messages/                  ← 35+ top-level + 25+ ObjController subtypes
                   login/         (8)           ← LoginClientId, LoginEnumCluster, ...
                   connection/    (10)          ← ClientIdMsg, EnumerateCharacterId, ...
-                  game/          (10)          ← CmdStartScene, LogoutMessage, ...
+                  game/          (12)          ← CmdStartScene, LogoutMessage,
+                                                  UpdateTransformMessage (broadcast),
+                                                  ObjectMenuSelectMessage, ...
                   game/chat/     (6)           ← Tell, channel post, mail, room list
-                  game/command-queue/ (3)      ← Enqueue + Remove + TimerData (combat backbone)
-                  game/obj-controller/ (8)     ← CombatAction, PostureChange, AttributeChanged, ...
-                                                  (subtype dispatch inside ObjControllerMessage)
+                  game/command-queue/ (3)      ← Enqueue + Remove + TimerData
+                  game/survey/   (2)           ← SurveyMessage + ResourceListForSurveyMessage
+                  game/missions/ (multi)       ← request list, accept, abort, remove
+                  game/crafting/ (multi)       ← session + draft + slots + experimentation
+                  game/obj-controller/ (25+)   ← combat, movement (CM=113/241), teleport-ack,
+                                                  posture, mood, chat, crafting, menus,
+                                                  group, trade, dance, tip, ...
                   base.ts + registry.ts        ← framing + CRC dispatch
                         ↑
                 src/soe/                       ← UDP transport
@@ -67,21 +76,31 @@ pnpm cli zone --host=10.254.0.253 --user=ci-test --character=TsTest
                   constcrc.ts                  ← CrcConstexpr.hpp custom CRC, NOT standard CRC32
 ```
 
-81 test files, **419 tests (413 unit + 6 LIVE)**, all currently green. (Real count is higher in latest worktrees as new features land — `pnpm test` to confirm.)
+183 test files, **~945 tests (~924 unit + ~21 LIVE)**, all currently green. (Counts grow as features land — `pnpm test` to confirm.)
 
 ## High-level features
 
-The client started as just `SwgClient.fullLifecycle()` and is now a small toolkit:
+The client started as just `SwgClient.fullLifecycle()` and is now a full programmatic SWG bot framework:
 
 | Feature | Where | What |
 |---|---|---|
 | **Full lifecycle** | `SwgClient.fullLifecycle(opts)` | Login → connect → select → zone-in → dwell → logout in ~5s |
-| **Scripting engine** | `opts.script: ScenarioFn` | Async function gets a `ScriptContext` during the dwell; primitives for movement, container ops, combat, chat, logout. See `docs/scripting.md`. |
-| **Bundled scenarios** | `src/scenarios/` + CLI `--script=<name>` | `walk-line`, `walk-circle`, `open-inventory`, `combat-attack`, `posture-cycle`, `dwell` |
-| **Fleet (multi-client)** | `Fleet.run([cfgs], opts)` + CLI `swarm` | Run N independent clients in parallel with staggered launches + concurrency caps |
+| **Scripting engine** | `opts.script: ScenarioFn` | Async function gets a `ScriptContext` during the dwell. See `docs/scripting.md`. |
+| **Movement (working)** | `ctx.walkTo` / `walkCircle` / `walkToCell` | Real `ObjControllerMessage(CM_netUpdateTransform=113)` wire path with auto teleport-ack bootstrap. Float positions, server-validated speed. Character actually moves in-game. |
+| **Survey flow** | `ctx.fetchSurveyResources(toolId)` → `ctx.survey(toolId, name)` → `ctx.waitForSurvey()` | Two-step radial-menu Use → ResourceListForSurveyMessage → per-type requestsurvey → SurveyMessage. Returns 9 sample points per type. |
+| **Resource stats** | `ctx.fetchResourceAttributes([ids])` | Batched `getAttributesBatch` → AttributeListMessage per id. Full OQ/CR/DR/HR/SR/UT/ER/PE/MA/CD stats for any ResourceTypeObject; no physical core-sampling needed. |
+| **Crafting session** | `ctx.beginCrafting` / `selectCraftingSchematic` / `assignCraftingSlot` / `clearCraftingSlot` / `craftExperiment` / `finishCrafting` | End-to-end crafting flow with decoded result messages |
+| **Missions** | `ctx.requestMissionList` / `acceptMission` / `removeMission` / `abortMission` | Driven through `MissionObject` baselines + the four `CM_mission*` subtypes |
+| **Group + trade** | `ctx.useAbility('invite'|'join'|...)` + `CM_setGroup` / `CM_secureTrade` decoders | Two-client coordination via Fleet — see `scripts/group-trade-demo.ts` |
+| **Chat** | `ctx.say` / `tell` / `sendMail` / `sendToChannel` / `requestChannelList` | `say` uses the server-side `spatialChatInternal` CommandQueue command (the path the real Windows client uses) |
+| **Combat / posture / dance** | `attackTarget` / `useAbility` / `changePosture` / `startDance` | Posture cycling, dance/perform, combat queueing |
+| **Bundled scenarios** | `src/scenarios/` + CLI `--script=<name>` | `walk-line`, `walk-circle`, `open-inventory`, `combat-attack`, `posture-cycle`, `survey`, `group-trade`, `dwell` |
+| **Example scripts** | `scripts/examples/` | ~25 ready-to-run scripts: walking patterns, surveying loops, chat/mail bots, parade/dance, crafting soak, gradient-ascent surveys, etc. |
+| **Fleet (multi-client)** | `Fleet.run([cfgs], opts)` + CLI `swarm` | N independent clients in parallel with staggered launches + concurrency caps + per-message-name summary |
 | **Capture + replay** | `captureLifecycle()` / `replay()` + CLI `capture`/`replay` | Record a session as NDJSON; replay it to detect server-side wire-format drift |
-| **ObjController subtype decoder** | `src/messages/game/obj-controller/` | Decode the variable-length trailer based on `controllerType` — 8 most common subtypes covered |
-| **Character pool** | `CharacterPool` + CLI `pool` + `poolCredentials()` in `tests/integration/helpers.ts` | Persistent check-out database (JSON-backed, lockfile-coordinated) for pre-created characters. Pre-stock the cluster's character quota once via `pool stock`; tests `CI_USE_POOL=1` opt-in to lease from the pool instead of leaking new chars per run. |
+| **Expectations** | `ctx.expectWithin` / `expectAbsent` / `expectAfter` | Async assertions tied to inbound messages — soft (record failure) or hard (throw) |
+| **ObjController subtype decoder** | `src/messages/game/obj-controller/` | 25+ subtypes decoded: combat, movement (`CM_netUpdateTransform=113`/`241`, `CM_teleportAck=319`), posture, mood, chat, crafting, menus, missions, groups, trade, dance, tip. |
+| **Character pool** | `CharacterPool` + CLI `pool` + `poolCredentials()` in `tests/integration/helpers.ts` | Persistent check-out DB (JSON-backed, lockfile-coordinated). Pre-stock once via `pool stock`; tests `CI_USE_POOL=1` lease instead of leaking new chars. |
 
 ## Six wire-format gotchas (memorize)
 
@@ -184,16 +203,16 @@ podman ps | grep swg-server                # should be Up
 ```
 
 If LIVE tests fail, the issue is almost always one of:
-- Server's wire protocol drifted from what we encode → check `~/code/swg-main`'s submodule pin (bug #7)
+- Server's wire protocol drifted from what we encode → check `~/code/swg-main`'s submodule pin. Update the affected message struct here (find the C++ commit that added/removed fields, update `varCount` + encode/decode) or roll the server's submodule back.
 - The `swg-server` cluster isn't reporting "ready for players" → check `podman logs swg-server | grep 'ready'`
-- Firewall — the host's `firewalld` must have 44453/UDP, 44463/UDP open (see `~/code/swg-main/CLAUDE.md` bug #4)
+- Firewall — the host's `firewalld` must have 44453/UDP, 44463/UDP open (see `~/code/swg-main/CLAUDE.md`)
 
 Run a single live test for fast diagnosis:
 ```bash
 LIVE=1 pnpm test tests/integration/live-login.test.ts
 ```
 
-If THAT passes but `live-zone-in-and-logout.test.ts` fails, the issue is in Stage 2/3 (character creation, GameServer routing) — start by inspecting the JSON `transcript` field in `LifecycleResult`.
+If THAT passes but `live-zone-in-and-logout.test.ts` fails, the issue is in Stage 2/3 (character creation, GameServer routing) — start by inspecting the JSON `transcript` field in `LifecycleResult`. For broader drift, capture a known-good transcript via `pnpm cli capture --output=baseline.ndjson` and `replay` it after the bump to surface the diff.
 
 ## Public API surface
 
@@ -203,7 +222,17 @@ If THAT passes but `live-zone-in-and-logout.test.ts` fails, the issue is in Stag
 
 **Client** — `SwgClient`, `lifecycleResultToJSON`, plus `LifecycleResult`, `FullLifecycleOptions`, `SwgClientOptions`, `TranscriptEvent`, and the per-stage `LoginStageResult` / `ConnectionStageResult` / `GameStageResult` / `BaselineSummary`.
 
-**Scripting** — `ScenarioFn`, `ScriptContext`, `ScriptResult`, `WalkToOptions`, `CircleOptions`, `scenarios` (registry), `ScenarioFactory`.
+**Scripting** — `ScenarioFn`, `ScriptContext`, `ScriptResult`, `WalkToOptions`, `CircleOptions`, `WalkToCellOptions`, `SayOptions`, `Posture`, `scenarios` (registry), `ScenarioFactory`, `ExpectOptions`.
+
+**Survey / resources** — `SurveyMessage`, `ResourceListForSurveyMessage`, types `ResourceListItem`, `SurveyPoint`. Driven via `ctx.fetchSurveyResources`, `ctx.survey`, `ctx.waitForSurvey`, `ctx.fetchResourceAttributes`.
+
+**Radial menu** — `ObjectMenuSelectMessage`, `RadialMenuTypes` (stable enum: `ITEM_USE=21`, `EXAMINE=7`, `ITEM_OPEN=17`, etc.).
+
+**Missions** — top-level message classes + `CM_mission*` subtype decoders (request list, accept, abort, remove).
+
+**Crafting** — full session helpers and the seven crafting subtype decoders (start, draft schematics, select, slot assign/empty, experiment, result, finish).
+
+**Container baselines** — `buildContainerIndex` (walk inventory trees from a transcript), `ContainerItem`.
 
 **Fleet** — `Fleet`, `FleetClientConfig`, `FleetOptions`, `FleetRunOptions`, `FleetOutcome`, `FleetResult`, `FleetSummary`, `FleetMessageCount`.
 
@@ -211,7 +240,7 @@ If THAT passes but `live-zone-in-and-logout.test.ts` fails, the issue is in Stag
 
 **Capture + replay** — `captureLifecycle`, `replay`, `replayScenario`, `attachCapture`, `transcriptToNdjson`, `transcriptFromNdjson`, `readTranscript`, `writeTranscript`, `eventsFromTranscript`, plus `CapturedEvent`, `CaptureLifecycleOptions`, `CaptureLifecycleResult`, `ReplayOptions`, `ReplayResult`, `ReplayScenarioOptions`, `ReplayScriptContext`.
 
-**Chat message classes** — `ChatInstantMessageToCharacter`, `ChatInstantMessageToClient`, `ChatRequestRoomList`, `ChatRoomList`, `ChatSendToRoom`, `ChatPersistentMessageToServer`, plus `chatAvatarId` factory, `ChatRoomType`, `PERSISTENT_MESSAGE_MAX_SIZE`, and types `ChatAvatarId`, `ChatRoomData`.
+**Chat** — `ChatInstantMessageToCharacter`, `ChatInstantMessageToClient`, `ChatRequestRoomList`, `ChatRoomList`, `ChatSendToRoom`, `ChatPersistentMessageToServer`, plus `chatAvatarId` factory, `ChatRoomType`, `PERSISTENT_MESSAGE_MAX_SIZE`, and types `ChatAvatarId`, `ChatRoomData`. `ObjController` subtype decoders for spatial chat receive.
 
 Individual stage drivers and the `dispatcher` are also exported as types — use them if you want to do something more granular than `fullLifecycle()` (e.g. login but skip zone-in).
 
@@ -224,34 +253,41 @@ Individual stage drivers and the `dispatcher` are also exported as types — use
 | Write a scenario script | `docs/scripting.md` + `src/scenarios/index.ts` as template |
 | Understand wire bytes | `docs/wire-spec.md` (distilled spec) |
 | Trace the 4-stage lifecycle | `docs/lifecycle.md` (state diagram + per-stage tables + script hook) |
+| Survey resources at a location | `scripts/check-resources-at-location.ts` (full radial → list → per-type survey → stats flow) |
+| Fetch resource stats without sampling | `ctx.fetchResourceAttributes([ids])` (uses `getAttributesBatch`) |
+| Implement movement in a custom script | `ctx.walkTo` / `walkCircle` / `walkToCell` auto-handle teleport-ack; for raw `ctx.send(...)` of transforms call `await ctx.ackPendingTeleports()` once first |
 | Run N clients in parallel (load test) | `docs/scripting.md` → "Fleet" section + `src/client/fleet.ts` |
 | Capture a wire transcript / replay it | `docs/scripting.md` → "Capture and replay" + `src/client/replay.ts` |
 | Debug a live test failure | `src/client/swg-client.ts` — `transcript` field captures every send/recv |
 | Add a new live test | `tests/integration/live-*.test.ts` as template (LIVE=1 gated) |
+| Find a working example for X | `scripts/examples/` — ~25 scripts covering walking, surveying, chat/mail bots, parade/dance, crafting soak, etc. |
 | Reuse a character across CI runs | Set `CI_REUSE_ACCOUNT` + `CI_REUSE_CHARACTER` (`tests/integration/helpers.ts`) |
 | Use a check-out pool (multi-account tests) | `swg-ts-cli pool stock --count=N` once → set `CI_USE_POOL=1` → tests call `poolCredentials(prefix, count)`. See `src/client/character-pool.ts`. |
 | Inspect captured wire | `tests/fixtures/{session-response-17b,login-enum-cluster-223b}.hex` |
 | Wire decryption sanity check | `src/soe/connection.test.ts` — feeds captured bytes through full pipeline |
 | Verify a constcrc value | `src/crc/constcrc.test.ts` — golden values from the C++ table |
 
-## Known limitations (out of MVP scope)
+## Known limitations
 
-- 2 server-internal CRCs (`0x0e20d7e9 = DescribeConnection`, `0x58c07f21 = SystemAssignedProcessId`) arrive but aren't modeled — logged as `unknownCrc` in transcript; harmless.
-- Live integration tests leak timestamp-suffixed characters in the DB unless `CI_REUSE_ACCOUNT` + `CI_REUSE_CHARACTER` are set (see `tests/integration/helpers.ts`). In reuse mode, file parallelism is forced off (`vitest.config.ts`) because the server allows one session per account.
-- `ObjControllerMessage` subtype decoding covers the **8 most common** subtypes (CombatAction, CombatSpam, PostureChange, AttributeChanged, SitOnObject, MoodChange, ObjectMenuRequest/Response). Other subtypes still flow as opaque bytes with a diagnostic `subtypeCrcHex`. Add more in `src/messages/game/obj-controller/`.
-- **Spatial chat** is fully wire-modeled. `ctx.say(text, opts?)` wraps the server's `spatialChatInternal` CommandQueue command — the same path the real Windows client uses. The direct `CM_spatialChatSend(243)` ObjController subtype is NOT a viable client→server path: the server's `ControllerMessageFactory::allowFromClient` registry has it set to `false` (MessageQueueSpatialChat.cpp:26), so anything sent via that subtype is logged as a HackAttempts entry and dropped (Client.cpp:972). Inbound broadcasts arrive as `ObjControllerMessage` with `message=CM_spatialChatReceive(244)`, decoded via `SpatialChatReceiveDecoder`. The `tests/integration/live-spatial-chat.test.ts` self-broadcast variant exercises the round-trip end-to-end (single client, no need for character creation).
-- Send-path fragmentation isn't plumbed into `SoeConnection.sendApp`. Client→server messages are all small (< 200 bytes typical, max ~1KB for ClientCreateCharacter). If you ever need to send something > ~480 bytes, this will need fixing.
+- Some server-internal CRCs (e.g. `0x0e20d7e9 = DescribeConnection`, `0x58c07f21 = SystemAssignedProcessId`, plus various baseline/template hashes) arrive but aren't modeled — logged as `unknownCrc` in transcript; harmless.
+- Live integration tests leak timestamp-suffixed characters in the DB unless `CI_REUSE_ACCOUNT` + `CI_REUSE_CHARACTER` are set, or `CI_USE_POOL=1` leases from a pre-stocked character pool (see `tests/integration/helpers.ts`). In reuse mode, file parallelism is forced off (`vitest.config.ts`) because the server allows one session per account.
+- `ObjControllerMessage` subtype decoding covers 25+ subtypes (combat, movement, posture, mood, chat, crafting, missions, groups, trade, menus, dance, tip, etc.). Anything not registered flows as opaque bytes with a diagnostic `subtypeCrcHex`. Add more in `src/messages/game/obj-controller/`.
+- **Spatial chat** is fully wire-modeled. `ctx.say(text, opts?)` wraps the server's `spatialChatInternal` CommandQueue command — the same path the real Windows client uses. The direct `CM_spatialChatSend(243)` ObjController subtype is NOT a viable client→server path: the server's `ControllerMessageFactory::allowFromClient` registry has it set to `false` (MessageQueueSpatialChat.cpp:26), so anything sent via that subtype is logged as a HackAttempts entry and dropped (Client.cpp:972). Inbound broadcasts arrive as `ObjControllerMessage` with `message=CM_spatialChatReceive(244)`, decoded via `SpatialChatReceiveDecoder`. `tests/integration/live-spatial-chat.test.ts` exercises the round-trip end-to-end.
+- **Survey tools spawned via admin `/object createIn` work** (they have the right `VAR_SURVEY_CLASS` objvar). Fresh characters created via `domestics_trader` profession (or any non-NGE legacy profession) do NOT come with tools — the NPE roadmap reward table grants tools as the player completes phase-1 novice tasks, not at character creation. For scripted tests use a character that already has tools (admin-spawned or pre-NPE).
+- Send-path fragmentation isn't plumbed into `SoeConnection.sendApp`. Client→server messages from this codebase are all small (< 200 bytes typical, max ~1KB for ClientCreateCharacter). If you ever need to send something > ~480 bytes, this will need fixing. (The real Windows client DOES fragment — its initial SUI-list `getAttributesBatch` call can be ~1800 bytes — but ours collapses naturally because we don't issue those.)
 - AckAll uses raw 16-bit wire seq rather than reconstructed 64-bit ID. Fine until we accumulate > 65k outstanding reliables (never happens).
 - ClockSync/ClockReflect are received and silently dropped. No ping stats. Not needed for any current test.
 - Replay compares `recv` shape, not bytes. Live servers emit non-deterministic neighbor updates between runs, so strict order-equality (`--compare=names`) often surfaces "missing"/"unexpected" diffs even on a clean replay. Use `--compare=count` (multiset) for a more permissive check.
+- Only `swg`–`swg5` accounts can create characters (admin allowlist at `dsrc/.../datatables/admin/stella_admin.tab`). Other accounts will see `canCreateRegularCharacter=false` and `ClientCreateCharacterFailed`. Fleet tests using arbitrary `--user-prefix` accounts therefore need the character pool or pre-existing characters.
 
 ## When you next sit down
 
-1. `cd ~/code/swg-ts-client && nvm use && pnpm test` — confirm baseline (should be 413 unit green; 419 total under `LIVE=1`).
+1. `cd ~/code/swg-ts-client && nvm use && pnpm test` — confirm baseline (should be ~924 unit green; ~945 total under `LIVE=1`).
 2. If anything's red, check `git log --oneline` — most recent change is probably the culprit; revert it locally and retry.
-3. If you bumped `~/code/swg-main` submodules, the wire-format may have drifted. Run `LIVE=1 pnpm test tests/integration/live-login.test.ts` — if it fails with a `LoginIncorrectClientId` or `Archive::ReadException`-style error, you're seeing bug-7 manifest in the test client. Either update the message struct here to match (find the C++ commit that added/removed fields, update `varCount` + encode/decode), or roll the server's submodule back. For broader drift, capture a known-good transcript via `pnpm cli capture --output=baseline.ndjson` and `replay` it after the bump.
+3. If you bumped `~/code/swg-main` submodules, the wire-format may have drifted. Run `LIVE=1 pnpm test tests/integration/live-login.test.ts` — if it fails with a `LoginIncorrectClientId` or `Archive::ReadException`-style error, the message struct shape changed server-side. Find the C++ commit that added/removed fields, update `varCount` + encode/decode here. For broader drift, replay a baseline NDJSON capture (`pnpm cli capture` once on green, then `pnpm cli replay --compare=count` after the bump).
 4. To do "more SWG protocol work" — read `docs/adding-a-message.md` and pick a message from `~/code/swg-main/src/engine/shared/library/sharedNetworkMessages/src/shared/`. The mechanical pattern handles itself. For ObjController subtypes (combat/movement/etc.) the recipe is the same but the file lives in `src/messages/game/obj-controller/` and registers via the subtype CRC instead of the top-level `messageRegistry`.
-5. To write a scenario script — read `docs/scripting.md`, copy a factory in `src/scenarios/index.ts`, and run with `pnpm cli zone --script=<name>`.
+5. To write a scenario script — read `docs/scripting.md`, copy a factory in `src/scenarios/index.ts`, and run with `pnpm cli zone --script=<name>`. For one-off in-world bots, look at `scripts/examples/` for ~25 working examples.
+6. To survey resources at a location — `pnpm tsx scripts/check-resources-at-location.ts --host=... --user=... --character=... --x=... --z=...` does the full radial-Use → ResourceListForSurveyMessage → per-type survey → resource-stats fetch loop end-to-end.
 
 ## Don't
 

@@ -1,9 +1,11 @@
 # Adding a new GameNetworkMessage
 
-This is the cookie-cutter recipe for adding any of the ~80 in-game
-messages (movement, chat, combat, crafting, etc.) that the MVP doesn't
-model yet. Each step is mechanical — the hardest part is finding the
-right C++ file.
+This is the cookie-cutter recipe for adding any of the in-game messages
+that aren't yet modeled. The client covers ~35 top-level GameNetworkMessages
+and 25+ ObjController subtypes today (movement, survey, crafting, missions,
+group, trade, chat, combat, etc.), but the SWG protocol has hundreds more —
+when you need one that isn't covered, drop it in via this recipe. Each step
+is mechanical; the hardest part is finding the right C++ file.
 
 ---
 

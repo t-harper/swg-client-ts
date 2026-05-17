@@ -399,18 +399,46 @@ Reference: `GenericValueTypeMessage.h`. Our impl: `src/messages/base.ts:defineGe
 
 ### Game-stage (GameServer-via-ConnectionServer ↔ client)
 
-| Message | constcrc | varCount |
-|---------|----------|----------|
-| `CmdStartScene` | 0x6dfdcb13 | 9 |
-| `SceneCreateObjectByCrc` | 0x5e91d4d6 | 5 |
-| `SceneCreateObjectByName` | 0x88e15bba | 5 |
-| `SceneEndBaselines` | 0x9eaaa28f | 2 |
-| `CmdSceneReady` | 0x18c5a13e | 1 |
-| `HeartBeat` | 0xa1668faf | 1 |
-| `LogoutMessage` | 0x42f5b965 | 1 |
-| `ObjControllerMessage` | varies | 5 (+trailer) |
-| `UpdateTransformMessage` | varies | 10 |
-| `AttributeListMessage` | varies | 5 |
+| Message | constcrc | varCount | Notes |
+|---------|----------|----------|-------|
+| `CmdStartScene` | 0x6dfdcb13 | 9 | Server → client zone-in trigger |
+| `SceneCreateObjectByCrc` | 0x5e91d4d6 | 5 | Baselines flood |
+| `SceneCreateObjectByName` | 0x88e15bba | 5 | Baselines flood |
+| `SceneEndBaselines` | 0x9eaaa28f | 2 | End of zone-in flood |
+| `CmdSceneReady` | 0x18c5a13e | 1 | Client → server: "I'm ready" |
+| `HeartBeat` | 0xa1668faf | 1 | Periodic keepalive |
+| `LogoutMessage` | 0x42f5b965 | 1 | Client → server logout |
+| `ObjControllerMessage` | 0x80ce5e46 | 5 (+trailer) | The fat workhorse; trailer dispatched by `message` int. See subtype table below. |
+| `UpdateTransformMessage` | varies | 10 | **Server → client broadcast only.** Client→server movement uses `ObjControllerMessage(CM_netUpdateTransform=113)` — see below. |
+| `UpdateTransformWithParentMessage` | varies | 11 | Server → client cell-relative broadcast |
+| `AttributeListMessage` | varies | 5 | Item / resource stats (`{key, value}` pairs) |
+| `ObjectMenuSelectMessage` | constcrc of `"ObjectMenuSelectMessage::MESSAGE_TYPE"` | 3 | Client → server: trigger an OnObjectMenuSelect on a target. Trailer: `[NetworkId target][u16 itemId]`. itemId values from `RadialMenuTypes` (ITEM_USE=21, EXAMINE=7, etc.). |
+| `SurveyMessage` | 0x877f79ac | varies | Server → client survey response with sample points |
+| `ResourceListForSurveyMessage` | 0x8a64b1d5 | 4 | Server → client list of resource types currently spawned for a tool's class |
+
+### ObjController subtypes
+
+`ObjControllerMessage` is wire-framed as the 20-byte header `[u32 flags][i32 message][NetworkId][f32 value]` plus a subtype-specific trailer. The `message` int is a `CM_*` enum value from `~/code/swg-main/src/engine/shared/library/sharedFoundation/src/shared/GameControllerMessage.def`. Subtypes we decode (see `src/messages/game/obj-controller/`):
+
+| `message` | Name | Direction | Trailer / notes |
+|---|---|---|---|
+| 113 | `CM_netUpdateTransform` | both | World-coord movement. Trailer = `MessageQueueDataTransform` (45 bytes): `[u32 syncStamp][i32 seq][Quat 4×f32][Vec3 3×f32][f32 speed=0][f32 lookAtYaw=0][u8 useLookAtYaw=0]`. NEGATIVE `seq` from server is the teleport-lockout signal — see `CM_teleportAck`. |
+| 204 | `CM_combatAction` | server | Combat-action broadcast: who attacked whom with what action |
+| 241 | `CM_netUpdateTransformWithParent` | both | Cell-relative variant: same as 113 prefixed with `[NetworkId parentCell]` |
+| 243/244 | `CM_spatialChatSend` / `CM_spatialChatReceive` | C/S | Chat — `allowFromClient=false` for send-from-client; use the `say` CommandQueue path instead |
+| 245/249/251/256 | `CM_mission*Request` / `*Response` | both | Mission list, accept, remove, create |
+| 258/259/262/263/264/266/268/270/271 | `CM_*` (crafting) | both | Crafting session: draft schematics, slot assign/empty, experiment, finish, result |
+| 278 | `CM_commandQueueEnqueue` | client | Wraps a `CommandQueueEnqueue { sequenceId, commandHash, targetId, params }` — the path `useAbility` / `survey` / `say` / etc. all go through |
+| 305 | `CM_setPosture` | server | Posture change broadcast |
+| 308 | `CM_combatSpam` | server | Combat text spam |
+| 315 | `CM_sitOnObject` | server | Sit-on-chair-object broadcast |
+| 319 | `CM_teleportAck` | client | ACK for a teleport-lockout signal. Trailer: `[i32 sequenceId]` matching the negative seq the server sent via CM=113. |
+| 322 | `CM_missionAbort` | both | Player-initiated mission abort |
+| 326/327 | `CM_objectMenuRequest` / `Response` | both | Radial menu fetch / populate |
+| 351/421 | `CM_setGroupInviter` / `setGroup` | server | Group formation broadcasts |
+| 422 | `CM_setMood` | server | Mood change |
+
+Other CM IDs flow as opaque bytes with a diagnostic `subtypeCrcHex` field for log inspection.
 
 Confirm any of these by running:
 

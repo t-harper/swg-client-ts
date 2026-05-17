@@ -288,3 +288,36 @@ export type {
   ReplayScenarioOptions,
   ReplayScriptContext,
 } from './client/replay.js';
+
+// =============================================================================
+// SecureTrade handshake (Feature 2)
+// =============================================================================
+export {
+  AbortTradeMessage,
+  AbortTradeMessageDecoder,
+  AcceptTransactionMessage,
+  AcceptTransactionMessageDecoder,
+  AddItemMessage,
+  AddItemMessageDecoder,
+  BeginTradeMessage,
+  BeginTradeMessageDecoder,
+  GiveMoneyMessage,
+  GiveMoneyMessageDecoder,
+  RemoveItemMessage,
+  RemoveItemMessageDecoder,
+  TradeCompleteMessage,
+  TradeCompleteMessageDecoder,
+  UnAcceptTransactionMessage,
+  UnAcceptTransactionMessageDecoder,
+  VerifyTradeMessage,
+  VerifyTradeMessageDecoder,
+} from './messages/game/trade/index.js';
+export type { TradeWithOptions, TradeWithResult } from './client/script/context.js';
+// Re-export the existing ObjController-level trade subtypes alongside the
+// top-level handshake messages for one-stop discovery.
+export {
+  TradeMessageId,
+  TradeStartDecoder,
+  TradeStartKind,
+} from './messages/game/obj-controller/index.js';
+export type { TradeStartData } from './messages/game/obj-controller/index.js';

@@ -80,6 +80,8 @@ Declared in `src/client/script/context.ts`.
 | `waitForSampleEvent({ timeoutMs?, predicate? })` | Resolves to `{ kind: SampleEventKind, raw }` where `kind` is one of `'located'` / `'failed'` / `'cancel'` / `'in_progress'` / `'start'` / `'mind'` / `'density'` / `'trace'` / `'other'` (parsed from the STF token in `ChatSystemMessage.outOfBand`). |
 | **Missions** | |
 | `requestMissionList(terminalId, { flags? })` / `acceptMission` / `removeMission` / `abortMission` | Driven through `CM_mission*` subtypes; server replies with `MissionObject` baselines + `PopulateMissionBrowserMessage` + `CM_missionAcceptResponse` |
+| **SecureTrade** | |
+| `tradeWith(otherId, { items?, credits?, beginTimeoutMs?, acceptTimeoutMs?, verifyTimeoutMs? })` | Drive the full handshake end-to-end. Sends `CM_secureTrade(RequestTrade)` → waits for `BeginTradeMessage` (server confirms other party accepted) → sends `AddItemMessage` per item + `GiveMoneyMessage` if credits > 0 + `AcceptTransactionMessage` → waits for `VerifyTradeMessage` (or `AbortTradeMessage`) → echoes `VerifyTradeMessage` → waits for `TradeCompleteMessage`. Resolves `{ completed: true }` on success or `{ completed: false, abortReason: 'no-begin'|'aborted'|'no-verify'|'no-complete' }` on failure. Default per-step timeout 15s. |
 | **Crafting** | |
 | `beginCrafting(toolId, schematicCrc?)` | `useAbility('requestCraftingSession', toolId, ...)`. Server opens session and replies with `CM_craftingResult` + `CM_draftSchematicsMessage`. |
 | `waitForDraftSchematics({ timeoutMs? })` | Resolves the server's `DraftSchematicsMessage` — list of `{serverCrc, sharedCrc, category}` entries you can choose from. Default timeout 8s. |
@@ -109,7 +111,7 @@ Registered in `src/scenarios/index.ts`. Pass `--script=<name>` and zero or more 
 | `combat-attack` | `targetId=(required) durationMs=5000 tickMs=1000` | Queue `attack` against `targetId` every tickMs |
 | `posture-cycle` | `durationMs=5000 tickMs=1000` | Cycle standing → crouched → prone → standing |
 | `survey` | `toolId=(required) resourceTypeName=(required) waitMs=2000` | One-shot `requestsurvey` (assumes the tool is already activated; use `ctx.fetchSurveyResources` to discover legal `resourceTypeName` values) |
-| `group-trade` | `role=leader|invitee otherId=(required) tradeAmount?` | Two-client coordination — invite, form group, optional secure-trade, disband. See `scripts/group-trade-demo.ts`. |
+| `group-trade` | `role=leader|invitee otherId=(required) tradeAmount?` | Two-client coordination — invite, form group, drive full SecureTrade handshake via `ctx.tradeWith` when `tradeAmount > 0` (transfers credits leader → invitee), disband. Failures are recorded as soft `assertionFailures`. See `scripts/group-trade-demo.ts`. |
 | `dwell` | `durationMs=5000` | Idle baseline |
 
 `NetworkId` args accept hex (`0x...`) or decimal.

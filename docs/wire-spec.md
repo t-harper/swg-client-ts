@@ -416,6 +416,15 @@ Reference: `GenericValueTypeMessage.h`. Our impl: `src/messages/base.ts:defineGe
 | `SurveyMessage` | 0x877f79ac | varies | Server → client survey response with sample points |
 | `ResourceListForSurveyMessage` | 0x8a64b1d5 | 4 | Server → client list of resource types currently spawned for a tool's class |
 | `ChatSystemMessage` | 0x6d2a6413 | 4 | Server → client system-message prose. Trailer: `[u8 flags][UnicodeString message][UnicodeString outOfBand]`. The `outOfBand` field is a packed-bytes binary (each `u16` codepoint holds 2 wire bytes in LE order) carrying STF references like `survey/sample_located` — see `decodeSampleOob()` for unpacking. |
+| `BeginTradeMessage` | 0x325932d8 | 2 | Server → client. Server confirms both parties accepted the initial `CM_secureTrade(RequestTrade)`. Trailer: `[NetworkId player]` (the OTHER party). |
+| `AddItemMessage` | 0x1e8d1356 | 2 | Bidirectional. Adds a tangible item to the sender's side. Trailer: `[NetworkId object]`. |
+| `RemoveItemMessage` | 0x4417af8b | 2 | Bidirectional. Retracts an item previously added. Trailer: `[NetworkId object]`. |
+| `GiveMoneyMessage` | 0xd1527ee8 | 2 | Bidirectional. Sets credits offered. Trailer: `[i32 amount]`. |
+| `AcceptTransactionMessage` | 0xb131ca17 | 1 | Bidirectional, empty body. "I accept" checkbox. |
+| `UnAcceptTransactionMessage` | 0xe81e4382 | 1 | Bidirectional, empty body. Un-checks acceptance. |
+| `VerifyTradeMessage` | 0x9ae247ee | 1 | Bidirectional, empty body. Final commit confirmation; server pushes to both clients after both accepts, each client echoes back. |
+| `TradeCompleteMessage` | 0xc542038b | 1 | Server → client, empty body. Items + credits moved; trade window can close. |
+| `AbortTradeMessage` | 0x9ca80f98 | 1 | Bidirectional, empty body. Either party cancels at any handshake step. |
 
 ### ObjController subtypes
 

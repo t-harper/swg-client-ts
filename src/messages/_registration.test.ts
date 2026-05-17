@@ -39,6 +39,15 @@ import { SceneCreateObjectByName } from './game/scene-create-object-by-name.js';
 import { SceneEndBaselines } from './game/scene-end-baselines.js';
 import { ResourceListForSurveyMessage } from './game/survey/resource-list-for-survey-message.js';
 import { SurveyMessage } from './game/survey/survey-message.js';
+import { AbortTradeMessage } from './game/trade/abort-trade-message.js';
+import { AcceptTransactionMessage } from './game/trade/accept-transaction-message.js';
+import { AddItemMessage } from './game/trade/add-item-message.js';
+import { BeginTradeMessage } from './game/trade/begin-trade-message.js';
+import { GiveMoneyMessage } from './game/trade/give-money-message.js';
+import { RemoveItemMessage } from './game/trade/remove-item-message.js';
+import { TradeCompleteMessage } from './game/trade/trade-complete-message.js';
+import { UnAcceptTransactionMessage } from './game/trade/unaccept-transaction-message.js';
+import { VerifyTradeMessage } from './game/trade/verify-trade-message.js';
 import { UpdateContainmentMessage } from './game/update-containment-message.js';
 import { UpdateTransformMessage } from './game/update-transform-message.js';
 import { UpdateTransformWithParentMessage } from './game/update-transform-with-parent-message.js';
@@ -78,11 +87,20 @@ const ALL_DECODERS = [
   SurveyMessage,
   ResourceListForSurveyMessage,
   PopulateMissionBrowserMessage,
+  BeginTradeMessage,
+  AddItemMessage,
+  RemoveItemMessage,
+  GiveMoneyMessage,
+  AcceptTransactionMessage,
+  UnAcceptTransactionMessage,
+  VerifyTradeMessage,
+  TradeCompleteMessage,
+  AbortTradeMessage,
 ];
 
 describe('message registration', () => {
-  it('exports 33 message classes', () => {
-    expect(ALL_DECODERS.length).toBe(33);
+  it('exports 42 message classes', () => {
+    expect(ALL_DECODERS.length).toBe(42);
   });
 
   it('every class has a non-empty messageName', () => {

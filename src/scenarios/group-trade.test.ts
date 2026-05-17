@@ -27,6 +27,11 @@ import {
   TradeMessageId,
   TradeStartDecoder,
 } from '../messages/game/obj-controller/index.js';
+import {
+  BeginTradeMessage,
+  TradeCompleteMessage,
+  VerifyTradeMessage,
+} from '../messages/game/trade/index.js';
 import { scenarios } from './index.js';
 
 const LEADER_ID = 0xaa11n;
@@ -164,7 +169,7 @@ describe('group-trade scenario — leader role', () => {
     expect(result.assertionFailures[0]).toMatch(/Timed out.*ObjControllerMessage/);
   });
 
-  it('emits a CM_secureTrade ObjController when tradeAmount > 0', async () => {
+  it('drives the full SecureTrade handshake when tradeAmount > 0', async () => {
     const factory = scenarios['group-trade'];
     if (!factory) throw new Error('group-trade not registered');
     const fn = factory({
@@ -178,9 +183,14 @@ describe('group-trade scenario — leader role', () => {
 
     const runPromise = runScript(fn, ctx);
     setTimeout(() => simulateRecv(buildInboundGroupAccept(GROUP_ID)), POST_INITIAL_DELAY_MS);
-    await runPromise;
+    // After the trade starts, feed each handshake step so it completes.
+    setTimeout(() => simulateRecv(new BeginTradeMessage(INVITEE_ID)), POST_INITIAL_DELAY_MS + 100);
+    setTimeout(() => simulateRecv(new VerifyTradeMessage()), POST_INITIAL_DELAY_MS + 200);
+    setTimeout(() => simulateRecv(new TradeCompleteMessage()), POST_INITIAL_DELAY_MS + 300);
+    const result = await runPromise;
+    expect(result.error).toBeUndefined();
 
-    // Find the trade-start ObjController among the sends.
+    // The initial RequestTrade went via CM_secureTrade ObjController.
     const trade = sent.find(
       (m) =>
         m instanceof ObjControllerMessage &&
@@ -193,6 +203,9 @@ describe('group-trade scenario — leader role', () => {
     expect(decoded.tradeMessageId).toBe(TradeMessageId.RequestTrade);
     expect(decoded.initiatorId).toBe(LEADER_ID);
     expect(decoded.recipientId).toBe(INVITEE_ID);
+
+    // No assertion failures since the handshake completed.
+    expect(result.assertionFailures).toEqual([]);
   });
 
   it('does NOT emit a CM_secureTrade when tradeAmount is 0 (default)', async () => {

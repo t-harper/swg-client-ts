@@ -9,16 +9,9 @@
  *   3. Document its args.
  */
 
-import { ByteStream } from '../archive/byte-stream.js';
-import type { Posture, ScenarioFn, ScriptContext } from '../client/script/context.js';
-import { CLIENT_TO_AUTH_SERVER_FLAGS } from '../messages/game/command-queue/index.js';
+import type { Posture, ScenarioFn } from '../client/script/context.js';
 import { ObjControllerMessage } from '../messages/game/obj-controller-message.js';
-import {
-  ObjControllerSubtypeIds,
-  TradeMessageId,
-  TradeStartDecoder,
-  TradeStartKind,
-} from '../messages/game/obj-controller/index.js';
+import { ObjControllerSubtypeIds } from '../messages/game/obj-controller/index.js';
 import type { NetworkId } from '../types.js';
 
 export type ScenarioFactory = (args: Record<string, string>) => ScenarioFn;
@@ -169,17 +162,15 @@ export const surveyScenario: ScenarioFactory = (args) => {
  *                (command_table.tab:'join') to accept.
  *                Server confirms with `CM_setGroup` (421) to both sides.
  *   3. Both    → wait for `CM_setGroup` (421) with non-zero groupId.
- *   4. Leader  → if `tradeAmount > 0`, attempt to open trade window via a
- *                `CM_secureTrade` (277) ObjController with
- *                `TradeMessageId.RequestTrade`. The full trade handshake uses
- *                top-level SecureTrade messages (BeginTradeMessage,
- *                AddItemMessage, GiveMoneyMessage, AcceptTransactionMessage,
- *                VerifyTradeMessage, TradeCompleteMessage) that this client
- *                does NOT model yet — see SecureTradeMessages.h. The scenario
- *                sends the initial RequestTrade as a smoke test, dwells, and
- *                considers the step "best-effort" — it does NOT assert trade
- *                completion. The unmodeled trade-window step is documented
- *                in CLAUDE.md.
+ *   4. Leader  → if `tradeAmount > 0`, drives the FULL SecureTrade handshake
+ *                via `ctx.tradeWith(otherId, { credits: tradeAmount })`. This
+ *                sends `CM_secureTrade(RequestTrade)` → waits for
+ *                `BeginTradeMessage` → `GiveMoneyMessage(credits)` →
+ *                `AcceptTransactionMessage` → waits for `VerifyTradeMessage` →
+ *                echoes `VerifyTradeMessage` back → waits for
+ *                `TradeCompleteMessage`. Any failure is recorded as a soft
+ *                assertion failure (`assertionFailures`). The handshake is
+ *                fully wire-modeled — see src/messages/game/trade/.
  *   5. Both    → leader sends `useAbility('disband')`, invitee sends
  *                `useAbility('leaveGroup')`. Fleet handles logout.
  *
@@ -192,8 +183,8 @@ export const surveyScenario: ScenarioFactory = (args) => {
  * Args:
  *   role            (required) 'leader' or 'invitee'
  *   otherId         (required) NetworkId of the other character (hex or decimal)
- *   tradeAmount     (default 0) credits to ATTEMPT to transfer leader → invitee.
- *                   The actual transfer is unmodeled (see note above).
+ *   tradeAmount     (default 0) credits to transfer leader → invitee via the
+ *                   full SecureTrade handshake. Skipped when 0.
  *   waitForOtherMs  (default 8000) per-step timeout for cross-client waits.
  *   dwellMs         (default 1000) idle window before disbanding.
  */
@@ -223,7 +214,6 @@ export const groupTradeScenario: ScenarioFactory = (args) => {
       await ctx.expectWithin(ObjControllerMessage, waitForOtherMs, {
         predicate: (m) => {
           if (m.message !== ObjControllerSubtypeIds.CM_setGroup) return false;
-          // Look at the decoded trailer for a non-zero groupId.
           const sub = m.decodedSubtype;
           if (sub === null || sub.kind !== 'GroupAccept') return true;
           const data = sub.data as { groupId: bigint };
@@ -232,12 +222,14 @@ export const groupTradeScenario: ScenarioFactory = (args) => {
         soft: true,
       });
 
-      // 4. Trade attempt (best-effort — see scenario docs above).
+      // 4. Drive the full SecureTrade handshake.
       if (tradeAmount > 0) {
-        // Send the RequestTrade ObjController as a smoke test. The full
-        // trade-window flow uses unmodeled top-level SecureTrade messages.
-        sendRequestTrade(ctx, otherId, ctx.sceneStart.playerNetworkId);
-        await ctx.wait(500);
+        const result = await ctx.tradeWith(otherId, { credits: tradeAmount });
+        if (!result.completed) {
+          ctx.fail(
+            `trade with ${otherId.toString()} did not complete (${result.abortReason ?? 'unknown'})`,
+          );
+        }
       }
 
       // 5. Brief dwell, then disband + let Fleet handle logout.
@@ -247,12 +239,10 @@ export const groupTradeScenario: ScenarioFactory = (args) => {
     } else {
       // Invitee side.
 
-      // 1. Wait for the inbound GroupInvite (CM_setGroupInviter with non-empty
-      //    inviter). On timeout the soft expectWithin auto-records the failure.
+      // 1. Wait for the inbound GroupInvite.
       const invite = await ctx.expectWithin(ObjControllerMessage, waitForOtherMs, {
         predicate: (m) => {
           if (m.message !== ObjControllerSubtypeIds.CM_setGroupInviter) return false;
-          // The "clear inviter" form has inviterId == 0n; we want the real invite.
           const sub = m.decodedSubtype;
           if (sub === null || sub.kind !== 'GroupInvite') return true;
           const data = sub.data as { inviterId: bigint };
@@ -277,7 +267,7 @@ export const groupTradeScenario: ScenarioFactory = (args) => {
         });
       }
 
-      // 4. Dwell to let the leader's trade attempt land (if any).
+      // 4. Dwell to let the leader's trade handshake land (if any).
       if (dwellMs > 0) await ctx.wait(dwellMs);
 
       // 5. Leave the group, then let Fleet handle logout.
@@ -286,39 +276,6 @@ export const groupTradeScenario: ScenarioFactory = (args) => {
     }
   };
 };
-
-/**
- * Send a `CM_secureTrade` ObjController with `tradeMessageId =
- * RequestTrade` to open a trade window. This is the FIRST message of the
- * secure-trade handshake; the rest of the handshake uses top-level
- * SecureTradeMessages (BeginTradeMessage / AddItemMessage / GiveMoneyMessage /
- * AcceptTransactionMessage / VerifyTradeMessage / TradeCompleteMessage)
- * that are NOT yet modeled in this client. Use this as a smoke test only.
- */
-function sendRequestTrade(
-  ctx: ScriptContext,
-  recipientId: NetworkId,
-  initiatorId: NetworkId,
-): void {
-  // Build the trailer for the CM_secureTrade subtype manually since there's
-  // no ScriptContext helper for it.
-  const stream = new ByteStream();
-  const tradeData = {
-    tradeMessageId: TradeMessageId.RequestTrade,
-    initiatorId,
-    recipientId,
-  };
-  TradeStartDecoder.encode(stream, tradeData);
-  const wrapped = new ObjControllerMessage(
-    CLIENT_TO_AUTH_SERVER_FLAGS,
-    ObjControllerSubtypeIds.CM_secureTrade,
-    initiatorId,
-    0,
-    stream.toBytes(),
-    { kind: TradeStartKind, data: tradeData },
-  );
-  ctx.send(wrapped);
-}
 
 export const scenarios: Record<string, ScenarioFactory> = {
   'walk-line': walkLine,

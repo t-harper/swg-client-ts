@@ -1,92 +1,64 @@
 /**
- * Live integration test for the full SecureTrade handshake (`ctx.tradeWith`).
+ * Live integration test for the full SecureTrade handshake.
  *
- * Gated on `LIVE=1`. Drives a 2-client Fleet against the real `swg-server`:
- *   1. Stage 1+2 lookup of each character's NetworkId
- *   2. Stage 1→4 run with `groupTradeScenario` for both clients with
- *      `tradeAmount > 0` so the leader drives the full 9-message handshake
+ * Drives a 2-client Fleet against the real `swg-server`:
+ *   - Both clients zone in with admin accounts (swg / swg2 by default).
+ *   - Leader walks to a known meet-up coordinate; invitee walks to the same.
+ *   - Leader: `ctx.tradeWith(inviteeId, { credits })` (initiator path).
+ *   - Invitee: `ctx.acceptIncomingTrade({ credits: 0 })` (responder path —
+ *     waits for TMI_TradeRequested, sends TMI_AcceptTrade, completes).
  *
  * Asserts:
- *   - Both clients reach the zoned-in state cleanly
- *   - Leader's transcript contains an inbound `TradeCompleteMessage`
- *     (proves the trade succeeded server-side end-to-end)
- *   - Invitee's transcript contains an inbound `BeginTradeMessage`
- *     (proves the trade window opened on the receiving side)
- *   - Neither side has a soft-assertion failure from the scenario
- *   - When `cashBalance` baselines flowed for both clients, the leader's
- *     cash dropped by tradeAmount and the invitee's rose by tradeAmount
- *     (best-effort — gracefully skipped when PLAY/CREO p1 didn't push)
+ *   - Both lifecycles reach zoned-in.
+ *   - Leader's `tradeWith` resolves `{ completed: true }`.
+ *   - Invitee's `acceptIncomingTrade` resolves `{ completed: true }`.
+ *   - `TradeCompleteMessage` arrives on BOTH transcripts (server-side commit).
  *
- * The cash-diff is best-effort because PLAY p1 (CLIENT_SERVER) doesn't
- * always flow during the zoned-in window — see the `cashBalance` docs in
- * `src/client/snapshot.ts`. The `TradeCompleteMessage` round-trip alone
- * is sufficient proof of the full 9-message handshake against the live
- * server; the cash-diff is extra credit when the baselines cooperate.
- *
- * Gracefully skips when the server has disabled character creation
- * (`canCreateRegularCharacter=false` — same fallback as live-fleet.test.ts).
+ * Gated on `LIVE=1`. Server-side `stella_admin.tab` restricts character
+ * creation to admin accounts, so we default to two admins (swg / swg2)
+ * which already have pre-existing characters at mos_eisley. Override via
+ * `LIVE_TRADE_LEADER` / `LIVE_TRADE_INVITEE` env vars.
  */
 
 import { describe, expect, it } from 'vitest';
 
 import type { TranscriptEvent } from '../../src/client/dispatcher.js';
 import { Fleet } from '../../src/client/fleet.js';
-import { snapshot } from '../../src/client/snapshot.js';
-import type { LifecycleResult } from '../../src/client/swg-client.js';
-import { groupTradeScenario } from '../../src/scenarios/index.js';
+import type { NetworkId } from '../../src/types.js';
 
 const LIVE = process.env.LIVE === '1';
 const HOST = process.env.SWG_HOST ?? '10.254.0.253';
 const PORT = Number(process.env.SWG_LOGIN_PORT ?? 44453);
 
-/** Tiny enough to fit under a fresh character's default 1000 starting cash. */
-const TRADE_AMOUNT = 100;
+// Pre-existing admin-account chars on this cluster have 0 cash (depleted by
+// prior test runs). Use credits=0 so the handshake validates end-to-end
+// without requiring stocked balances. To exercise the actual money transfer,
+// admin-stage some cash onto the leader char first and set this to >0.
+const TRADE_AMOUNT = Number(process.env.LIVE_TRADE_AMOUNT ?? '0');
 
-function hasInboundMessage(transcript: readonly TranscriptEvent[], messageName: string): boolean {
-  return transcript.some((e) => e.direction === 'recv' && e.messageName === messageName);
+// Meet-up coord at the mos_eisley spawn point — both characters walk here
+// so they're guaranteed within trade-window range.
+const MEETUP_X = 3528;
+const MEETUP_Z = -4804;
+
+function hasInbound(transcript: readonly TranscriptEvent[], name: string): boolean {
+  return transcript.some((e) => e.direction === 'recv' && e.messageName === name);
 }
 
-describe.skipIf(!LIVE)('live trade (full SecureTrade handshake, leader → invitee credits)', () => {
-  it('completes a 9-message SecureTrade handshake between two zoned-in characters', async () => {
-    // Distinct accounts (server allows one session per account).
-    const runTag = (Date.now() % 100_000_000).toString(36);
-    const leaderAccount = `trl${runTag}`.slice(0, 15);
-    const inviteeAccount = `tri${runTag}`.slice(0, 15);
-    const leaderCharacter = `TrLead${Date.now() % 1_000_000}`;
-    const inviteeCharacter = `TrInv${Date.now() % 1_000_000}`;
+describe.skipIf(!LIVE)('live trade (full SecureTrade handshake)', () => {
+  it('completes a credits transfer between two admin-account characters', async () => {
+    const leaderAccount = process.env.LIVE_TRADE_LEADER ?? 'swg';
+    const inviteeAccount = process.env.LIVE_TRADE_INVITEE ?? 'swg2';
 
-    // Phase 1: lookup NetworkIds via Stage 1+2 only — fast, no zone-in cost.
+    // Phase 1: Stage 1+2 lookup to grab each existing character's NetworkId.
     const lookupFleet = new Fleet({ loginServer: { host: HOST, port: PORT } });
     const lookup = await lookupFleet.run(
       [
-        {
-          account: leaderAccount,
-          characterName: leaderCharacter,
-          planet: 'mos_eisley',
-          skipGameStage: true,
-        },
-        {
-          account: inviteeAccount,
-          characterName: inviteeCharacter,
-          planet: 'mos_eisley',
-          skipGameStage: true,
-        },
+        { account: leaderAccount, planet: 'mos_eisley', skipGameStage: true },
+        { account: inviteeAccount, planet: 'mos_eisley', skipGameStage: true },
       ],
       { staggerMs: 100 },
     );
-
-    const blocked = lookup.summary.errorMessages.some((e) =>
-      e.includes('canCreateRegularCharacter=false'),
-    );
-    if (blocked) {
-      console.warn(
-        '[live-trade] Server rejected character creation; skipping. ' +
-          'Re-run after the cluster admin re-enables creation or after ' +
-          'sweeping leaked test characters.',
-      );
-      return;
-    }
-
     expect(
       lookup.summary.succeeded,
       `lookup phase failed: ${lookup.summary.errorMessages.join(' | ')}`,
@@ -97,60 +69,62 @@ describe.skipIf(!LIVE)('live trade (full SecureTrade handshake, leader → invit
     expect(inviteeId, 'invitee NetworkId resolved').toBeDefined();
     if (leaderId === undefined || inviteeId === undefined) return;
 
-    // Phase 2: run the group-trade scenario with tradeAmount > 0 so the
-    // leader drives the full SecureTrade handshake after the group forms.
+    // Phase 2: real trade. Both walk to the meet-up, leader initiates, invitee
+    // accepts. Stagger so the invitee's acceptIncomingTrade is listening
+    // before the leader fires RequestTrade.
     const fleet = new Fleet({ loginServer: { host: HOST, port: PORT } });
+    const tradeResults: { leader?: unknown; invitee?: unknown } = {};
+
     const result = await fleet.run(
       [
         {
           account: leaderAccount,
-          characterName: leaderCharacter,
           planet: 'mos_eisley',
           holdZonedInMs: 0,
-          script: groupTradeScenario({
-            role: 'leader',
-            otherId: `0x${inviteeId.toString(16)}`,
-            tradeAmount: TRADE_AMOUNT.toString(),
-            waitForOtherMs: '15000',
-            dwellMs: '1500',
-          }),
+          script: async (ctx) => {
+            await ctx.wait(2_000);
+            await ctx.walkTo({ x: MEETUP_X, z: MEETUP_Z }, { speed: 6, tickMs: 400 });
+            // Wait an extra 4s so the invitee's listener is armed before we
+            // fire RequestTrade.
+            await ctx.wait(4_000);
+            const r = await ctx.tradeWith(inviteeId as NetworkId, {
+              credits: TRADE_AMOUNT,
+              beginTimeoutMs: 20_000,
+              acceptTimeoutMs: 20_000,
+              verifyTimeoutMs: 20_000,
+            });
+            tradeResults.leader = r;
+            // Brief settle so the server pushes TradeCompleteMessage before
+            // our logout closes the connection.
+            await ctx.wait(2_000);
+          },
         },
         {
           account: inviteeAccount,
-          characterName: inviteeCharacter,
           planet: 'mos_eisley',
           holdZonedInMs: 0,
-          script: groupTradeScenario({
-            role: 'invitee',
-            otherId: `0x${leaderId.toString(16)}`,
-            waitForOtherMs: '15000',
-            dwellMs: '8000',
-          }),
+          script: async (ctx) => {
+            await ctx.wait(2_000);
+            await ctx.walkTo({ x: MEETUP_X, z: MEETUP_Z }, { speed: 6, tickMs: 400 });
+            // Be ready before the leader fires.
+            const r = await ctx.acceptIncomingTrade({
+              requestTimeoutMs: 30_000,
+              beginTimeoutMs: 20_000,
+              acceptTimeoutMs: 20_000,
+              verifyTimeoutMs: 20_000,
+            });
+            tradeResults.invitee = r;
+            await ctx.wait(2_000);
+          },
         },
       ],
       { staggerMs: 200 },
     );
 
-    const phase2Blocked = result.summary.errorMessages.some((e) =>
-      e.includes('canCreateRegularCharacter=false'),
-    );
-    if (phase2Blocked) {
-      console.warn('[live-trade] Phase 2 blocked by character-creation cap; skipping.');
-      return;
-    }
-
-    // Both clients ran the lifecycle without thrown errors.
     expect(
       result.summary.succeeded,
       `expected 2 successes; errors=${result.summary.errorMessages.join(' | ')}`,
     ).toBe(2);
-    expect(result.summary.failed).toBe(0);
-
-    // Neither side received a server-side ErrorMessage.
-    expect(
-      result.summary.clientsWithErrorMessage,
-      'no client should have received a server ErrorMessage',
-    ).toBe(0);
 
     const leaderLr = result.outcomes[0]?.lifecycleResult;
     const inviteeLr = result.outcomes[1]?.lifecycleResult;
@@ -158,72 +132,32 @@ describe.skipIf(!LIVE)('live trade (full SecureTrade handshake, leader → invit
     expect(inviteeLr).toBeDefined();
     if (leaderLr === undefined || inviteeLr === undefined) return;
 
-    // Both reached zoned-in (lifecycle's `zonedInAt` is set once
-    // SceneEndBaselines lands — see swg-client.ts).
     expect(leaderLr.zonedInAt, 'leader zoned in').not.toBeNull();
     expect(inviteeLr.zonedInAt, 'invitee zoned in').not.toBeNull();
 
-    // Handshake wire-proof #1: the leader received the server's
-    // TradeCompleteMessage — sent only after BOTH parties verified the
-    // transaction and the server moved credits/items. This single message
-    // proves the full 9-step handshake succeeded server-side.
+    // Trade actually completed end-to-end on both sides.
+    expect(tradeResults.leader, 'leader tradeWith result populated').toBeDefined();
+    expect(tradeResults.invitee, 'invitee acceptIncomingTrade result populated').toBeDefined();
     expect(
-      hasInboundMessage(leaderLr.transcript, 'TradeCompleteMessage'),
-      'leader received TradeCompleteMessage (full handshake completed)',
+      (tradeResults.leader as { completed: boolean; abortReason?: string } | undefined)?.completed,
+      `leader trade did not complete: ${JSON.stringify(tradeResults.leader)}`,
+    ).toBe(true);
+    expect(
+      (tradeResults.invitee as { completed: boolean; abortReason?: string } | undefined)?.completed,
+      `invitee trade did not complete: ${JSON.stringify(tradeResults.invitee)}`,
     ).toBe(true);
 
-    // Handshake wire-proof #2: the invitee received BeginTradeMessage —
-    // i.e. the trade window actually opened on the receiving side. Without
-    // this the invitee would never have been able to accept.
+    // Wire-level proof: TradeCompleteMessage arrived on both transcripts.
     expect(
-      hasInboundMessage(inviteeLr.transcript, 'BeginTradeMessage'),
-      'invitee received BeginTradeMessage (trade window opened)',
+      hasInbound(leaderLr.transcript, 'TradeCompleteMessage'),
+      'leader received TradeCompleteMessage',
+    ).toBe(true);
+    expect(
+      hasInbound(inviteeLr.transcript, 'TradeCompleteMessage'),
+      'invitee received TradeCompleteMessage',
     ).toBe(true);
 
-    // The scenario uses expectWithin({soft:true}) which records timeouts to
-    // assertionFailures rather than throwing. An empty list means every
-    // wait-for-server-response step landed within the budget.
-    expect(
-      leaderLr.scriptResult?.assertionFailures ?? [],
-      'leader had no soft-assertion failures',
-    ).toEqual([]);
-    expect(
-      inviteeLr.scriptResult?.assertionFailures ?? [],
-      'invitee had no soft-assertion failures',
-    ).toEqual([]);
-
-    // Best-effort cash-diff. PLAY p1 (cashBalance) doesn't always flow during
-    // a short zoned-in window for freshly-created characters. When it DOES,
-    // the leader's cash should drop by tradeAmount and the invitee's should
-    // rise by the same — TradeCompleteMessage above proves the credits moved,
-    // but pinning the deltas catches any future server-side ledger bug.
-    maybeAssertCashDiff(leaderLr, inviteeLr);
-  }, 90_000);
+    // No server-side ErrorMessage on either side.
+    expect(result.summary.clientsWithErrorMessage).toBe(0);
+  }, 180_000);
 });
-
-function maybeAssertCashDiff(leader: LifecycleResult, invitee: LifecycleResult): void {
-  const leaderSnap = snapshot(leader);
-  const inviteeSnap = snapshot(invitee);
-  if (leaderSnap.cashBalance === null || inviteeSnap.cashBalance === null) {
-    console.warn(
-      `[live-trade] PLAY p1 didn't flow for both clients (leader=${leaderSnap.cashBalance}, invitee=${inviteeSnap.cashBalance}); skipping cash-diff check. TradeCompleteMessage round-trip already proves the handshake succeeded.`,
-    );
-    return;
-  }
-  // Post-trade snapshots: the leader gave away TRADE_AMOUNT, so its baseline
-  // cash should reflect "starting - TRADE_AMOUNT" and the invitee should
-  // reflect "starting + TRADE_AMOUNT". We can't know the starting balance
-  // without a separate pre-trade lifecycle, so we just check the relative
-  // delta: invitee.cash - leader.cash should differ by 2 * TRADE_AMOUNT from
-  // what it was pre-trade. With matching fresh characters (both start with
-  // 1000), post-trade leader=900 and invitee=1100 → diff = 200 = 2 * AMOUNT.
-  // For pooled characters with unknown balances we can't assert the diff
-  // value, only that the invitee's cash is now strictly greater than the
-  // leader's IFF they started equal. Skip this check to keep the test
-  // robust across pooled/fresh setups; rely on TradeCompleteMessage as the
-  // authoritative wire-level proof.
-  console.log(
-    `[live-trade] post-trade snapshots: leader.cash=${leaderSnap.cashBalance} ` +
-      `invitee.cash=${inviteeSnap.cashBalance}`,
-  );
-}

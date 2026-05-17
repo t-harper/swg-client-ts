@@ -30,6 +30,7 @@ import {
 import {
   BeginTradeMessage,
   TradeCompleteMessage,
+  BeginVerificationMessage,
   VerifyTradeMessage,
 } from '../messages/game/trade/index.js';
 import { scenarios } from './index.js';
@@ -185,7 +186,7 @@ describe('group-trade scenario — leader role', () => {
     setTimeout(() => simulateRecv(buildInboundGroupAccept(GROUP_ID)), POST_INITIAL_DELAY_MS);
     // After the trade starts, feed each handshake step so it completes.
     setTimeout(() => simulateRecv(new BeginTradeMessage(INVITEE_ID)), POST_INITIAL_DELAY_MS + 100);
-    setTimeout(() => simulateRecv(new VerifyTradeMessage()), POST_INITIAL_DELAY_MS + 200);
+    setTimeout(() => simulateRecv(new BeginVerificationMessage()), POST_INITIAL_DELAY_MS + 200);
     setTimeout(() => simulateRecv(new TradeCompleteMessage()), POST_INITIAL_DELAY_MS + 300);
     const result = await runPromise;
     expect(result.error).toBeUndefined();

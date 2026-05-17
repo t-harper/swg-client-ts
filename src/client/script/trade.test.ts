@@ -12,6 +12,7 @@ import {
   AcceptTransactionMessage,
   AddItemMessage,
   BeginTradeMessage,
+  BeginVerificationMessage,
   GiveMoneyMessage,
   TradeCompleteMessage,
   VerifyTradeMessage,
@@ -54,7 +55,7 @@ describe('ctx.tradeWith — happy path', () => {
     await tick();
     simulateRecv(new BeginTradeMessage(OTHER_ID));
     await tick();
-    simulateRecv(new VerifyTradeMessage());
+    simulateRecv(new BeginVerificationMessage());
     await tick();
     simulateRecv(new TradeCompleteMessage());
 
@@ -97,7 +98,7 @@ describe('ctx.tradeWith — happy path', () => {
     await tick();
     simulateRecv(new BeginTradeMessage(OTHER_ID));
     await tick();
-    simulateRecv(new VerifyTradeMessage());
+    simulateRecv(new BeginVerificationMessage());
     await tick();
     simulateRecv(new TradeCompleteMessage());
 
@@ -120,7 +121,7 @@ describe('ctx.tradeWith — happy path', () => {
     await tick();
     simulateRecv(new BeginTradeMessage(OTHER_ID));
     await tick();
-    simulateRecv(new VerifyTradeMessage());
+    simulateRecv(new BeginVerificationMessage());
     await tick();
     simulateRecv(new TradeCompleteMessage());
 
@@ -219,7 +220,7 @@ describe('ctx.tradeWith — failure modes', () => {
     await tick();
     simulateRecv(new BeginTradeMessage(OTHER_ID));
     await tick();
-    simulateRecv(new VerifyTradeMessage());
+    simulateRecv(new BeginVerificationMessage());
 
     const result = await promise;
     expect(result).toEqual({ completed: false, abortReason: 'no-complete' });
@@ -236,7 +237,7 @@ describe('ctx.tradeWith — defaults', () => {
     await tick();
     simulateRecv(new BeginTradeMessage(OTHER_ID));
     await tick();
-    simulateRecv(new VerifyTradeMessage());
+    simulateRecv(new BeginVerificationMessage());
     await tick();
     simulateRecv(new TradeCompleteMessage());
 

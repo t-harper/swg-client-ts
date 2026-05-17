@@ -40,6 +40,7 @@ import '../messages/game/baselines/index.js';
 import '../messages/game/chat/index.js';
 import '../messages/game/client-open-container.js';
 import '../messages/game/commodities/index.js';
+import '../messages/game/con-generic-message.js';
 import '../messages/game/cmd-scene-ready.js';
 import '../messages/game/cmd-start-scene.js';
 import '../messages/game/heart-beat.js';

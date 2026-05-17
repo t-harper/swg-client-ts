@@ -28,6 +28,7 @@ import { ChatPersistentMessageToServer } from './game/chat/chat-persistent-messa
 import { ChatRequestRoomList } from './game/chat/chat-request-room-list.js';
 import { ChatRoomList } from './game/chat/chat-room-list.js';
 import { ChatSendToRoom } from './game/chat/chat-send-to-room.js';
+import { ConGenericMessage } from './game/con-generic-message.js';
 import { CmdSceneReady } from './game/cmd-scene-ready.js';
 import { CmdStartScene } from './game/cmd-start-scene.js';
 import { AcceptAuctionMessage } from './game/commodities/accept-auction-message.js';
@@ -64,6 +65,7 @@ import { AbortTradeMessage } from './game/trade/abort-trade-message.js';
 import { AcceptTransactionMessage } from './game/trade/accept-transaction-message.js';
 import { AddItemMessage } from './game/trade/add-item-message.js';
 import { BeginTradeMessage } from './game/trade/begin-trade-message.js';
+import { BeginVerificationMessage } from './game/trade/begin-verification-message.js';
 import { GiveMoneyMessage } from './game/trade/give-money-message.js';
 import { RemoveItemMessage } from './game/trade/remove-item-message.js';
 import { TradeCompleteMessage } from './game/trade/trade-complete-message.js';
@@ -105,6 +107,7 @@ const ALL_DECODERS = [
   ChatRoomList,
   ChatSendToRoom,
   ChatPersistentMessageToServer,
+  ConGenericMessage,
   SurveyMessage,
   ResourceListForSurveyMessage,
   PopulateMissionBrowserMessage,
@@ -113,6 +116,7 @@ const ALL_DECODERS = [
   SuiForceClosePage,
   SuiEventNotification,
   BeginTradeMessage,
+  BeginVerificationMessage,
   AddItemMessage,
   RemoveItemMessage,
   GiveMoneyMessage,
@@ -141,8 +145,8 @@ const ALL_DECODERS = [
 ];
 
 describe('message registration', () => {
-  it('exports 63 message classes', () => {
-    expect(ALL_DECODERS.length).toBe(63);
+  it('exports 65 message classes', () => {
+    expect(ALL_DECODERS.length).toBe(65);
   });
 
   it('every class has a non-empty messageName', () => {

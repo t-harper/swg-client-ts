@@ -45,6 +45,10 @@ export {
 } from './accept-transaction-message.js';
 export { AddItemMessage, AddItemMessageDecoder } from './add-item-message.js';
 export { BeginTradeMessage, BeginTradeMessageDecoder } from './begin-trade-message.js';
+export {
+  BeginVerificationMessage,
+  BeginVerificationMessageDecoder,
+} from './begin-verification-message.js';
 export { GiveMoneyMessage, GiveMoneyMessageDecoder } from './give-money-message.js';
 export { RemoveItemMessage, RemoveItemMessageDecoder } from './remove-item-message.js';
 export { TradeCompleteMessage, TradeCompleteMessageDecoder } from './trade-complete-message.js';

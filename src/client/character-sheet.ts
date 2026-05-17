@@ -220,6 +220,13 @@ export interface CharacterSheet {
   /** GroupObject NetworkId (CREO p6 m_group). `null` if not in a group. */
   readonly groupId: NetworkId | null;
   /**
+   * Numeric guild id (CREO p6 m_guildId). `0` when the player isn't in a
+   * guild. (Surfaced as a plain number rather than `number | null`
+   * because the wire field is i32 with 0 = "no guild" — see GuildObject
+   * usage in GuildObject.cpp:getGuildId.)
+   */
+  readonly guildId: number;
+  /**
    * Lightweight group descriptor when in a group. `members[]` is empty until
    * GroupObject baselines get a typed decoder; for now consumers can use
    * `ctx.world.get(groupId)` to inspect the raw GroupObject baseline state.
@@ -327,6 +334,7 @@ interface SheetState {
   maxAttributesCreoP1: number[];
   currentWeapon: NetworkId;
   groupId: NetworkId;
+  guildId: number;
   groupInviter: PlayerAndShipPair | null;
 }
 
@@ -351,6 +359,7 @@ function makeState(templateName: string | null): SheetState {
     maxAttributesCreoP1: [],
     currentWeapon: 0n,
     groupId: 0n,
+    guildId: 0,
     groupInviter: null,
   };
 }
@@ -379,6 +388,7 @@ export function createCharacterSheet(opts: CharacterSheetOptions): CharacterShee
     if (data.mood !== undefined) state.mood = data.mood;
     if (data.currentWeapon !== undefined) state.currentWeapon = data.currentWeapon;
     if (data.group !== undefined) state.groupId = data.group;
+    if (data.guildId !== undefined) state.guildId = data.guildId;
     if (data.groupInviter !== undefined) {
       // The server signals "no pending invite" by clearing `inviter` to 0n.
       state.groupInviter = data.groupInviter.inviter === 0n ? null : data.groupInviter;
@@ -591,6 +601,9 @@ export function createCharacterSheet(opts: CharacterSheetOptions): CharacterShee
     get groupId(): NetworkId | null {
       return state.groupId === 0n ? null : state.groupId;
     },
+    get guildId(): number {
+      return state.guildId;
+    },
     get group(): CharacterGroup | null {
       if (state.groupId === 0n) return null;
       // Members aren't decoded yet — the GroupObject baseline carries them
@@ -634,6 +647,7 @@ export function createCharacterSheet(opts: CharacterSheetOptions): CharacterShee
         mind: { current: view.mind.current, max: view.mind.max },
         currentWeapon: view.currentWeapon === null ? null : view.currentWeapon.toString(),
         groupId: view.groupId === null ? null : view.groupId.toString(),
+        guildId: view.guildId,
         groupInviter:
           view.groupInviter === null
             ? null

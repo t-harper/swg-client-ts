@@ -134,7 +134,13 @@ import type { GameNetworkMessage } from '../../messages/interface.js';
 import type { NetworkId, SceneStart, Vector3 } from '../../types.js';
 import type { CharacterSheet } from '../character-sheet.js';
 import { createCharacterSheet } from '../character-sheet.js';
+import type { ChatHandlers } from '../chat-handlers.js';
+import { createChatHandlers } from '../chat-handlers.js';
 import type { MessageDispatcher } from '../dispatcher.js';
+import type { GroupView } from '../group-view.js';
+import { createGroupView } from '../group-view.js';
+import type { GuildView } from '../guild-view.js';
+import { createGuildView } from '../guild-view.js';
 import {
   type CombatTimerHandle,
   type CombatTimerView,
@@ -640,6 +646,42 @@ export interface ScriptContext {
    *   ctx.inventory.ready                          // true once populated
    */
   readonly inventory: InventoryView;
+
+  /**
+   * Live, always-fresh view of the player's group. Joins `m_group` on the
+   * local CREO with the GroupObject's roster baseline:
+   *
+   *   ctx.group.id                  // GroupObject NetworkId or null
+   *   ctx.group.size                // member count
+   *   ctx.group.leader?.name        // leader display name
+   *   ctx.group.members             // [{id, name, position, health, posture, distance}, ...]
+   *
+   * `follow(leaderId)` mirrors the leader's transform broadcasts as our
+   * own `CM_netUpdateTransform` until the returned unsubscribe is called.
+   */
+  readonly group: GroupView;
+
+  /**
+   * Live view of the player's guild. `guildId` is from CREO; other fields
+   * are populated only if the GuildObject baselines are visible (typically
+   * SERVER-package only — surface what we can, leave the rest null).
+   *
+   *   ctx.guild.id                  // numeric guild id; 0 if no guild
+   *   ctx.guild.name                // null unless GuildObject SHARED baseline lands
+   *   ctx.guild.abbrev              // best-effort from m_abbrevs
+   */
+  readonly guild: GuildView;
+
+  /**
+   * Predicate-driven chat-handler subscriptions. Each `on*` returns an
+   * unsubscribe function; subscriptions are also auto-detached during
+   * `runScript` cleanup so they don't leak across runs.
+   *
+   *   ctx.chat.onSay(/follow me/i, (text, sender) => ...)
+   *   ctx.chat.onTell(/help/, (text, sender) => ...)
+   *   ctx.chat.onSystemMessage(/level up/, (text) => ...)
+   */
+  readonly chat: ChatHandlers;
   /**
    * Live high-level location view — planet, position, and current cell.
    *
@@ -1615,6 +1657,12 @@ export interface ScriptContext {
 interface InternalContext extends ScriptContext {
   /** Detach handle for the character sheet's dispatcher subscriptions. */
   readonly _characterSheetDetach: () => void;
+  /** Detach handle for the group view's `follow()` subscriptions. */
+  readonly _groupViewDetach: () => void;
+  /** Detach handle for the guild view (currently a no-op; here for symmetry). */
+  readonly _guildViewDetach: () => void;
+  /** Detach handle for every ctx.chat.* subscription registered during the run. */
+  readonly _chatHandlersDetach: () => void;
   /** Crafting-session cache; detached at script teardown. */
   readonly _craftingCache: CraftingSessionCacheImpl;
   /** Survey results cache; detached at script teardown. */
@@ -1862,6 +1910,13 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     },
   });
 
+  const groupViewHandle = createGroupView({
+    dispatcher: opts.dispatcher,
+    playerNetworkId: opts.sceneStart.playerNetworkId,
+    world: opts.world,
+    character: characterSheetHandle.view,
+  });
+
   // Live caches — all detached in `runScript`'s finally block.
   const surveyCache = new SurveyCacheImpl(opts.dispatcher);
   surveyCache.attach();
@@ -1907,6 +1962,14 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     playerNetworkId: opts.sceneStart.playerNetworkId,
   });
 
+  const guildViewHandle = createGuildView({
+    world: opts.world,
+    character: characterSheetHandle.view,
+  });
+
+  const chatHandlersHandle = createChatHandlers({
+    dispatcher: opts.dispatcher,
+  });
   // SUI auto-responder engine + currently-displayed page index. Hung off the
   // dispatcher's onMessage; detached during runScript teardown so handlers
   // don't leak across script runs.
@@ -1964,10 +2027,16 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     hitTimer: combatTimerHandle.view,
     datapad: datapadView,
     inventory: inventoryView,
-    missions: missionsCache,
-    crafting: craftingCache,
+    group: groupViewHandle.view,
+    guild: guildViewHandle.view,
+    chat: chatHandlersHandle.handlers,
     _state: state,
     _characterSheetDetach: characterSheetHandle.detach,
+    _groupViewDetach: groupViewHandle.detach,
+    _guildViewDetach: guildViewHandle.detach,
+    _chatHandlersDetach: chatHandlersHandle.detach,
+    missions: missionsCache,
+    crafting: craftingCache,
     _craftingCache: craftingCache,
     _surveyCache: surveyCache,
     _missionsCache: missionsCache,
@@ -3165,6 +3234,10 @@ export async function runScript(fn: ScenarioFn, ctx: ScriptContext): Promise<Scr
     // multiple times — `detach()` empties the unsubscriber list on the
     // first call.
     internal._characterSheetDetach();
+    // Detach group / guild / chat helpers — all idempotent.
+    internal._groupViewDetach();
+    internal._guildViewDetach();
+    internal._chatHandlersDetach();
     // Detach the timing trackers (cooldowns / serverTime / combat).
     internal._cooldownTrackerDetach();
     internal._serverTimeTrackerDetach();

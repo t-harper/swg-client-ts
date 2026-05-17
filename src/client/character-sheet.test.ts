@@ -22,16 +22,21 @@
  */
 import { describe, expect, it } from 'vitest';
 
+import { AttributeListMessage } from '../messages/game/attribute-list-message.js';
 import { BaselinesMessage } from '../messages/game/baselines/baselines-message.js';
 import type { CreatureObjectClientServerBaseline } from '../messages/game/baselines/creature-object-baseline-1.js';
 import { CreatureObjectClientServerKind } from '../messages/game/baselines/creature-object-baseline-1.js';
 import type { CreatureObjectSharedBaseline } from '../messages/game/baselines/creature-object-baseline-3.js';
 import { CreatureObjectSharedKind } from '../messages/game/baselines/creature-object-baseline-3.js';
+import type { CreatureObjectClientServerNpBaseline } from '../messages/game/baselines/creature-object-baseline-4.js';
+import { CreatureObjectClientServerNpKind } from '../messages/game/baselines/creature-object-baseline-4.js';
 import type { CreatureObjectSharedNpBaseline } from '../messages/game/baselines/creature-object-baseline-6.js';
 import { CreatureObjectSharedNpKind } from '../messages/game/baselines/creature-object-baseline-6.js';
 import { DeltasMessage } from '../messages/game/baselines/deltas-message.js';
 import { EMPTY_STRING_ID, PlayerObjectSharedKind } from '../messages/game/baselines/index.js';
 import type { PlayerObjectClientServerBaseline } from '../messages/game/baselines/player-object-baseline-1.js';
+import type { PlayerObjectFirstParentClientServerBaseline } from '../messages/game/baselines/player-object-baseline-8.js';
+import { PlayerObjectFirstParentClientServerKind } from '../messages/game/baselines/player-object-baseline-8.js';
 import { PlayerObjectClientServerKind } from '../messages/game/baselines/player-object-baseline-1.js';
 import type { PlayerObjectSharedBaseline } from '../messages/game/baselines/player-object-baseline-3.js';
 import { BaselinePackageIds, ObjectTypeTags } from '../messages/game/baselines/registry.js';
@@ -279,6 +284,73 @@ function playClientServerBaseline(
     BaselinePackageIds.CLIENT_SERVER,
     new Uint8Array(0),
     { kind: PlayerObjectClientServerKind, data },
+  );
+}
+
+function makeCreoClientServerNpBaseline(
+  partial: Partial<CreatureObjectClientServerNpBaseline> = {},
+): CreatureObjectClientServerNpBaseline {
+  return {
+    accelPercent: 1,
+    accelScale: 1,
+    attribBonus: [0, 0, 0, 0, 0, 0],
+    modMap: [],
+    movementPercent: 1,
+    movementScale: 1,
+    performanceListenTarget: 0n,
+    runSpeed: 7.3,
+    slopeModAngle: 45,
+    slopeModPercent: 0.5,
+    turnScale: 1,
+    walkSpeed: 1.65,
+    waterModPercent: 0.5,
+    groupMissionCriticalObjectSet: [],
+    commands: [],
+    totalLevelXp: 0,
+    ...partial,
+  };
+}
+
+function creoClientServerNpBaseline(
+  target: bigint,
+  data: CreatureObjectClientServerNpBaseline,
+): BaselinesMessage {
+  return new BaselinesMessage(
+    target,
+    ObjectTypeTags.CREO,
+    BaselinePackageIds.CLIENT_SERVER_NP,
+    new Uint8Array(0),
+    { kind: CreatureObjectClientServerNpKind, data },
+  );
+}
+
+function makePlayFirstParentBaseline(
+  partial: Partial<PlayerObjectFirstParentClientServerBaseline> = {},
+): PlayerObjectFirstParentClientServerBaseline {
+  return {
+    experiencePoints: [],
+    waypoints: [],
+    forcePower: 0,
+    maxForcePower: 0,
+    completedQuests: { numInUseBits: 0, bytes: new Uint8Array(0) },
+    activeQuests: { numInUseBits: 0, bytes: new Uint8Array(0) },
+    currentQuest: 0,
+    quests: [],
+    workingSkill: '',
+    ...partial,
+  };
+}
+
+function playFirstParentBaseline(
+  target: bigint,
+  data: PlayerObjectFirstParentClientServerBaseline,
+): BaselinesMessage {
+  return new BaselinesMessage(
+    target,
+    ObjectTypeTags.PLAY,
+    BaselinePackageIds.FIRST_PARENT_CLIENT_SERVER,
+    new Uint8Array(0),
+    { kind: PlayerObjectFirstParentClientServerKind, data },
   );
 }
 
@@ -708,6 +780,473 @@ describe('CharacterSheet', () => {
       expect(json.health).toEqual({ current: 500, max: 1000 });
       expect(json.currentWeapon).toBe(0xfeedn.toString());
       expect(json.groupId).toBe(0xbeefn.toString());
+    });
+  });
+
+  describe('skillMods (CREO p4 m_modMap)', () => {
+    it('starts empty until the first CREO p4 baseline lands', () => {
+      setup();
+      expect(handle.view.skillMods.size).toBe(0);
+    });
+
+    it('populates `base + bonus` from a CREO p4 baseline', () => {
+      setup();
+      recv(
+        creoClientServerNpBaseline(
+          PLAYER_ID,
+          makeCreoClientServerNpBaseline({
+            modMap: [
+              { name: 'pistol_accuracy', base: 75, bonus: 12 },
+              { name: 'strength_modified', base: 100, bonus: 0 },
+              { name: 'agility_modified', base: 50, bonus: 25 },
+            ],
+          }),
+        ),
+      );
+      expect(handle.view.skillMods.get('pistol_accuracy')).toBe(87);
+      expect(handle.view.skillMods.get('strength_modified')).toBe(100);
+      expect(handle.view.skillMods.get('agility_modified')).toBe(75);
+      expect(handle.view.skillMods.size).toBe(3);
+    });
+
+    it('applies an ADD delta on m_modMap', () => {
+      setup();
+      recv(
+        creoClientServerNpBaseline(
+          PLAYER_ID,
+          makeCreoClientServerNpBaseline({
+            modMap: [{ name: 'pistol_accuracy', base: 75, bonus: 0 }],
+          }),
+        ),
+      );
+      recv(
+        makeDelta(PLAYER_ID, ObjectTypeTags.CREO, BaselinePackageIds.CLIENT_SERVER_NP, {
+          modMap: [
+            { kind: 'add', key: 'pistol_speed', value: { base: 50, bonus: 0 } },
+            { kind: 'set', key: 'pistol_accuracy', value: { base: 75, bonus: 25 } },
+          ],
+        }),
+      );
+      expect(handle.view.skillMods.get('pistol_accuracy')).toBe(100);
+      expect(handle.view.skillMods.get('pistol_speed')).toBe(50);
+    });
+
+    it('ERASE delta removes the named mod', () => {
+      setup();
+      recv(
+        creoClientServerNpBaseline(
+          PLAYER_ID,
+          makeCreoClientServerNpBaseline({
+            modMap: [{ name: 'pistol_accuracy', base: 75, bonus: 0 }],
+          }),
+        ),
+      );
+      recv(
+        makeDelta(PLAYER_ID, ObjectTypeTags.CREO, BaselinePackageIds.CLIENT_SERVER_NP, {
+          modMap: [{ kind: 'erase', key: 'pistol_accuracy', value: { base: 0, bonus: 0 } }],
+        }),
+      );
+      expect(handle.view.skillMods.has('pistol_accuracy')).toBe(false);
+    });
+  });
+
+  describe('xp (PLAY p8 m_experiencePoints)', () => {
+    it('starts empty until first PLAY p8 baseline lands', () => {
+      setup();
+      expect(handle.view.xp.size).toBe(0);
+    });
+
+    it('populates from a PLAY p8 baseline', () => {
+      setup();
+      recv(
+        playFirstParentBaseline(
+          PLAYER_ID,
+          makePlayFirstParentBaseline({
+            experiencePoints: [
+              { category: 'combat_general', amount: 12345 },
+              { category: 'crafting_artisan', amount: 6789 },
+            ],
+          }),
+        ),
+      );
+      expect(handle.view.xp.get('combat_general')).toBe(12345);
+      expect(handle.view.xp.get('crafting_artisan')).toBe(6789);
+    });
+
+    it('applies an ADD delta to add a new category', () => {
+      setup();
+      recv(playFirstParentBaseline(PLAYER_ID, makePlayFirstParentBaseline()));
+      recv(
+        makeDelta(PLAYER_ID, ObjectTypeTags.PLAY, BaselinePackageIds.FIRST_PARENT_CLIENT_SERVER, {
+          experiencePoints: [{ kind: 'add', key: 'combat_brawler', value: 100 }],
+        }),
+      );
+      expect(handle.view.xp.get('combat_brawler')).toBe(100);
+    });
+
+    it('applies a SET delta to update an existing category', () => {
+      setup();
+      recv(
+        playFirstParentBaseline(
+          PLAYER_ID,
+          makePlayFirstParentBaseline({
+            experiencePoints: [{ category: 'combat_general', amount: 100 }],
+          }),
+        ),
+      );
+      recv(
+        makeDelta(PLAYER_ID, ObjectTypeTags.PLAY, BaselinePackageIds.FIRST_PARENT_CLIENT_SERVER, {
+          experiencePoints: [{ kind: 'set', key: 'combat_general', value: 500 }],
+        }),
+      );
+      expect(handle.view.xp.get('combat_general')).toBe(500);
+    });
+  });
+
+  describe('effects (CREO p6 m_buffs)', () => {
+    it('starts empty until first CREO p6 baseline lands', () => {
+      setup();
+      expect(handle.view.effects).toEqual([]);
+    });
+
+    it('decodes buffs into the {name, magnitude, durationSec, expiresAt} shape', () => {
+      setup();
+      recv(
+        creoSharedNpBaseline(
+          PLAYER_ID,
+          makeCreoSharedNpBaseline({
+            buffs: [
+              {
+                buffNameCrc: 0xdeadbeef,
+                buff: {
+                  endtime: 1_700_000_000,
+                  value: 250,
+                  duration: 600,
+                  caster: 0n,
+                  stackCount: 1,
+                },
+              },
+            ],
+          }),
+        ),
+      );
+      expect(handle.view.effects).toHaveLength(1);
+      const e = handle.view.effects[0];
+      expect(e?.name).toBe('deadbeef');
+      expect(e?.magnitude).toBe(250);
+      expect(e?.durationSec).toBe(600);
+      expect(e?.expiresAt).toBe(1_700_000_000);
+    });
+  });
+
+  describe('weapon (currentWeapon + WEAO baselines)', () => {
+    it('returns null when unarmed', () => {
+      setup();
+      expect(handle.view.weapon).toBeNull();
+    });
+
+    it('returns null when the WEAO baselines haven\'t arrived yet', () => {
+      // Without a WorldModel, weapon is always null.
+      setup();
+      recv(creoSharedNpBaseline(PLAYER_ID, makeCreoSharedNpBaseline({ currentWeapon: 0xfeedn })));
+      expect(handle.view.weapon).toBeNull();
+    });
+  });
+
+  describe('roadmap (PLAY p8 m_workingSkill + m_activeQuests)', () => {
+    it('starts null until first PLAY p8 baseline lands', () => {
+      setup();
+      expect(handle.view.roadmap).toBeNull();
+    });
+
+    it('parses currentPhase + currentTask from a standard NGE workingSkill', () => {
+      setup();
+      recv(
+        playFirstParentBaseline(
+          PLAYER_ID,
+          makePlayFirstParentBaseline({
+            workingSkill: 'class_domestics_phase1_novice',
+          }),
+        ),
+      );
+      expect(handle.view.roadmap).not.toBeNull();
+      expect(handle.view.roadmap?.currentPhase).toBe('phase1');
+      expect(handle.view.roadmap?.currentTask).toBe('novice');
+      expect(handle.view.roadmap?.tasksRemaining).toBe(0);
+    });
+
+    it('falls back to whole-string task when workingSkill is non-standard', () => {
+      setup();
+      recv(
+        playFirstParentBaseline(
+          PLAYER_ID,
+          makePlayFirstParentBaseline({ workingSkill: 'combat_brawler_novice' }),
+        ),
+      );
+      expect(handle.view.roadmap?.currentPhase).toBe('');
+      expect(handle.view.roadmap?.currentTask).toBe('combat_brawler_novice');
+    });
+
+    it('counts active-quest bits as tasksRemaining', () => {
+      setup();
+      // 3 bits set: bit 0, bit 2, bit 5 in the first byte → byte = 0b00100101 = 0x25
+      recv(
+        playFirstParentBaseline(
+          PLAYER_ID,
+          makePlayFirstParentBaseline({
+            workingSkill: 'class_domestics_phase1_novice',
+            activeQuests: {
+              numInUseBits: 8,
+              bytes: new Uint8Array([0x25]),
+            },
+          }),
+        ),
+      );
+      expect(handle.view.roadmap?.tasksRemaining).toBe(3);
+    });
+  });
+
+  describe('factionDetails (CREO p3 m_pvpType + PLAY p3 m_currentGcwPoints)', () => {
+    it('defaults to neutral with 0 standing before any baseline', () => {
+      setup();
+      expect(handle.view.factionDetails).toEqual({
+        type: 0,
+        name: 'neutral',
+        standing: 0,
+        pvpStatus: 0,
+      });
+    });
+
+    it('maps type 1 to "imperial"', () => {
+      setup();
+      recv(creoSharedBaseline(PLAYER_ID, makeCreoSharedBaseline({ pvpType: 1 })));
+      expect(handle.view.factionDetails.name).toBe('imperial');
+      expect(handle.view.factionDetails.type).toBe(1);
+      expect(handle.view.factionDetails.pvpStatus).toBe(1);
+    });
+
+    it('maps type 2 to "rebel"', () => {
+      setup();
+      recv(creoSharedBaseline(PLAYER_ID, makeCreoSharedBaseline({ pvpType: 2 })));
+      expect(handle.view.factionDetails.name).toBe('rebel');
+    });
+
+    it('reads standing from PLAY p3 currentGcwPoints', () => {
+      setup();
+      recv(
+        playSharedBaseline(
+          PLAYER_ID,
+          makePlayObjectSharedBaseline({ currentGcwPoints: 5000 }),
+        ),
+      );
+      expect(handle.view.factionDetails.standing).toBe(5000);
+    });
+
+    it('toJSON includes new fields without bigint leaks', () => {
+      setup();
+      recv(creoSharedBaseline(PLAYER_ID, makeCreoSharedBaseline({ pvpType: 1 })));
+      recv(
+        creoClientServerNpBaseline(
+          PLAYER_ID,
+          makeCreoClientServerNpBaseline({
+            modMap: [{ name: 'pistol_accuracy', base: 50, bonus: 0 }],
+          }),
+        ),
+      );
+      recv(
+        playFirstParentBaseline(
+          PLAYER_ID,
+          makePlayFirstParentBaseline({
+            experiencePoints: [{ category: 'combat_general', amount: 100 }],
+            workingSkill: 'class_artisan_phase1_novice',
+          }),
+        ),
+      );
+      const json = handle.view.toJSON() as Record<string, unknown>;
+      expect(() => JSON.stringify(json)).not.toThrow();
+      expect(json.skillMods).toEqual({ pistol_accuracy: 50 });
+      expect(json.xp).toEqual({ combat_general: 100 });
+      expect((json.roadmap as { currentPhase: string }).currentPhase).toBe('phase1');
+      expect((json.factionDetails as { name: string }).name).toBe('imperial');
+    });
+  });
+
+  describe('weapon view (full joined view with mock WorldModel)', () => {
+    it('joins WEAO p3 baseline + AttributeListMessage into the weapon shape', () => {
+      // Build a minimal WorldModel-like with a single weapon entry whose
+      // baselines map contains a synthetic WEAO p3 shape.
+      const { dispatcher, recv: recv2 } = makeFakeDispatcher();
+      const weaponId = 0xfeedn;
+      const worldObj = {
+        id: weaponId,
+        typeId: 0x5745414f, // WEAO
+        typeIdString: 'WEAO',
+        templateName: 'object/weapon/melee/sword/sword_curved.iff',
+        position: { x: 0, y: 0, z: 0 },
+        yaw: 0,
+        parentCell: 0n,
+        cellPosition: { x: 0, y: 0, z: 0 },
+        containerId: 0n,
+        slotArrangement: -1,
+        hyperspace: false,
+        baselines: new Map<number, unknown>([
+          [
+            BaselinePackageIds.SHARED,
+            {
+              attackSpeed: 3.5,
+              maxRange: 5,
+              minRange: 0,
+              accuracy: 10,
+              damageType: 1,
+              elementalType: 0,
+              elementalValue: 0,
+            },
+          ],
+        ]),
+        firstSeenAt: 0,
+        lastUpdatedAt: 0,
+      };
+      const fakeWorld = {
+        get(id: bigint): typeof worldObj | undefined {
+          return id === weaponId ? worldObj : undefined;
+        },
+      };
+      const localHandle = createCharacterSheet({
+        dispatcher,
+        playerNetworkId: PLAYER_ID,
+        world: fakeWorld as unknown as Parameters<typeof createCharacterSheet>[0]['world'],
+      });
+      // Equip the weapon by sending a SHARED_NP baseline with currentWeapon set.
+      recv2(creoSharedNpBaseline(PLAYER_ID, makeCreoSharedNpBaseline({ currentWeapon: weaponId })));
+      // Send the AttributeListMessage with min/max damage and ammo.
+      recv2(
+        new AttributeListMessage(
+          weaponId,
+          '',
+          [
+            { key: 'wpn_damage_min', value: '50' },
+            { key: 'wpn_damage_max', value: '100' },
+            { key: 'wpn_ammo', value: '42' },
+          ],
+          0,
+        ),
+      );
+      const w = localHandle.view.weapon;
+      expect(w).not.toBeNull();
+      expect(w?.networkId).toBe(weaponId);
+      expect(w?.templateName).toBe('object/weapon/melee/sword/sword_curved.iff');
+      expect(w?.attackSpeed).toBeCloseTo(3.5, 5);
+      expect(w?.range).toBe(5);
+      expect(w?.minDamage).toBe(50);
+      expect(w?.maxDamage).toBe(100);
+      expect(w?.ammoRemaining).toBe(42);
+      localHandle.detach();
+    });
+
+    it('parses the unified NGE cat_wpn_damage.damage range "50-200"', () => {
+      const { dispatcher, recv: recv2 } = makeFakeDispatcher();
+      const weaponId = 0xb0bn;
+      const worldObj = {
+        id: weaponId,
+        typeId: 0x5745414f,
+        typeIdString: 'WEAO',
+        templateName: 'object/weapon/melee/2h_sword/2h_sword_battleaxe.iff',
+        position: { x: 0, y: 0, z: 0 },
+        yaw: 0,
+        parentCell: 0n,
+        cellPosition: { x: 0, y: 0, z: 0 },
+        containerId: 0n,
+        slotArrangement: -1,
+        hyperspace: false,
+        baselines: new Map<number, unknown>([
+          [
+            BaselinePackageIds.SHARED,
+            {
+              attackSpeed: 4.0,
+              maxRange: 5,
+              minRange: 0,
+              accuracy: 10,
+              damageType: 1,
+              elementalType: 0,
+              elementalValue: 0,
+            },
+          ],
+        ]),
+        firstSeenAt: 0,
+        lastUpdatedAt: 0,
+      };
+      const fakeWorld = { get: (id: bigint) => (id === weaponId ? worldObj : undefined) };
+      const localHandle = createCharacterSheet({
+        dispatcher,
+        playerNetworkId: PLAYER_ID,
+        world: fakeWorld as unknown as Parameters<typeof createCharacterSheet>[0]['world'],
+      });
+      recv2(creoSharedNpBaseline(PLAYER_ID, makeCreoSharedNpBaseline({ currentWeapon: weaponId })));
+      recv2(
+        new AttributeListMessage(
+          weaponId,
+          '',
+          [
+            { key: 'cat_wpn_damage.damage', value: '50-200' },
+            { key: 'cat_wpn_damage.wpn_attack_speed', value: '4.0' },
+            { key: 'cat_wpn_other.wpn_range', value: '5' },
+          ],
+          0,
+        ),
+      );
+      const w = localHandle.view.weapon;
+      expect(w?.minDamage).toBe(50);
+      expect(w?.maxDamage).toBe(200);
+      localHandle.detach();
+    });
+
+    it('returns null minDamage when no AttributeListMessage has arrived', () => {
+      const { dispatcher, recv: recv2 } = makeFakeDispatcher();
+      const weaponId = 0xc0den;
+      const worldObj = {
+        id: weaponId,
+        typeId: 0x5745414f,
+        typeIdString: 'WEAO',
+        templateName: 'object/weapon/ranged/rifle/rifle_e11.iff',
+        position: { x: 0, y: 0, z: 0 },
+        yaw: 0,
+        parentCell: 0n,
+        cellPosition: { x: 0, y: 0, z: 0 },
+        containerId: 0n,
+        slotArrangement: -1,
+        hyperspace: false,
+        baselines: new Map<number, unknown>([
+          [
+            BaselinePackageIds.SHARED,
+            {
+              attackSpeed: 2.5,
+              maxRange: 64,
+              minRange: 2,
+              accuracy: 25,
+              damageType: 2,
+              elementalType: 0,
+              elementalValue: 0,
+            },
+          ],
+        ]),
+        firstSeenAt: 0,
+        lastUpdatedAt: 0,
+      };
+      const fakeWorld = { get: (id: bigint) => (id === weaponId ? worldObj : undefined) };
+      const localHandle = createCharacterSheet({
+        dispatcher,
+        playerNetworkId: PLAYER_ID,
+        world: fakeWorld as unknown as Parameters<typeof createCharacterSheet>[0]['world'],
+      });
+      recv2(creoSharedNpBaseline(PLAYER_ID, makeCreoSharedNpBaseline({ currentWeapon: weaponId })));
+      const w = localHandle.view.weapon;
+      expect(w).not.toBeNull();
+      expect(w?.minDamage).toBeNull();
+      expect(w?.maxDamage).toBeNull();
+      expect(w?.ammoRemaining).toBeNull();
+      expect(w?.attackSpeed).toBe(2.5);
+      expect(w?.range).toBe(64);
+      localHandle.detach();
     });
   });
 

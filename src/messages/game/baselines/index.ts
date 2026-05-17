@@ -48,6 +48,10 @@ export {
   CreatureObjectSharedDeltaKind,
 } from './creature-object-delta-3.js';
 export {
+  CreatureObjectClientServerNpDeltaDecoder,
+  CreatureObjectClientServerNpDeltaKind,
+} from './creature-object-delta-4.js';
+export {
   CreatureObjectSharedNpDeltaDecoder,
   CreatureObjectSharedNpDeltaKind,
 } from './creature-object-delta-6.js';
@@ -75,6 +79,29 @@ export {
   PlayerObjectSharedNpDeltaDecoder,
   PlayerObjectSharedNpDeltaKind,
 } from './player-object-delta-6.js';
+export {
+  PlayerObjectFirstParentClientServerDeltaDecoder,
+  PlayerObjectFirstParentClientServerDeltaKind,
+} from './player-object-delta-8.js';
+export {
+  type WeaponObjectSharedBaseline,
+  WeaponObjectSharedDecoder,
+  WeaponObjectSharedKind,
+} from './weapon-object-baseline-3.js';
+export {
+  type WeaponObjectEffect,
+  type WeaponObjectSharedNpBaseline,
+  WeaponObjectSharedNpDecoder,
+  WeaponObjectSharedNpKind,
+} from './weapon-object-baseline-6.js';
+export {
+  WeaponObjectSharedDeltaDecoder,
+  WeaponObjectSharedDeltaKind,
+} from './weapon-object-delta-3.js';
+export {
+  WeaponObjectSharedNpDeltaDecoder,
+  WeaponObjectSharedNpDeltaKind,
+} from './weapon-object-delta-6.js';
 export {
   BuildingObjectSharedDeltaDecoder,
   BuildingObjectSharedDeltaKind,
@@ -159,6 +186,12 @@ export {
   CreatureObjectSharedKind,
 } from './creature-object-baseline-3.js';
 export {
+  type CreatureObjectClientServerNpBaseline,
+  type SkillModEntry,
+  CreatureObjectClientServerNpDecoder,
+  CreatureObjectClientServerNpKind,
+} from './creature-object-baseline-4.js';
+export {
   type CreatureObjectSharedNpBaseline,
   type CreatureObjectEffect,
   type PlayerAndShipPair,
@@ -214,6 +247,12 @@ export {
   PlayerObjectSharedNpDecoder,
   PlayerObjectSharedNpKind,
 } from './player-object-baseline-6.js';
+export {
+  type PlayerObjectFirstParentClientServerBaseline,
+  type PlayerQuestEntry,
+  PlayerObjectFirstParentClientServerDecoder,
+  PlayerObjectFirstParentClientServerKind,
+} from './player-object-baseline-8.js';
 export {
   type BaselineDecoder,
   type BaselinePackageId,

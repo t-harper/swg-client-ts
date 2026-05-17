@@ -62,6 +62,12 @@ export {
 export type { NetUpdateTransformWithParentData } from './data-transform-with-parent.js';
 export { DefenderStatusDecoder, DefenderStatusKind } from './defender-status.js';
 export type { DefenderStatusData } from './defender-status.js';
+export { DetachAllRidersDecoder, DetachAllRidersKind } from './detach-all-riders.js';
+export type { DetachAllRidersData } from './detach-all-riders.js';
+export { DetachRiderDecoder, DetachRiderKind } from './detach-rider.js';
+export type { DetachRiderData } from './detach-rider.js';
+export { EmergencyDismountDecoder, EmergencyDismountKind } from './emergency-dismount.js';
+export type { EmergencyDismountData } from './emergency-dismount.js';
 export { TeleportAckDecoder, TeleportAckKind } from './teleport-ack.js';
 export type { TeleportAckData } from './teleport-ack.js';
 export { GroupAcceptDecoder, GroupAcceptKind } from './group-accept.js';

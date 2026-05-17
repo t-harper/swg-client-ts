@@ -147,7 +147,9 @@ export const surveyScenario: ScenarioFactory = (args) => {
   const toolId = networkIdArg(args, 'toolId');
   const resourceTypeName = args.resourceTypeName;
   if (resourceTypeName === undefined || resourceTypeName === '') {
-    throw new Error(`survey scenario: --script-arg=resourceTypeName=<name> is required (must be a specific resource type, not a class)`);
+    throw new Error(
+      'survey scenario: --script-arg=resourceTypeName=<name> is required (must be a specific resource type, not a class)',
+    );
   }
   const waitMs = numArg(args, 'waitMs', 2_000);
   return async (ctx) => {
@@ -320,6 +322,81 @@ function sendRequestTrade(
   ctx.send(wrapped);
 }
 
+/**
+ * Call a vehicle from the datapad PCD, mount it, ride a circle at speeder
+ * speed, dismount, and store. Smoke-tests the full vehicle wire flow end
+ * to end.
+ *
+ * The datapad PCD id is the persistent control device for the vehicle —
+ * it's in the player's datapad container; you can find it via the
+ * baseline scan (`extractInventoryContainerId` + walking the datapad
+ * tree) once the player is zoned in. This scenario takes it as an arg
+ * so it stays deterministic for CI runs.
+ *
+ * Wire flow:
+ *   1. `ObjectMenuSelectMessage(datapadItemId, PET_CALL=45)` — spawns the
+ *      vehicle creature beside the player. (Server-side: fires
+ *      `pet_control_device.OnObjectMenuSelect(PET_CALL)` which calls
+ *      `callable.callCallable(player, vehicle)`.)
+ *   2. wait `settleMs` for the vehicle to materialize.
+ *   3. `useAbility('mount', vehicleId)` — server validates and sets
+ *      `States::RidingMount`. We set `mountedSpeedCap` to 12 m/s.
+ *   4. `walkCircle(...)` — movement primitives clamp the requested speed
+ *      to the mounted cap.
+ *   5. `useAbility('dismount')` — clears the riding state.
+ *   6. `ObjectMenuSelectMessage(vehicleId, PET_STORE=60)` — stores it
+ *      back into the PCD.
+ *
+ * Args:
+ *   datapadItemId  (required) hex/decimal NetworkId of the datapad PCD
+ *   vehicleId      (optional) NetworkId of the spawned vehicle creature.
+ *                  If omitted, the scenario tries to grab the most-recent
+ *                  inbound CreateObjectByCrc that lands during `settleMs`;
+ *                  otherwise it skips the mount step. Most CI flows know
+ *                  the id ahead of time and pass it explicitly.
+ *   radius         (default 30) circle radius in meters
+ *   durationMs     (default 10000) circle duration
+ *   speed          (default 12) requested speed; will be clamped by the
+ *                  mounted cap
+ *   settleMs       (default 1500) wait between call→mount and dismount→store
+ *   skipMount      (default false) for transcript-only smoke tests:
+ *                  only call/store, never mount
+ */
+export const rideVehicle: ScenarioFactory = (args) => {
+  const datapadItemId = networkIdArg(args, 'datapadItemId');
+  const radius = numArg(args, 'radius', 30);
+  const durationMs = numArg(args, 'durationMs', 10_000);
+  const speed = numArg(args, 'speed', 12);
+  const settleMs = numArg(args, 'settleMs', 1_500);
+  const skipMount = args.skipMount === '1' || args.skipMount === 'true';
+  const vehicleIdRaw = args.vehicleId;
+  const vehicleId = vehicleIdRaw !== undefined && vehicleIdRaw !== '' ? BigInt(vehicleIdRaw) : null;
+
+  return async (ctx) => {
+    ctx.callVehicle(datapadItemId);
+    if (settleMs > 0) await ctx.wait(settleMs);
+
+    if (skipMount || vehicleId === null) {
+      if (settleMs > 0) await ctx.wait(settleMs);
+      ctx.storeVehicle(vehicleId ?? datapadItemId);
+      return;
+    }
+
+    ctx.mount(vehicleId);
+    const cur = ctx.position();
+    await ctx.walkCircle({
+      centerX: cur.x,
+      centerZ: cur.z,
+      radius,
+      durationMs,
+      speed,
+    });
+    ctx.dismount();
+    if (settleMs > 0) await ctx.wait(settleMs);
+    ctx.storeVehicle(vehicleId);
+  };
+};
+
 export const scenarios: Record<string, ScenarioFactory> = {
   'walk-line': walkLine,
   'walk-circle': walkCircle,
@@ -328,6 +405,7 @@ export const scenarios: Record<string, ScenarioFactory> = {
   'posture-cycle': postureCycle,
   survey: surveyScenario,
   'group-trade': groupTradeScenario,
+  'ride-vehicle': rideVehicle,
   dwell,
 };
 

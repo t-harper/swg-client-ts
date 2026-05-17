@@ -73,6 +73,52 @@ export const RadialMenuTypes = {
   CONVERSE_START: 26,
   CRAFT_OPTIONS: 30,
   LOOT: 36,
+  /**
+   * "Call" on a pet control device — server fires
+   * `pet_control_device.OnObjectMenuSelect(PET_CALL)` which spawns the
+   * controlled pet/vehicle out of the datapad into the world. The same
+   * value triggers a STORE if the pet is already out (the server toggles
+   * on the called/stored state — see `pet_control_device.java:202`).
+   */
+  PET_CALL: 45,
+  /**
+   * "Store" on a pet control device. In practice the server treats `PET_CALL`
+   * as a toggle so most code paths use 45 for both call and store; this is
+   * the dedicated id when you want to be explicit (used in some legacy
+   * radial paths that build a separate "menu_store" sub-entry).
+   */
+  PET_STORE: 60,
+  /**
+   * "Generate vehicle" — explicit radial for spawning the vehicle from its
+   * datapad PCD. Functionally the same wire-effect as `PET_CALL` for
+   * rideable-type PCDs (see CALLABLE_TYPE_RIDEABLE handling).
+   */
+  VEHICLE_GENERATE: 61,
+  /** "Store vehicle" — explicit radial counterpart to `VEHICLE_GENERATE`. */
+  VEHICLE_STORE: 62,
+  /** "Offer ride" — passenger-invite for multi-seat vehicles. */
+  VEHICLE_OFFER_RIDE: 68,
+  /**
+   * "Command" sub-menu root on a pet's radial. Triggers the listAllCommands
+   * UI in `pet_control_device.OnObjectMenuSelect(PET_COMMAND)`.
+   */
+  PET_COMMAND: 224,
+  /** Pet-command: follow master. Dispatch via `ObjectMenuSelectMessage(petId, PET_FOLLOW)`. */
+  PET_FOLLOW: 225,
+  /** Pet-command: stay at current position. */
+  PET_STAY: 226,
+  /** Pet-command: guard a friendly. */
+  PET_GUARD: 227,
+  /** Pet-command: mark a creature as friend (won't attack). */
+  PET_FRIEND: 228,
+  /** Pet-command: attack the master's current combat target. */
+  PET_ATTACK: 229,
+  /** Pet-command: patrol between learned patrol points. */
+  PET_PATROL: 230,
+  /** "Mount" on a pet/vehicle radial (functionally equivalent to `useAbility('mount', mountId)`). */
+  SERVER_PET_MOUNT: 288,
+  /** "Dismount" on a pet/vehicle radial (equivalent to `useAbility('dismount')`). */
+  SERVER_PET_DISMOUNT: 289,
 } as const;
 
 export class ObjectMenuSelectMessage extends GameNetworkMessage {

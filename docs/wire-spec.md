@@ -412,7 +412,7 @@ Reference: `GenericValueTypeMessage.h`. Our impl: `src/messages/base.ts:defineGe
 | `UpdateTransformMessage` | varies | 10 | **Server → client broadcast only.** Client→server movement uses `ObjControllerMessage(CM_netUpdateTransform=113)` — see below. |
 | `UpdateTransformWithParentMessage` | varies | 11 | Server → client cell-relative broadcast |
 | `AttributeListMessage` | varies | 5 | Item / resource stats (`{key, value}` pairs) |
-| `ObjectMenuSelectMessage` | constcrc of `"ObjectMenuSelectMessage::MESSAGE_TYPE"` | 3 | Client → server: trigger an OnObjectMenuSelect on a target. Trailer: `[NetworkId target][u16 itemId]`. itemId values from `RadialMenuTypes` (ITEM_USE=21, EXAMINE=7, etc.). |
+| `ObjectMenuSelectMessage` | constcrc of `"ObjectMenuSelectMessage::MESSAGE_TYPE"` | 3 | Client → server: trigger an OnObjectMenuSelect on a target. Trailer: `[NetworkId target][u16 itemId]`. itemId values from `RadialMenuTypes` (ITEM_USE=21, EXAMINE=7, plus vehicle/pet: `PET_CALL=45`, `PET_STORE=60`, `VEHICLE_GENERATE=61`, `VEHICLE_STORE=62`, pet commands `PET_COMMAND=224`, `PET_FOLLOW=225`, `PET_STAY=226`, `PET_GUARD=227`, `PET_FRIEND=228`, `PET_ATTACK=229`, `PET_PATROL=230`, plus `SERVER_PET_MOUNT=288`/`SERVER_PET_DISMOUNT=289`). |
 | `SurveyMessage` | 0x877f79ac | varies | Server → client survey response with sample points |
 | `ResourceListForSurveyMessage` | 0x8a64b1d5 | 4 | Server → client list of resource types currently spawned for a tool's class |
 | `ChatSystemMessage` | 0x6d2a6413 | 4 | Server → client system-message prose. Trailer: `[u8 flags][UnicodeString message][UnicodeString outOfBand]`. The `outOfBand` field is a packed-bytes binary (each `u16` codepoint holds 2 wire bytes in LE order) carrying STF references like `survey/sample_located` — see `decodeSampleOob()` for unpacking. |
@@ -438,6 +438,9 @@ Reference: `GenericValueTypeMessage.h`. Our impl: `src/messages/base.ts:defineGe
 | 326/327 | `CM_objectMenuRequest` / `Response` | both | Radial menu fetch / populate |
 | 351/421 | `CM_setGroupInviter` / `setGroup` | server | Group formation broadcasts |
 | 422 | `CM_setMood` | server | Mood change |
+| 540 | `CM_emergencyDismountForRider` | server↔server | Rider-emergency-dismount cross-auth signal. Empty trailer. Modeled for transcript inspection — not a client→server path. |
+| 541 | `CM_detachRiderForMount` | server↔server | Detach a specific rider (non-auth → auth). Trailer: `[NetworkId riderId]` (8 bytes). |
+| 1205 | `CM_detachAllRidersForMount` | server↔server | Detach every rider on a mount in one shot (non-auth → auth). Empty trailer. |
 
 Other CM IDs flow as opaque bytes with a diagnostic `subtypeCrcHex` field for log inspection.
 

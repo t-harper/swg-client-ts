@@ -10,8 +10,11 @@
  */
 
 import type { Posture, ScenarioFn } from '../client/script/context.js';
-import { ObjControllerMessage } from '../messages/game/obj-controller-message.js';
-import { ObjControllerSubtypeIds } from '../messages/game/obj-controller/index.js';
+import {
+  DeltasMessage,
+  decodeGroupDelta,
+  decodeGroupInviterDelta,
+} from '../messages/game/baselines/deltas-message.js';
 import type { NetworkId } from '../types.js';
 
 export type ScenarioFactory = (args: Record<string, string>) => ScenarioFn;
@@ -156,14 +159,26 @@ export const surveyScenario: ScenarioFactory = (args) => {
  * where one's script is `groupTradeScenario({ role: 'leader', otherId: ... })`
  * and the other's is `groupTradeScenario({ role: 'invitee', otherId: ... })`.
  *
- * Wire flow (subtype IDs from `ObjControllerSubtypeIds`):
+ * Wire flow:
  *   1. Leader  → `useAbility('invite', otherId)` (command_table.tab:'invite')
- *                Server forwards as `CM_setGroupInviter` (351) to the invitee.
- *   2. Invitee → waits for inbound `ObjControllerMessage` with
- *                `message === CM_setGroupInviter`, then `useAbility('join')`
- *                (command_table.tab:'join') to accept.
- *                Server confirms with `CM_setGroup` (421) to both sides.
- *   3. Both    → wait for `CM_setGroup` (421) with non-zero groupId.
+ *                Server (authoritative for the invitee on a single-server
+ *                cluster) sets `CreatureObject::m_groupInviter` directly via
+ *                its AutoDeltaVariable; the change propagates to the invitee
+ *                as a `DeltasMessage(target=inviteeId, typeId=CREO,
+ *                packageId=SHARED_NP, idx=14)` carrying the
+ *                `(inviterId, inviterName, inviterShipId)` triple. The
+ *                cross-server `CM_setGroupInviter(351)` ObjController is
+ *                ONLY used when the invite hops between auth servers —
+ *                NOT on our single-server test cluster (see
+ *                CreatureObject.cpp:5655-5676, the isAuthoritative branch).
+ *   2. Invitee → waits for that DeltasMessage with a non-zero inviterId,
+ *                then `useAbility('join')` (command_table.tab:'join').
+ *                Server sets `CreatureObject::m_group` → propagated to both
+ *                sides as `DeltasMessage(target=self, typeId=CREO,
+ *                packageId=SHARED_NP, idx=13)` carrying the new groupId.
+ *                The `CM_setGroup(421)` ObjController is again only sent
+ *                cross-server (CreatureObject.cpp:5557-5618).
+ *   3. Both    → wait for that group-id delta with a non-zero groupId.
  *   4. Leader  → if `tradeAmount > 0`, drives the FULL SecureTrade handshake
  *                via `ctx.tradeWith(otherId, { credits: tradeAmount })`. This
  *                sends `CM_secureTrade(RequestTrade)` → waits for
@@ -203,23 +218,38 @@ export const groupTradeScenario: ScenarioFactory = (args) => {
   const dwellMs = numArg(args, 'dwellMs', 1_000);
 
   return async (ctx) => {
+    const selfId = ctx.sceneStart.playerNetworkId;
+
     if (role === 'leader') {
+      // 0. Clear stale group state from any prior aborted test run.
+      //    `disband` (= server's `groupDisband`) is a no-op when not in a
+      //    group; safe to send unconditionally. Without this, a previous
+      //    test that died mid-handshake leaves us as the leader of a stale
+      //    group and the new invite hits `SID_GROUP_ALREADY_GROUPED` on
+      //    our side. See CreatureObject.cpp:10010-10020 (the "already
+      //    considering / already grouped" silent-reject branch).
+      ctx.useAbility('disband');
+      await ctx.wait(250);
+
       // 1. Brief settle so the invitee is also zoned-in and listening.
       await ctx.wait(1_000);
 
       // 2. Send the invite.
       ctx.useAbility('invite', otherId);
 
-      // 3. Wait for the group to form (inbound CM_setGroup with non-zero
-      //    groupId). On timeout, `expectWithin({soft:true})` auto-records the
-      //    failure to `assertionFailures` and returns undefined.
-      await ctx.expectWithin(ObjControllerMessage, waitForOtherMs, {
+      // 3. Wait for the group to form. On a single-server cluster the server
+      //    is authoritative for our own creature, so `setGroup` writes the
+      //    `m_group` AutoDeltaVariable directly and propagates it to us as a
+      //    `DeltasMessage(target=selfId, CREO, SHARED_NP, idx=13)` carrying
+      //    the new groupId. (The `CM_setGroup(421)` ObjController is only
+      //    used for cross-auth-server forwarding — see CreatureObject.cpp:5557.)
+      //    On timeout, `expectWithin({soft:true})` records the failure to
+      //    `assertionFailures` and returns undefined.
+      await ctx.expectWithin(DeltasMessage, waitForOtherMs, {
         predicate: (m) => {
-          if (m.message !== ObjControllerSubtypeIds.CM_setGroup) return false;
-          const sub = m.decodedSubtype;
-          if (sub === null || sub.kind !== 'GroupAccept') return true;
-          const data = sub.data as { groupId: bigint };
-          return data.groupId !== 0n;
+          if (m.target !== selfId) return false;
+          const decoded = decodeGroupDelta(m);
+          return decoded !== null && decoded.groupId !== 0n;
         },
         soft: true,
       });
@@ -241,14 +271,31 @@ export const groupTradeScenario: ScenarioFactory = (args) => {
     } else {
       // Invitee side.
 
-      // 1. Wait for the inbound GroupInvite.
-      const invite = await ctx.expectWithin(ObjControllerMessage, waitForOtherMs, {
+      // 0. Clear stale group/invite state from any prior aborted run.
+      //    The server's `groupDecline` clears `m_inviterForPendingGroup`
+      //    iff it's set (no-op otherwise — CommandCppFuncs.cpp:3937), and
+      //    `disband` (= server's `groupDisband`) leaves a stale group
+      //    (also a no-op when not grouped). Without these, the leader's
+      //    invite is silently dropped by the
+      //    SID_GROUP_CONSIDERING_OTHER_GROUP / SID_GROUP_ALREADY_GROUPED
+      //    branches in CreatureObject.cpp:10010-10020 — the m_groupInviter
+      //    delta below never arrives and the wait times out.
+      ctx.useAbility('decline');
+      await ctx.wait(150);
+      ctx.useAbility('disband');
+      await ctx.wait(150);
+
+      // 1. Wait for the inbound invite. On a single-server cluster the
+      //    server writes the invitee's `m_groupInviter` AutoDeltaVariable
+      //    directly (CreatureObject.cpp:5655-5676 isAuthoritative branch),
+      //    so the invite arrives as a `DeltasMessage(target=selfId, CREO,
+      //    SHARED_NP, idx=14)` rather than a `CM_setGroupInviter(351)`
+      //    ObjController. The 351 controller path is cross-auth-server only.
+      const invite = await ctx.expectWithin(DeltasMessage, waitForOtherMs, {
         predicate: (m) => {
-          if (m.message !== ObjControllerSubtypeIds.CM_setGroupInviter) return false;
-          const sub = m.decodedSubtype;
-          if (sub === null || sub.kind !== 'GroupInvite') return true;
-          const data = sub.data as { inviterId: bigint };
-          return data.inviterId !== 0n;
+          if (m.target !== selfId) return false;
+          const decoded = decodeGroupInviterDelta(m);
+          return decoded !== null && decoded.inviterId !== 0n;
         },
         soft: true,
       });
@@ -256,14 +303,12 @@ export const groupTradeScenario: ScenarioFactory = (args) => {
         // 2. Accept the invite.
         ctx.useAbility('join');
 
-        // 3. Wait for the group-formation confirmation.
-        await ctx.expectWithin(ObjControllerMessage, waitForOtherMs, {
+        // 3. Wait for the group-formation confirmation (m_group delta on us).
+        await ctx.expectWithin(DeltasMessage, waitForOtherMs, {
           predicate: (m) => {
-            if (m.message !== ObjControllerSubtypeIds.CM_setGroup) return false;
-            const sub = m.decodedSubtype;
-            if (sub === null || sub.kind !== 'GroupAccept') return true;
-            const data = sub.data as { groupId: bigint };
-            return data.groupId !== 0n;
+            if (m.target !== selfId) return false;
+            const decoded = decodeGroupDelta(m);
+            return decoded !== null && decoded.groupId !== 0n;
           },
           soft: true,
         });

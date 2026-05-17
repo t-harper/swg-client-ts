@@ -325,6 +325,11 @@ export { rideVehicle } from './scenarios/index.js';
 // SUI + NPC conversation (Feature 1)
 // =============================================================================
 export {
+  type SuiCommand,
+  type SuiCommandTypeValue,
+  type SuiPageData,
+  type SuiWidgetPropertySubscription,
+  SuiCommandType,
   SuiCreatePageMessage,
   SuiCreatePageMessageDecoder,
   SuiEventNotification,
@@ -333,6 +338,13 @@ export {
   SuiForceClosePageDecoder,
   SuiUpdatePageMessage,
   SuiUpdatePageMessageDecoder,
+  decodeSuiPageData,
+  encodeSuiPageData,
+  peekSuiPageId,
+  readSuiCommand,
+  readSuiPageData,
+  writeSuiCommand,
+  writeSuiPageData,
 } from './messages/game/sui/index.js';
 export {
   EMPTY_NPC_STRING_ID,

@@ -130,6 +130,7 @@ import {
   InventoryViewImpl,
   type InventoryView,
 } from '../inventory-view.js';
+import { BankViewImpl, type BankView } from '../bank-view.js';
 import type { WorldModel, WorldObject } from '../world-model.js';
 import {
   PLAYER_DATAPAD_TEMPLATE_CRC,
@@ -437,11 +438,28 @@ export interface ScriptContext {
    * Updated live from baselines/deltas/scene-destroy.
    *
    *   ctx.inventory.items                          // every item now
+   *   ctx.inventory.totalSlots / usedSlots / freeSlots   // capacity math
+   *   ctx.inventory.resources()                    // RCNO crates only
    *   ctx.inventory.findByTemplate(/survey_tool/i) // pattern-match
    *   ctx.inventory.findById(0xabcdn)              // by NetworkId
    *   ctx.inventory.ready                          // true once populated
    */
   readonly inventory: InventoryView;
+  /**
+   * Always-accessible, auto-synced view of the player's bank container.
+   * Unlike the inventory + datapad, the live server does NOT auto-open
+   * the bank at zone-in — its items only populate after the script (or
+   * the user) invokes `ctx.bank.use(terminalId)` on a nearby bank
+   * terminal (which fires `ObjectMenuSelectMessage(terminalId, ITEM_USE)`),
+   * then the server-side `openBankContainer` JNI call streams the bank
+   * contents to the client.
+   *
+   *   ctx.bank.use()                       // auto-find nearest terminal
+   *   ctx.bank.use(terminalId)             // explicit terminal id
+   *   ctx.bank.items                       // bank contents after open
+   *   ctx.bank.findByTemplate(/credit/i)   // pattern-match
+   */
+  readonly bank: BankView;
   /**
    * Find the nearest `WorldObject` matching `typeId` (one of `ObjectTypeTags`),
    * sorted by 2D distance from the player. Excludes the player itself by
@@ -1332,6 +1350,16 @@ interface InternalContext extends ScriptContext {
      * externally).
      */
     ownedInventoryView: InventoryViewImpl | null;
+    /**
+     * Bank view created and attached by `createScriptContext`. Detached
+     * during `runScript` teardown.
+     */
+    bankView: BankViewImpl;
+    /**
+     * Live datapad view. The script context always owns this — the
+     * orchestrator never injects one.
+     */
+    datapadView: DatapadViewImpl;
   };
 }
 
@@ -1380,6 +1408,14 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     inventoryView = impl;
   }
 
+  // Bank view — owned by the script context, attached now.
+  const bankView = new BankViewImpl(
+    opts.world,
+    opts.dispatcher,
+    opts.sceneStart.playerNetworkId,
+  );
+  bankView.attach();
+
   const state = {
     sendsCount: 0,
     didLogout: false,
@@ -1410,6 +1446,10 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     assertionFailures: [] as string[],
     datapadCreateUnsubscribe: null as (() => void) | null,
     ownedInventoryView,
+    bankView,
+    // Populated after construction below — TypeScript requires it on the
+    // initializer so we placeholder with the same instance we just built.
+    datapadView: undefined as unknown as DatapadViewImpl,
   };
 
   // DatapadView — seeded from any datapad create event already in the
@@ -1418,7 +1458,8 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
   // the script context is constructed (e.g. respawn / mid-script re-create).
   // The live server sends the datapad via ByCrc (compact form); we
   // subscribe to both ByName and ByCrc to cover any wire shape.
-  const datapadView = new DatapadViewImpl(opts.world);
+  const datapadView = new DatapadViewImpl(opts.world, null, opts.sceneStart.playerNetworkId);
+  datapadView.attach();
   const seedDatapadId = extractDatapadContainerId(opts.dispatcher.transcript);
   if (seedDatapadId !== null) datapadView.setContainerId(seedDatapadId);
   const datapadByNameUnsubscribe = opts.dispatcher.onMessage(SceneCreateObjectByName, (m) => {
@@ -1437,6 +1478,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     datapadByNameUnsubscribe();
     datapadByCrcUnsubscribe();
   };
+  state.datapadView = datapadView;
 
   const characterSheetHandle = createCharacterSheet({
     dispatcher: opts.dispatcher,
@@ -1453,6 +1495,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     character: characterSheetHandle.view,
     datapad: datapadView,
     inventory: inventoryView,
+    bank: bankView,
     _state: state,
     _characterSheetDetach: characterSheetHandle.detach,
 
@@ -2174,12 +2217,14 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     callVehicle(datapadItemId: NetworkId): number {
       const seq = ctx.nextCommandSequence();
       ctx.send(new ObjectMenuSelectMessage(datapadItemId, RadialMenuTypes.PET_CALL));
+      datapadView.notifyPetAction(datapadItemId, 'call');
       return seq;
     },
 
     storeVehicle(vehicleId: NetworkId): number {
       const seq = ctx.nextCommandSequence();
       ctx.send(new ObjectMenuSelectMessage(vehicleId, RadialMenuTypes.PET_STORE));
+      datapadView.notifyPetAction(vehicleId, 'store');
       return seq;
     },
 
@@ -2200,12 +2245,14 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     callPet(controlDeviceId: NetworkId): number {
       const seq = ctx.nextCommandSequence();
       ctx.send(new ObjectMenuSelectMessage(controlDeviceId, RadialMenuTypes.PET_CALL));
+      datapadView.notifyPetAction(controlDeviceId, 'call');
       return seq;
     },
 
     storePet(petId: NetworkId): number {
       const seq = ctx.nextCommandSequence();
       ctx.send(new ObjectMenuSelectMessage(petId, RadialMenuTypes.PET_STORE));
+      datapadView.notifyPetAction(petId, 'store');
       return seq;
     },
 
@@ -2223,6 +2270,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
       }
       const seq = ctx.nextCommandSequence();
       ctx.send(new ObjectMenuSelectMessage(petId, itemId));
+      datapadView.notifyPetAction(petId, command);
       return seq;
     },
 
@@ -2567,6 +2615,8 @@ export async function runScript(fn: ScenarioFn, ctx: ScriptContext): Promise<Scr
       internal._state.ownedInventoryView.detach();
       internal._state.ownedInventoryView = null;
     }
+    internal._state.bankView.detach();
+    internal._state.datapadView.detach();
   }
   return {
     elapsedMs: Date.now() - t0,

@@ -17,7 +17,7 @@ cd ~/code/swg-ts-client
 nvm use                # Node 24 (LTS as of 2026-05)
 pnpm install
 pnpm test              # ~1150 unit tests — no server needed
-LIVE=1 pnpm test       # ~1172 total under LIVE (includes ~22 integration tests against 10.254.0.253)
+LIVE=1 pnpm test       # ~1175 total under LIVE (includes ~25 integration tests against 10.254.0.253)
 pnpm cli zone --host=10.254.0.253 --user=ci-test --character=TsTest
 ```
 
@@ -82,7 +82,7 @@ pnpm cli zone --host=10.254.0.253 --user=ci-test --character=TsTest
                   constcrc.ts                  ← CrcConstexpr.hpp custom CRC, NOT standard CRC32
 ```
 
-228+ test files, **~1172 tests (~1150 unit + ~22 LIVE)**, all currently green. (Counts grow as features land — `pnpm test` to confirm.)
+228+ test files, **~1175 tests (~1150 unit + ~25 LIVE)**, all currently green. (Counts grow as features land — `pnpm test` to confirm.)
 
 ## High-level features
 
@@ -298,7 +298,7 @@ Individual stage drivers and the `dispatcher` are also exported as types — use
 
 ## When you next sit down
 
-1. `cd ~/code/swg-ts-client && nvm use && pnpm test` — confirm baseline (should be ~1150 unit green; ~1172 total under `LIVE=1`).
+1. `cd ~/code/swg-ts-client && nvm use && pnpm test` — confirm baseline (should be ~1150 unit green; ~1175 total under `LIVE=1`).
 2. If anything's red, check `git log --oneline` — most recent change is probably the culprit; revert it locally and retry.
 3. If you bumped `~/code/swg-main` submodules, the wire-format may have drifted. Run `LIVE=1 pnpm test tests/integration/live-login.test.ts` — if it fails with a `LoginIncorrectClientId` or `Archive::ReadException`-style error, the message struct shape changed server-side. Find the C++ commit that added/removed fields, update `varCount` + encode/decode here. For broader drift, replay a baseline NDJSON capture (`pnpm cli capture` once on green, then `pnpm cli replay --compare=count` after the bump).
 4. To do "more SWG protocol work" — read `docs/adding-a-message.md` and pick a message from `~/code/swg-main/src/engine/shared/library/sharedNetworkMessages/src/shared/`. The mechanical pattern handles itself. For ObjController subtypes (combat/movement/etc.) the recipe is the same but the file lives in `src/messages/game/obj-controller/` and registers via the subtype CRC instead of the top-level `messageRegistry`.

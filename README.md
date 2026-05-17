@@ -103,7 +103,7 @@ nvm use
 pnpm install
 pnpm test                                              # ~1150 unit tests, no server needed
 LIVE=1 pnpm test tests/integration/live-login.test.ts  # one live test
-LIVE=1 pnpm test                                       # full suite (~1172 tests)
+LIVE=1 pnpm test                                       # full suite (~1175 tests)
 
 # Plain zone-in
 pnpm cli zone --host=10.254.0.253 --user=ci-test --character=TsTest

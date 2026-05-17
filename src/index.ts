@@ -33,9 +33,23 @@ export {
 export { SwgClient, lifecycleResultToJSON } from './client/swg-client.js';
 export type {
   FullLifecycleOptions,
+  LifecycleLatency,
   LifecycleResult,
   SwgClientOptions,
 } from './client/swg-client.js';
+// SOE clock-sync / latency stats — surfaced so consumers can hook ClockSync
+// events directly on a custom SoeConnection or interpret LifecycleResult.latency.
+export type { ClockReflectPacket, ClockSyncPacket, LatencyStats } from './soe/clock-sync.js';
+export {
+  buildClockReflect,
+  buildClockSync,
+  clockReflectRttMs,
+  localSyncStampLong,
+  localSyncStampShort,
+  parseClockReflect,
+  parseClockSync,
+  summarizeLatency,
+} from './soe/clock-sync.js';
 export type { TranscriptEvent } from './client/dispatcher.js';
 export type { LoginStageResult, LoginStageOptions } from './client/login-stage.js';
 export type {

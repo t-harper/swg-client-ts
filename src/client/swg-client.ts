@@ -66,6 +66,7 @@ import '../messages/game/update-transform-message.js';
 import '../messages/game/update-transform-with-parent-message.js';
 
 import { Buffer } from 'node:buffer';
+import type { LatencyStats } from '../soe/clock-sync.js';
 import {
   type CharacterInfo,
   type ClusterInfo,
@@ -118,6 +119,25 @@ export interface FullLifecycleOptions {
   onStateChange?: (state: ZoneState) => void;
 }
 
+/**
+ * Latency histogram surfaced from the connection-stage SOE socket (the same
+ * one that gets re-routed into game-stage). Login-stage's socket closes
+ * before its first ClockSync interval elapses, so any samples there would
+ * be discarded — only the connection/game socket's samples make it here.
+ */
+export interface LifecycleLatency {
+  /** Number of ClockReflect samples observed. */
+  samples: number;
+  /** 50th percentile RTT (ms), nearest-rank. */
+  p50: number;
+  /** 95th percentile RTT (ms), nearest-rank. */
+  p95: number;
+  /** 99th percentile RTT (ms), nearest-rank. */
+  p99: number;
+  /** Arithmetic mean RTT (ms). */
+  mean: number;
+}
+
 export interface LifecycleResult {
   /** Per-stage wall-clock elapsed in ms. */
   stages: {
@@ -150,6 +170,12 @@ export interface LifecycleResult {
   receivedErrorMessage: boolean;
   /** Set if a script ran during the dwell. */
   scriptResult?: ScriptResult;
+  /**
+   * Round-trip-time histogram from ClockSync/ClockReflect exchanges. Null if
+   * no samples were collected (short-lived lifecycles may not span an
+   * interval, default 45s).
+   */
+  latency: LifecycleLatency | null;
 }
 
 export class SwgClient {
@@ -264,6 +290,23 @@ export class SwgClient {
       (e) => e.direction === 'recv' && e.messageName === 'ErrorMessage',
     );
 
+    // Query latency stats from the connection-stage socket — the same socket
+    // is reused for game-stage, so all RTT samples observed across stages 2
+    // through 4 land here. (Login-stage uses a separate socket that closes
+    // before any ClockSync interval elapses, so its samples are discarded.)
+    // disconnect() above only clears timers + closes the socket; the
+    // latencySamples array survives.
+    const rawLatency = connectionStage.connection.getLatencyStats();
+    const latency: LifecycleLatency | null = rawLatency
+      ? {
+          samples: rawLatency.count,
+          p50: rawLatency.p50,
+          p95: rawLatency.p95,
+          p99: rawLatency.p99,
+          mean: rawLatency.mean,
+        }
+      : null;
+
     const result: LifecycleResult = {
       stages: {
         login: login.elapsedMs,
@@ -283,6 +326,7 @@ export class SwgClient {
       stationId: login.token.stationId,
       receivedErrorMessage,
       ...(game?.scriptResult !== undefined ? { scriptResult: game.scriptResult } : {}),
+      latency,
     };
     return result;
   }

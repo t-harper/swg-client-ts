@@ -168,6 +168,73 @@ export interface WorldModelOptions {
   playerId?: NetworkId;
 }
 
+/**
+ * Options for `WorldModel.toSnapshot`.
+ */
+export interface ToSnapshotOptions {
+  /**
+   * If true, each object's snapshot will include a `baselines` field carrying
+   * the per-package data, with `bigint`/`Uint8Array`/`Map` values normalized
+   * to JSON-safe forms. Defaults to `false` — the snapshot only carries
+   * `baselinePackageIds` (the keys), keeping the output lean.
+   */
+  includeBaselineData?: boolean;
+}
+
+/**
+ * JSON-safe view of a single object in a `WorldSnapshot`. NetworkIds are
+ * serialized as decimal strings (bigint is not JSON-safe). Baseline data
+ * is only present when `toSnapshot({ includeBaselineData: true })` is
+ * requested.
+ */
+export interface WorldSnapshotObject {
+  /** `NetworkId` as a decimal string. */
+  id: string;
+  typeId: number;
+  typeIdString: string;
+  templateCrc?: number;
+  templateName?: string;
+  position: Vector3;
+  yaw: number;
+  /** Parent cell `NetworkId` as a decimal string (`'0'` = open world). */
+  parentCell: string;
+  cellPosition: Vector3;
+  /** Container `NetworkId` as a decimal string (`'0'` = unparented). */
+  containerId: string;
+  slotArrangement: number;
+  hyperspace: boolean;
+  /** Sorted ascending list of baseline-package ids present on the object. */
+  baselinePackageIds: number[];
+  firstSeenAt: number;
+  lastUpdatedAt: number;
+  /**
+   * Per-package baseline data, only present when
+   * `toSnapshot({ includeBaselineData: true })`. Values are JSON-safe:
+   * `bigint` → string, `Uint8Array` → hex string, `Map` → object (string
+   * keys) or array of `[key, value]` pairs (non-string keys), recursively.
+   * Key is the same package id as appears in `baselinePackageIds`.
+   */
+  baselines?: Record<number, unknown>;
+}
+
+/**
+ * JSON-safe projection of the current world state, suitable for
+ * `JSON.stringify`. Produced by `WorldModel.toSnapshot`.
+ *
+ * `LifecycleResult.world` is stripped by `lifecycleResultToJSON` because it's
+ * a live class instance with cyclic references; callers wanting to serialize
+ * the world view should call `result.world?.toSnapshot()` themselves.
+ */
+export interface WorldSnapshot {
+  /** Wall-clock ms when the snapshot was produced. */
+  takenAt: number;
+  /** Player `NetworkId` as a decimal string, or `null` if not pinned. */
+  playerId: string | null;
+  /** Number of objects in the snapshot (= `objects.length`). */
+  objectCount: number;
+  objects: WorldSnapshotObject[];
+}
+
 export class WorldModel {
   private readonly objs = new Map<NetworkId, WorldObject>();
   private readonly subs = new Set<(e: WorldEvent) => void>();
@@ -470,9 +537,121 @@ export class WorldModel {
     });
   }
 
+  // ─── Snapshot ──────────────────────────────────────────────────────
+
+  /**
+   * Capture a JSON-safe projection of the current world state. NetworkIds
+   * are emitted as decimal strings (bigint is not JSON-safe), the
+   * `baselines: Map<...>` on each object is reduced to its sorted key list
+   * by default, and unless `includeBaselineData` is set the per-package data
+   * is dropped (the typical baseline flood is thousands of bytes per object).
+   *
+   * With `includeBaselineData: true`, baseline values are recursively
+   * normalized:
+   *   - `bigint` → decimal string
+   *   - `Uint8Array` → hex string
+   *   - `Map` with string keys → plain object
+   *   - `Map` with non-string keys → array of `[key, value]` pairs
+   *   - `Date` → ISO string
+   *   - Arrays / plain objects are recursed into.
+   *
+   * Object iteration order matches first-seen order — the same order as
+   * `objects()` / `toArray()`.
+   */
+  toSnapshot(opts: ToSnapshotOptions = {}): WorldSnapshot {
+    const includeBaselineData = opts.includeBaselineData === true;
+    const objects: WorldSnapshotObject[] = [];
+    for (const o of this.objs.values()) {
+      const packageIds = [...o.baselines.keys()].sort((a, b) => a - b);
+      const snap: WorldSnapshotObject = {
+        id: o.id.toString(),
+        typeId: o.typeId,
+        typeIdString: o.typeIdString,
+        position: { x: o.position.x, y: o.position.y, z: o.position.z },
+        yaw: o.yaw,
+        parentCell: o.parentCell.toString(),
+        cellPosition: { x: o.cellPosition.x, y: o.cellPosition.y, z: o.cellPosition.z },
+        containerId: o.containerId.toString(),
+        slotArrangement: o.slotArrangement,
+        hyperspace: o.hyperspace,
+        baselinePackageIds: packageIds,
+        firstSeenAt: o.firstSeenAt,
+        lastUpdatedAt: o.lastUpdatedAt,
+      };
+      if (o.templateCrc !== undefined) snap.templateCrc = o.templateCrc;
+      if (o.templateName !== undefined) snap.templateName = o.templateName;
+      if (includeBaselineData) {
+        const baselines: Record<number, unknown> = {};
+        for (const pkgId of packageIds) {
+          baselines[pkgId] = normalizeForSnapshot(o.baselines.get(pkgId));
+        }
+        snap.baselines = baselines;
+      }
+      objects.push(snap);
+    }
+    return {
+      takenAt: Date.now(),
+      playerId: this.playerId === null ? null : this.playerId.toString(),
+      objectCount: objects.length,
+      objects,
+    };
+  }
+
   // Used by tests; not part of the public API.
   /** @internal */
   _clear(): void {
     this.objs.clear();
   }
+}
+
+/**
+ * Recursively normalize a value into a JSON-safe form for `WorldSnapshot`.
+ * Handles the cases that occur in baseline data: `bigint` (NetworkIds),
+ * `Uint8Array` (opaque package bytes when no decoder is registered),
+ * `Map` (none today but defensible), `Date`, arrays, and plain objects.
+ *
+ * Mirrors `lifecycleResultToJSON`'s `normalize` but adds `Map` handling
+ * because baseline payloads could in principle contain them and there's
+ * no cycle risk inside the typed baseline data.
+ */
+function normalizeForSnapshot(value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+  if (typeof value === 'bigint') return value.toString();
+  if (value instanceof Date) return value.toISOString();
+  if (value instanceof Uint8Array) {
+    return Buffer.from(value).toString('hex');
+  }
+  if (value instanceof Map) {
+    let allStringKeys = true;
+    for (const k of value.keys()) {
+      if (typeof k !== 'string') {
+        allStringKeys = false;
+        break;
+      }
+    }
+    if (allStringKeys) {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of value) {
+        out[k as string] = normalizeForSnapshot(v);
+      }
+      return out;
+    }
+    const entries: Array<[unknown, unknown]> = [];
+    for (const [k, v] of value) {
+      entries.push([normalizeForSnapshot(k), normalizeForSnapshot(v)]);
+    }
+    return entries;
+  }
+  if (value instanceof Set) {
+    return [...value].map(normalizeForSnapshot);
+  }
+  if (Array.isArray(value)) return value.map(normalizeForSnapshot);
+  if (typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = normalizeForSnapshot(v);
+    }
+    return out;
+  }
+  return value;
 }

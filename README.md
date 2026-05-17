@@ -132,8 +132,10 @@ What's available beyond the basic lifecycle:
   every placement scenario.
 
 See `docs/scripting.md` for the full `ScriptContext` API, `docs/wire-spec.md`
-for the byte-level reference, and `scripts/examples/` for ~25 ready-to-run
-example scenarios.
+for the byte-level reference, and `scripts/examples/` for 30+ ready-to-run
+example scenarios (including the reactive WorldModel patterns added in
+release/0.1.1: `loot-on-death`, `flee-on-aggro`, `mirror-bot`,
+`spawn-detector`, `crowd-density`).
 
 ## Quickstart
 
@@ -391,7 +393,7 @@ ObjController subtype dispatch.
 | Client | `src/client/` | Orchestrator (`swg-client.ts`), dispatcher, per-stage drivers (`login-stage`, `connection-stage`, `game-stage`), `fleet.ts`, `transcript-io.ts`, `replay.ts`, `character-pool.ts` |
 | Script | `src/client/script/` | `ScriptContext` interface + primitives (`movement.ts` — `walkTo`/`walkCircle`/`walkToCell` over `CM_netUpdateTransform=113` with auto teleport-ack; survey/sample helpers; crafting; chat; combat; missions; groups; expectations) |
 | Scenarios | `src/scenarios/` | CLI-loadable scenario factories (`walk-line`, `walk-circle`, `open-inventory`, `combat-attack`, `posture-cycle`, `survey`, `group-trade`, `dwell`) |
-| Examples | `scripts/examples/` | ~25 ready-to-run example scripts: walking patterns, surveying loops, chat bots, parade/dance, crafting soak, mail-blast, combat-then-flee, etc. |
+| Examples | `scripts/examples/` | 30+ ready-to-run example scripts: walking patterns, surveying loops, chat bots, parade/dance, crafting soak, mail-blast, combat-then-flee, plus the reactive WorldModel patterns from release/0.1.1 (loot-on-death, flee-on-aggro, mirror-bot, spawn-detector, crowd-density). World-aware modernization means combat / vehicle / bazaar / group-trade examples no longer require hardcoded NetworkId args — `ctx.findNearest` + friends auto-resolve. |
 
 ## Reference
 

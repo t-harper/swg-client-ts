@@ -11,21 +11,32 @@
  *     --invitee-account=gtinvite1 --invitee-char=GtInvite1 \
  *     [--trade-amount=100] [--verbose]
  *
+ * Modern (auto-discover) variant — skip the Stage 1+2 lookup phase and let
+ * each scenario find its partner via the live WorldModel:
+ *   pnpm exec tsx scripts/group-trade-demo.ts ... --auto-discover
+ *
+ * Tune how long each side polls for its partner to spawn into view (helps
+ * when the two Fleet clients race during zone-in):
+ *   pnpm exec tsx scripts/group-trade-demo.ts ... --max-wait-ms=20000
+ *
  * Workflow:
- *   1. Lookup phase: run a quick Fleet with `skipGameStage: true` against
- *      both accounts to resolve each character's NetworkId. This is
- *      necessary because the group-trade scenario needs the OTHER
- *      character's id, which it cannot easily learn at scenario-time.
+ *   1. Discovery: by default, run a quick Fleet with `skipGameStage: true`
+ *      against both accounts to resolve each character's NetworkId by name
+ *      via the LoginServer avatar list. If `--auto-discover` is set, skip
+ *      this phase entirely.
  *   2. Run phase: run a 2-client Fleet with `groupTradeScenario` for each.
- *      The leader invites; the invitee waits, accepts, then both disband
- *      and Fleet handles logout.
+ *      Each scenario is wrapped so it polls `ctx.playersInRange(50)` /
+ *      `ctx.world.byType(ObjectTypeTags.PLAY)` for up to `--max-wait-ms`
+ *      before delegating to the actual handshake. If lookup resolved an
+ *      explicit `otherId`, it's passed through; otherwise the scenario's
+ *      built-in fallback picks the nearest PLAY in range.
  *   3. Report: a JSON summary of the lifecycle outcomes — did the group
  *      form? Did the (best-effort) trade window open?
  *
- * Manual-override workflow (skip lookup phase):
+ * Manual-override workflow (skip every discovery phase):
  *   pnpm exec tsx scripts/group-trade-demo.ts ... \
  *     --leader-id=0xabcd --invitee-id=0xbcde
- *   ↑ when both ids are passed, the lookup phase is skipped.
+ *   ↑ when both ids are passed, both phases are skipped.
  *
  * NOTE: The trade window beyond the initial RequestTrade is unmodeled in
  * this client; see `groupTradeScenario` in `src/scenarios/index.ts` for
@@ -38,7 +49,9 @@ import {
   type FleetClientConfig,
   type FleetResult,
   type NetworkId,
+  ObjectTypeTags,
   type ScenarioFn,
+  type ScriptContext,
 } from '../src/index.js';
 import { groupTradeScenario } from '../src/scenarios/index.js';
 
@@ -53,6 +66,8 @@ interface Args {
   inviteeId: NetworkId | null;
   tradeAmount: number;
   planet: string;
+  autoDiscover: boolean;
+  maxWaitMs: number;
   verbose: boolean;
 }
 
@@ -68,6 +83,8 @@ function parseArgs(argv: string[]): Args {
     inviteeId: null,
     tradeAmount: 0,
     planet: 'mos_eisley',
+    autoDiscover: false,
+    maxWaitMs: 15_000,
     verbose: false,
   };
   for (const arg of argv) {
@@ -106,6 +123,12 @@ function parseArgs(argv: string[]): Args {
       case 'planet':
         a.planet = val;
         break;
+      case 'auto-discover':
+        a.autoDiscover = val === 'true' || val === '';
+        break;
+      case 'max-wait-ms':
+        a.maxWaitMs = Number.parseInt(val, 10);
+        break;
       case 'verbose':
         a.verbose = val === 'true' || val === '';
         break;
@@ -130,6 +153,10 @@ function parseArgs(argv: string[]): Args {
     printUsage();
     process.exit(2);
   }
+  if (!Number.isFinite(a.maxWaitMs) || a.maxWaitMs < 0) {
+    process.stderr.write(`--max-wait-ms must be a non-negative integer (got ${a.maxWaitMs})\n`);
+    process.exit(2);
+  }
   return a;
 }
 
@@ -150,6 +177,10 @@ function printUsage(): void {
       '  --trade-amount=0            credits to ATTEMPT to transfer (best-effort; full',
       '                              trade window unmodeled). Default 0 → skip trade step.',
       '  --planet=mos_eisley         starting_locations.iff city key (NOT a planet name)',
+      '  --auto-discover             skip the Stage 1+2 lookup phase and rely on the',
+      "                              scenario's WorldModel-based partner discovery",
+      '  --max-wait-ms=15000         how long each scenario polls for its partner to',
+      '                              spawn into view before giving up (race-handling)',
       '  --leader-id=0x<hex>         skip the lookup phase and use this NetworkId',
       '  --invitee-id=0x<hex>        skip the lookup phase and use this NetworkId',
       '                              (both --leader-id and --invitee-id required to skip)',
@@ -160,8 +191,11 @@ function printUsage(): void {
 }
 
 /**
- * Phase 1 — resolve NetworkIds for each character via a Stage 1+2-only
- * Fleet run. Returns `{ leaderId, inviteeId }`.
+ * Stage 1+2-only Fleet that resolves each character's NetworkId by listing
+ * the account's avatars (LoginServer pushes `EnumerateCharacterId` during
+ * Stage 1 so this never needs to zone in). Returns `{ leaderId, inviteeId }`
+ * or `null` if either side fails — callers are expected to fall back to
+ * in-world discovery.
  *
  * The character will be created on first run if it doesn't exist (Stage 2
  * runs `ClientCreateCharacter` when the avatar list is empty).
@@ -169,7 +203,7 @@ function printUsage(): void {
 async function lookupNetworkIds(args: Args): Promise<{
   leaderId: NetworkId;
   inviteeId: NetworkId;
-}> {
+} | null> {
   process.stderr.write('[group-trade-demo] Phase 1: looking up NetworkIds (Stage 1+2 only)...\n');
   const fleet = new Fleet({ loginServer: { host: args.host, port: args.port } });
   const result = await fleet.run(
@@ -194,12 +228,14 @@ async function lookupNetworkIds(args: Args): Promise<{
     .filter((x) => x.err !== undefined);
   if (failures.length > 0) {
     const lines = failures.map((f) => `  [${f.i}] ${f.err?.message ?? '(no message)'}`);
-    throw new Error(`Lookup phase failed:\n${lines.join('\n')}`);
+    process.stderr.write(`[group-trade-demo] Lookup phase failed:\n${lines.join('\n')}\n`);
+    return null;
   }
   const leaderId = result.outcomes[0]?.lifecycleResult?.character.networkId;
   const inviteeId = result.outcomes[1]?.lifecycleResult?.character.networkId;
   if (leaderId === undefined || inviteeId === undefined) {
-    throw new Error('Lookup phase produced no character NetworkIds');
+    process.stderr.write('[group-trade-demo] Lookup phase produced no character NetworkIds\n');
+    return null;
   }
   process.stderr.write(
     `[group-trade-demo] Lookup OK: leader=${args.leaderCharacter} id=0x${leaderId.toString(16)}, ` +
@@ -208,41 +244,114 @@ async function lookupNetworkIds(args: Args): Promise<{
   return { leaderId, inviteeId };
 }
 
+/**
+ * Poll the live WorldModel until at least one other PLAY-typed object is in
+ * range, or `maxWaitMs` elapses. Returns the NetworkId of the first match
+ * (or `null` on timeout). Used both as a pre-flight in `--auto-discover`
+ * mode and as a fallback when the Stage 1+2 lookup phase fails.
+ *
+ * Note: returns the PLAY id — the scenario uses the same wire-id when
+ * invoking via `useAbility('invite', ...)` (the server resolves PLAY → CREO
+ * internally for group ops).
+ */
+async function waitForPartner(
+  ctx: ScriptContext,
+  maxWaitMs: number,
+  log: (m: string) => void,
+): Promise<NetworkId | null> {
+  // Fast path — partner already in range from the baseline flood.
+  const immediate = ctx.playersInRange(50)[0];
+  if (immediate !== undefined) {
+    log(`partner already in range at zone-in: id=0x${immediate.id.toString(16)}`);
+    return immediate.id;
+  }
+  // Slow path — poll until the WorldModel sees another PLAY-typed object.
+  // We don't pin the search to `playersInRange(50)` here because the partner
+  // might land just outside our 50m starting bubble depending on planet
+  // bring-up jitter; `world.byType(PLAY)` catches anyone the server is
+  // streaming us regardless of distance, and `playersInRange(50)` confirms
+  // they're close enough to actually trade with.
+  const deadline = Date.now() + maxWaitMs;
+  const pollMs = 250;
+  log(`waiting up to ${maxWaitMs}ms for a partner to spawn into view...`);
+  while (Date.now() < deadline) {
+    const inRange = ctx.playersInRange(50)[0];
+    if (inRange !== undefined) {
+      log(`partner spawned: id=0x${inRange.id.toString(16)}`);
+      return inRange.id;
+    }
+    // Even if not in range, count any other PLAY as a hint we're not alone.
+    let anyOther: NetworkId | null = null;
+    for (const o of ctx.world.byType(ObjectTypeTags.PLAY)) {
+      if (o.id === ctx.sceneStart.playerNetworkId) continue;
+      anyOther = o.id;
+      break;
+    }
+    if (anyOther !== null) {
+      // Partner is in the world but out of `playersInRange` distance.
+      // Trust the scenario's own resolver (it scans world.byType(PLAY)
+      // directly too) and let the handshake proceed.
+      log(
+        `partner visible but out of 50m bubble (id=0x${anyOther.toString(16)}); proceeding — scenario will resolve via its own playersInRange()`,
+      );
+      return anyOther;
+    }
+    await ctx.wait(pollMs);
+  }
+  log(`timed out after ${maxWaitMs}ms — no partner appeared`);
+  return null;
+}
+
 /** Phase 2 — run the actual group-trade scenario for both clients. */
 async function runScenario(
   args: Args,
-  ids: { leaderId: NetworkId; inviteeId: NetworkId },
+  ids: { leaderId: NetworkId; inviteeId: NetworkId } | null,
 ): Promise<FleetResult> {
   process.stderr.write('[group-trade-demo] Phase 2: running group-trade scenario...\n');
   const fleet = new Fleet({ loginServer: { host: args.host, port: args.port } });
 
-  // Build the per-role scenarios. The factory takes string args (matches
-  // the CLI factory signature) and the scenario itself knows the other
-  // character's NetworkId.
-  const leaderScript: ScenarioFn = groupTradeScenario({
-    role: 'leader',
-    otherId: `0x${ids.inviteeId.toString(16)}`,
+  // Build the per-role scenarios. When `ids` is null we omit `otherId`
+  // entirely so the scenario falls back to its own
+  // `ctx.playersInRange(50)[0]` resolver. The wrap layer below pre-polls
+  // the WorldModel so the scenario's instant lookup actually finds someone.
+  const baseScenarioArgs = {
     tradeAmount: String(args.tradeAmount),
-    waitForOtherMs: '10000',
+    waitForOtherMs: String(Math.max(10_000, args.maxWaitMs)),
     dwellMs: '500',
+  };
+  const leaderScript: ScenarioFn = groupTradeScenario({
+    ...baseScenarioArgs,
+    role: 'leader',
+    ...(ids === null ? {} : { otherId: `0x${ids.inviteeId.toString(16)}` }),
   });
   const inviteeScript: ScenarioFn = groupTradeScenario({
+    ...baseScenarioArgs,
     role: 'invitee',
-    otherId: `0x${ids.leaderId.toString(16)}`,
-    tradeAmount: String(args.tradeAmount),
-    waitForOtherMs: '10000',
-    dwellMs: '500',
+    ...(ids === null ? {} : { otherId: `0x${ids.leaderId.toString(16)}` }),
   });
 
-  // Wrap scripts so we can stream verbose lines if asked.
-  const wrapVerbose = (label: string, inner: ScenarioFn): ScenarioFn => {
-    if (!args.verbose) return inner;
+  // Wrap scripts: optionally pre-poll for the partner (when we don't have
+  // an explicit otherId), then optionally stream verbose log lines.
+  const wrap = (label: string, inner: ScenarioFn): ScenarioFn => {
     return async (ctx) => {
       const log = (m: string): void => {
-        process.stderr.write(`[${label}] ${m}\n`);
+        if (args.verbose) process.stderr.write(`[${label}] ${m}\n`);
       };
       log('scenario start');
       try {
+        // Only pre-poll when we did NOT pass an explicit otherId. With an
+        // explicit otherId the scenario doesn't need a visible partner to
+        // emit the invite — the server resolves the id and delivers the
+        // group-inviter delta as soon as the partner zones in.
+        if (ids === null) {
+          const partnerId = await waitForPartner(ctx, args.maxWaitMs, log);
+          if (partnerId === null) {
+            ctx.fail(
+              `no partner appeared within --max-wait-ms=${args.maxWaitMs}; auto-discover failed (other Fleet client may have crashed before zone-in)`,
+            );
+            return;
+          }
+        }
         await inner(ctx);
         log('scenario end OK');
       } catch (err) {
@@ -258,14 +367,14 @@ async function runScenario(
       characterName: args.leaderCharacter,
       planet: args.planet,
       holdZonedInMs: 0,
-      script: wrapVerbose('leader', leaderScript),
+      script: wrap('leader', leaderScript),
     },
     {
       account: args.inviteeAccount,
       characterName: args.inviteeCharacter,
       planet: args.planet,
       holdZonedInMs: 0,
-      script: wrapVerbose('invitee', inviteeScript),
+      script: wrap('invitee', inviteeScript),
     },
   ];
   return fleet.run(configs, { staggerMs: 200 });
@@ -279,23 +388,32 @@ async function runScenario(
 function buildSummary(
   args: Args,
   result: FleetResult,
-  ids: { leaderId: NetworkId; inviteeId: NetworkId },
+  ids: { leaderId: NetworkId; inviteeId: NetworkId } | null,
+  discoveryMode: 'manual' | 'lookup' | 'auto-discover' | 'lookup-failed-fallback',
 ): Record<string, unknown> {
   // The Fleet outcomes line up with the configs we passed:
   //   index 0 = leader, index 1 = invitee.
+  // When discovery resolved the ids via Stage 1+2 lookup we already have
+  // them; otherwise pull them from the actual lifecycle result.
+  const leaderLifecycleId = result.outcomes[0]?.lifecycleResult?.character.networkId ?? null;
+  const inviteeLifecycleId = result.outcomes[1]?.lifecycleResult?.character.networkId ?? null;
+  const effectiveLeaderId = ids?.leaderId ?? leaderLifecycleId;
+  const effectiveInviteeId = ids?.inviteeId ?? inviteeLifecycleId;
   const summary = {
     host: args.host,
+    discoveryMode,
     leader: {
       account: args.leaderAccount,
       character: args.leaderCharacter,
-      networkId: `0x${ids.leaderId.toString(16)}`,
+      networkId: effectiveLeaderId !== null ? `0x${effectiveLeaderId.toString(16)}` : null,
     },
     invitee: {
       account: args.inviteeAccount,
       character: args.inviteeCharacter,
-      networkId: `0x${ids.inviteeId.toString(16)}`,
+      networkId: effectiveInviteeId !== null ? `0x${effectiveInviteeId.toString(16)}` : null,
     },
     tradeAmount: args.tradeAmount,
+    maxWaitMs: args.maxWaitMs,
     fleet: {
       totalClients: result.summary.totalClients,
       succeeded: result.summary.succeeded,
@@ -372,25 +490,50 @@ async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
 
   process.stderr.write(
-    `[group-trade-demo] host=${args.host}:${args.port}, tradeAmount=${args.tradeAmount}\n`,
+    `[group-trade-demo] host=${args.host}:${args.port}, tradeAmount=${args.tradeAmount}, ` +
+      `autoDiscover=${args.autoDiscover}, maxWaitMs=${args.maxWaitMs}\n`,
   );
 
-  // Resolve NetworkIds (skip lookup phase if both ids were supplied).
-  let ids: { leaderId: NetworkId; inviteeId: NetworkId };
+  // Resolve NetworkIds. Three resolution paths:
+  //   1. Manual: both --leader-id and --invitee-id supplied → skip every
+  //      discovery phase.
+  //   2. Auto-discover: --auto-discover set → skip lookup, let each
+  //      scenario's WorldModel resolver pick the partner at run-time.
+  //   3. Default: run the Stage 1+2 lookup phase. If it fails, fall back
+  //      to auto-discover instead of aborting.
+  let ids: { leaderId: NetworkId; inviteeId: NetworkId } | null;
+  let discoveryMode: 'manual' | 'lookup' | 'auto-discover' | 'lookup-failed-fallback';
   if (args.leaderId !== null && args.inviteeId !== null) {
     process.stderr.write(
-      '[group-trade-demo] Skipping lookup phase (--leader-id + --invitee-id supplied)\n',
+      '[group-trade-demo] Skipping discovery (--leader-id + --invitee-id supplied)\n',
     );
     ids = { leaderId: args.leaderId, inviteeId: args.inviteeId };
+    discoveryMode = 'manual';
+  } else if (args.autoDiscover) {
+    process.stderr.write(
+      '[group-trade-demo] Skipping lookup phase (--auto-discover); will resolve via WorldModel\n',
+    );
+    ids = null;
+    discoveryMode = 'auto-discover';
   } else {
-    ids = await lookupNetworkIds(args);
+    const resolved = await lookupNetworkIds(args);
+    if (resolved === null) {
+      process.stderr.write(
+        '[group-trade-demo] Lookup phase failed; falling back to WorldModel auto-discover\n',
+      );
+      ids = null;
+      discoveryMode = 'lookup-failed-fallback';
+    } else {
+      ids = resolved;
+      discoveryMode = 'lookup';
+    }
   }
 
   // Phase 2: run the scenario.
   const result = await runScenario(args, ids);
 
   // Phase 3: report.
-  const summary = buildSummary(args, result, ids);
+  const summary = buildSummary(args, result, ids, discoveryMode);
 
   // Note: there's no JSON.stringify-friendly representation of bigints,
   // and we deliberately stringified them above. Emit pretty JSON.

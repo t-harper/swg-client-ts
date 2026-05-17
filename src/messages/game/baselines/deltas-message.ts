@@ -45,8 +45,9 @@ import { ReadIterator } from '../../../archive/read-iterator.js';
 import type { NetworkId } from '../../../types.js';
 import { GameNetworkMessage, asDecoder, defineMessageMeta } from '../../base.js';
 import { registerMessage } from '../../registry.js';
+import { readStdString } from '../../../archive/string.js';
 import { type DecodedDelta, tryDecodeDelta } from './delta-registry.js';
-import { tagToString } from './registry.js';
+import { BaselinePackageIds, ObjectTypeTags, tagToString } from './registry.js';
 
 const META = defineMessageMeta('DeltasMessage');
 
@@ -108,3 +109,77 @@ export class DeltasMessage extends GameNetworkMessage {
 }
 
 export const DeltasMessageDecoder = registerMessage(asDecoder(DeltasMessage));
+
+/**
+ * Field indices into the `CreatureObjectSharedNpBaseline` (CREO p6,
+ * SHARED_NP) addVariable order. Used by group/trade live tests that need
+ * to detect group-state changes via delta-fieldIndex inspection rather
+ * than the full typed registry decode.
+ *
+ * Mirrors `creature-object-baseline-6.ts`:
+ *   index 13 — `m_group: NetworkId`
+ *   index 14 — `m_groupInviter: PlayerAndShipPair`
+ */
+export const CreoSharedNpIndices = {
+  M_GROUP: 13,
+  M_GROUP_INVITER: 14,
+} as const;
+
+/**
+ * Peek the first `[u16 fieldIndex]` from a delta package blob. Returns
+ * `null` if the blob has no entries (count=0) or is too short to contain
+ * a header. Used by tests + scenarios that want to dispatch on
+ * "which-field-changed" without walking the full delta wire layout.
+ *
+ * Wire shape: `[u16 count][u16 firstFieldIndex][...]`.
+ */
+export function readFirstDirtyIndex(payload: Uint8Array): number | null {
+  if (payload.length < 4) return null;
+  const iter = new ReadIterator(payload);
+  iter.readU16(); // count
+  return iter.readU16();
+}
+
+/**
+ * Extract a `m_group` (groupId) change from a `DeltasMessage`. Returns
+ * `{ groupId }` if this delta targets CREO p6 (SHARED_NP) and touches
+ * field index 13 as its FIRST dirty field; `null` otherwise.
+ *
+ * Scope is intentionally narrow: only the leading dirty entry is read,
+ * because that's the wire shape `setGroup` produces on a single-server
+ * cluster (one-field deltas dominate group-state writes — see
+ * `CreatureObject.cpp:5557`).
+ */
+export function decodeGroupDelta(msg: DeltasMessage): { groupId: NetworkId } | null {
+  if (msg.typeId !== ObjectTypeTags.CREO) return null;
+  if (msg.packageId !== BaselinePackageIds.SHARED_NP) return null;
+  if (readFirstDirtyIndex(msg.packageBytes) !== CreoSharedNpIndices.M_GROUP) return null;
+  const iter = new ReadIterator(msg.packageBytes);
+  iter.readU16(); // count
+  iter.readU16(); // fieldIndex (= 13)
+  const groupId = NetworkIdCodec.decode(iter);
+  return { groupId };
+}
+
+/**
+ * Extract a `m_groupInviter` (PlayerAndShipPair) change from a
+ * `DeltasMessage`. Returns `{ inviterId, inviterName, shipId }` if this
+ * delta targets CREO p6 (SHARED_NP) and touches field index 14 as its
+ * FIRST dirty field; `null` otherwise.
+ *
+ * Wire layout for the value: `[NetworkId inviter][string name][NetworkId ship]`.
+ */
+export function decodeGroupInviterDelta(
+  msg: DeltasMessage,
+): { inviterId: NetworkId; inviterName: string; shipId: NetworkId } | null {
+  if (msg.typeId !== ObjectTypeTags.CREO) return null;
+  if (msg.packageId !== BaselinePackageIds.SHARED_NP) return null;
+  if (readFirstDirtyIndex(msg.packageBytes) !== CreoSharedNpIndices.M_GROUP_INVITER) return null;
+  const iter = new ReadIterator(msg.packageBytes);
+  iter.readU16(); // count
+  iter.readU16(); // fieldIndex (= 14)
+  const inviterId = NetworkIdCodec.decode(iter);
+  const inviterName = readStdString(iter);
+  const shipId = NetworkIdCodec.decode(iter);
+  return { inviterId, inviterName, shipId };
+}

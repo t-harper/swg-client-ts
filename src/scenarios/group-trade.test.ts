@@ -16,12 +16,10 @@
 import { describe, expect, it } from 'vitest';
 import { ByteStream } from '../archive/byte-stream.js';
 import { ReadIterator } from '../archive/read-iterator.js';
+import { writeStdString } from '../archive/string.js';
 import { runScript } from '../client/script/context.js';
 import { createFakeContext } from '../client/script/test-helpers.js';
-import {
-  CreoSharedNpIndices,
-  DeltasMessage,
-} from '../messages/game/baselines/deltas-message.js';
+import { CreoSharedNpIndices, DeltasMessage } from '../messages/game/baselines/deltas-message.js';
 import { BaselinePackageIds, ObjectTypeTags } from '../messages/game/baselines/registry.js';
 import {
   CLIENT_TO_AUTH_SERVER_FLAGS,
@@ -37,10 +35,9 @@ import {
 } from '../messages/game/obj-controller/index.js';
 import {
   BeginTradeMessage,
-  TradeCompleteMessage,
   BeginVerificationMessage,
+  TradeCompleteMessage,
 } from '../messages/game/trade/index.js';
-import { writeStdString } from '../archive/string.js';
 import { scenarios } from './index.js';
 
 const LEADER_ID = 0xaa11n;
@@ -108,10 +105,13 @@ describe('group-trade scenario — factory validation', () => {
     expect(() => factory({ role: 'follower', otherId: '0x42' })).toThrow(/role=leader\|invitee/);
   });
 
-  it('throws when otherId is missing', () => {
+  it('does NOT throw when otherId is missing (auto-resolved at runtime via ctx.playersInRange)', () => {
+    // otherId is now optional — the factory defers resolution to runtime so
+    // missing means "auto-pick the nearest player in range". Factory-time
+    // validation is limited to role + arg parse-ability.
     const factory = scenarios['group-trade'];
     if (!factory) throw new Error('group-trade not registered');
-    expect(() => factory({ role: 'leader' })).toThrow(/otherId/);
+    expect(() => factory({ role: 'leader' })).not.toThrow();
   });
 
   it('throws when otherId is unparseable', () => {
@@ -148,7 +148,10 @@ describe('group-trade scenario — leader role', () => {
     // Run scenario in background; feed it a fake m_group delta on the
     // LEADER's own NetworkId so the `expectWithin` waiter resolves.
     const runPromise = runScript(fn, ctx);
-    setTimeout(() => simulateRecv(buildInboundGroupAccept(LEADER_ID, GROUP_ID)), POST_INITIAL_DELAY_MS);
+    setTimeout(
+      () => simulateRecv(buildInboundGroupAccept(LEADER_ID, GROUP_ID)),
+      POST_INITIAL_DELAY_MS,
+    );
     const result = await runPromise;
 
     expect(result.error).toBeUndefined();
@@ -203,7 +206,10 @@ describe('group-trade scenario — leader role', () => {
     const { ctx, sent, simulateRecv } = createFakeContext({ playerNetworkId: LEADER_ID });
 
     const runPromise = runScript(fn, ctx);
-    setTimeout(() => simulateRecv(buildInboundGroupAccept(LEADER_ID, GROUP_ID)), POST_INITIAL_DELAY_MS);
+    setTimeout(
+      () => simulateRecv(buildInboundGroupAccept(LEADER_ID, GROUP_ID)),
+      POST_INITIAL_DELAY_MS,
+    );
     // After the trade starts, feed each handshake step so it completes.
     setTimeout(() => simulateRecv(new BeginTradeMessage(INVITEE_ID)), POST_INITIAL_DELAY_MS + 100);
     setTimeout(() => simulateRecv(new BeginVerificationMessage()), POST_INITIAL_DELAY_MS + 200);
@@ -241,7 +247,10 @@ describe('group-trade scenario — leader role', () => {
     const { ctx, sent, simulateRecv } = createFakeContext({ playerNetworkId: LEADER_ID });
 
     const runPromise = runScript(fn, ctx);
-    setTimeout(() => simulateRecv(buildInboundGroupAccept(LEADER_ID, GROUP_ID)), POST_INITIAL_DELAY_MS);
+    setTimeout(
+      () => simulateRecv(buildInboundGroupAccept(LEADER_ID, GROUP_ID)),
+      POST_INITIAL_DELAY_MS,
+    );
     await runPromise;
 
     const trade = sent.find(
@@ -287,7 +296,10 @@ describe('group-trade scenario — leader role', () => {
     const { ctx, simulateRecv } = createFakeContext({ playerNetworkId: LEADER_ID });
 
     const runPromise = runScript(fn, ctx);
-    setTimeout(() => simulateRecv(buildInboundGroupAccept(0xdeadn, GROUP_ID)), POST_INITIAL_DELAY_MS);
+    setTimeout(
+      () => simulateRecv(buildInboundGroupAccept(0xdeadn, GROUP_ID)),
+      POST_INITIAL_DELAY_MS,
+    );
     const result = await runPromise;
 
     expect(result.assertionFailures).toHaveLength(1);
@@ -313,9 +325,15 @@ describe('group-trade scenario — invitee role', () => {
 
     const runPromise = runScript(fn, ctx);
     // Step 1: the inbound invite (target == invitee, idx=14, inviterId != 0).
-    setTimeout(() => simulateRecv(buildInboundGroupInvite(INVITEE_ID, LEADER_ID)), POST_PREFLIGHT_MS);
+    setTimeout(
+      () => simulateRecv(buildInboundGroupInvite(INVITEE_ID, LEADER_ID)),
+      POST_PREFLIGHT_MS,
+    );
     // Step 2: the inbound group-accept (target == invitee, idx=13, groupId != 0).
-    setTimeout(() => simulateRecv(buildInboundGroupAccept(INVITEE_ID, GROUP_ID)), POST_PREFLIGHT_MS + 100);
+    setTimeout(
+      () => simulateRecv(buildInboundGroupAccept(INVITEE_ID, GROUP_ID)),
+      POST_PREFLIGHT_MS + 100,
+    );
     const result = await runPromise;
 
     expect(result.error).toBeUndefined();
@@ -403,7 +421,10 @@ describe('group-trade scenario — invitee role', () => {
     const { ctx, simulateRecv } = createFakeContext({ playerNetworkId: INVITEE_ID });
 
     const runPromise = runScript(fn, ctx);
-    setTimeout(() => simulateRecv(buildInboundGroupInvite(INVITEE_ID, LEADER_ID)), POST_PREFLIGHT_MS);
+    setTimeout(
+      () => simulateRecv(buildInboundGroupInvite(INVITEE_ID, LEADER_ID)),
+      POST_PREFLIGHT_MS,
+    );
     // Never send the m_group delta; expectWithin({soft:true}) auto-records its timeout.
     const result = await runPromise;
 

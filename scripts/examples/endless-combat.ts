@@ -1,56 +1,111 @@
 #!/usr/bin/env node --import tsx
 /**
- * endless-combat.ts — attack a fixed targetId every K seconds for total
- * duration.
+ * endless-combat.ts — attack a target every K seconds for total duration.
  *
  * Long-running variant of the bundled `combat-attack` scenario. Useful for
  * soak-testing the command-queue path and observing whether the server emits
  * `CommandQueueRemove` for every `CommandQueueEnqueue`.
  *
- * Pass `--target-id` as a hex (`0x...`) or decimal NetworkId.
+ * Auto-targeting (default): each tick picks the nearest hostile CREO within
+ * `--max-radius-m` via `ctx.nearestHostile()`, falling back to the nearest
+ * creature of any kind via `ctx.findNearest(ObjectTypeTags.CREO)`. If nothing
+ * is in range the tick logs and continues — the soak is robust against empty
+ * neighborhoods. The current target is re-queried every tick so creatures
+ * that wander out of range or are destroyed get replaced automatically.
+ *
+ * Back-compat: pass `--target-id=` as a hex (`0x...`) or decimal NetworkId to
+ * pin the attack to a specific creature. The script will still re-check
+ * `ctx.world.has(targetId)` each tick and switch to auto-targeting once the
+ * pinned target leaves the world.
  *
  * Example:
+ *   # auto-target nearest hostile within 40m
+ *   pnpm exec tsx scripts/examples/endless-combat.ts \
+ *     --host=10.254.0.253 --user=ci-test --character=TsTest \
+ *     --tick-ms=1500 --minutes=10
+ *
+ *   # back-compat: pin to a specific target
  *   pnpm exec tsx scripts/examples/endless-combat.ts \
  *     --host=10.254.0.253 --user=ci-test --character=TsTest \
  *     --target-id=0x9999999 --tick-ms=1500 --minutes=10
  */
 
-import type { NetworkId, ScenarioFn } from '../../src/index.js';
+import { type NetworkId, ObjectTypeTags, type ScenarioFn } from '../../src/index.js';
 import { durationMs, formatJson, makeLogger, parseCommonArgs, runScenario, usage } from './_lib.js';
 
 const SCRIPT = 'scripts/examples/endless-combat.ts';
 
 interface ScriptArgs {
-  targetId: NetworkId;
+  pinnedTargetId: NetworkId | null;
   tickMs: number;
   ability: string;
+  maxRadiusM: number;
 }
 
 function parseScriptArgs(extra: Map<string, string>): ScriptArgs {
-  const raw = extra.get('target-id') ?? '0';
-  const targetId = (raw.startsWith('0x') ? BigInt(raw) : BigInt(raw)) as NetworkId;
+  const raw = extra.get('target-id');
+  const pinnedTargetId =
+    raw === undefined || raw === '' || raw === '0'
+      ? null
+      : ((raw.startsWith('0x') ? BigInt(raw) : BigInt(raw)) as NetworkId);
   return {
-    targetId,
+    pinnedTargetId,
     tickMs: Number.parseInt(extra.get('tick-ms') ?? '1500', 10),
     ability: extra.get('ability') ?? 'attack',
+    maxRadiusM: Number.parseFloat(extra.get('max-radius-m') ?? '40'),
   };
 }
 
 function buildScenario(args: ScriptArgs, totalMs: number, verbose: boolean): ScenarioFn {
   return async (ctx) => {
     const log = makeLogger('cbt', verbose);
-    if (args.targetId === 0n) throw new Error('--target-id is required (decimal or 0x... hex)');
-    log(`attacking 0x${args.targetId.toString(16)} every ${args.tickMs}ms ability=${args.ability}`);
+    if (args.pinnedTargetId !== null) {
+      log(
+        `pinned target 0x${args.pinnedTargetId.toString(16)} (auto-target fallback on destroy/range)`,
+      );
+    } else {
+      log(`auto-targeting nearest hostile within ${args.maxRadiusM}m`);
+    }
+    log(`tick=${args.tickMs}ms ability=${args.ability}`);
 
     const deadline = Date.now() + totalMs;
     let ticks = 0;
+    let attacks = 0;
+    let misses = 0;
+    let currentTargetId: NetworkId | null = null;
+
     while (Date.now() < deadline) {
-      const seq = ctx.useAbility(args.ability, args.targetId);
       ticks++;
-      if (ticks % 10 === 0) log(`tick ${ticks} seq=${seq}`);
+
+      // Resolve target for this tick.
+      let targetId: NetworkId | null = null;
+      if (args.pinnedTargetId !== null && ctx.world.has(args.pinnedTargetId)) {
+        targetId = args.pinnedTargetId;
+      } else {
+        const hostile = ctx.nearestHostile({ maxRadiusM: args.maxRadiusM });
+        const pick =
+          hostile ?? ctx.findNearest(ObjectTypeTags.CREO, { maxRadiusM: args.maxRadiusM });
+        targetId = pick?.networkId ?? null;
+      }
+
+      if (targetId === null) {
+        misses++;
+        if (verbose && (misses === 1 || misses % 10 === 0)) {
+          log(`tick ${ticks}: no target in range (misses=${misses})`);
+        }
+      } else {
+        if (targetId !== currentTargetId) {
+          log(`tick ${ticks}: target -> 0x${targetId.toString(16)}`);
+          currentTargetId = targetId;
+        }
+        const seq = ctx.useAbility(args.ability, targetId);
+        attacks++;
+        if (attacks % 10 === 0) log(`tick ${ticks} attacks=${attacks} seq=${seq}`);
+      }
+
       await ctx.wait(args.tickMs);
     }
-    log(`combat done: ${ticks} ability queues`);
+    log(`combat done: ticks=${ticks} attacks=${attacks} idleTicks=${misses}`);
     await ctx.logout();
   };
 }
@@ -59,9 +114,10 @@ async function main(): Promise<number> {
   const args = parseCommonArgs(process.argv.slice(2));
   if (args.help) {
     usage(SCRIPT, 'Queue an ability against a target on a fixed cadence.', [
-      '  --target-id=N            target NetworkId (decimal or 0x... hex) (required)',
+      '  --target-id=N            optional pinned NetworkId (decimal or 0x... hex)',
       '  --tick-ms=N              ms between enqueues (default 1500)',
       '  --ability=NAME           ability to queue (default attack)',
+      '  --max-radius-m=N         auto-target search radius in m (default 40)',
     ]);
     return 0;
   }
@@ -70,9 +126,11 @@ async function main(): Promise<number> {
   const scenario = buildScenario(script, totalMs, args.verbose);
   const { summary } = await runScenario(args, scenario);
   summary.extra = {
-    targetId: `0x${script.targetId.toString(16)}`,
+    pinnedTargetId:
+      script.pinnedTargetId === null ? null : `0x${script.pinnedTargetId.toString(16)}`,
     tickMs: script.tickMs,
     ability: script.ability,
+    maxRadiusM: script.maxRadiusM,
   };
   process.stdout.write(formatJson(summary, args.pretty));
   return summary.ok ? 0 : 1;

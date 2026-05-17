@@ -149,8 +149,6 @@ export {
 } from './creature-object-baseline-1.js';
 export {
   CreoSharedNpIndices,
-  DeltasMessage,
-  DeltasMessageDecoder,
   decodeGroupDelta,
   decodeGroupInviterDelta,
   readFirstDirtyIndex,

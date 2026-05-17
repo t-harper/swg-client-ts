@@ -131,11 +131,13 @@ What's available beyond the basic lifecycle:
   to `state.structures` via an `onStructurePlaced` callback wired into
   every placement scenario.
 
-See `docs/scripting.md` for the full `ScriptContext` API, `docs/wire-spec.md`
-for the byte-level reference, and `scripts/examples/` for 30+ ready-to-run
-example scenarios (including the reactive WorldModel patterns added in
-release/0.1.1: `loot-on-death`, `flee-on-aggro`, `mirror-bot`,
-`spawn-detector`, `crowd-density`).
+See `docs/scripting-quickref.md` for the `ScriptContext` landing page (with
+links to `docs/views-reference.md` for every always-on view and
+`docs/actions-reference.md` for every method — both auto-generated from JSDoc),
+`docs/wire-spec.md` for the byte-level reference, and `scripts/examples/` for
+30+ ready-to-run example scenarios (including the reactive WorldModel
+patterns added in release/0.1.1: `loot-on-death`, `flee-on-aggro`,
+`mirror-bot`, `spawn-detector`, `crowd-density`).
 
 ## Quickstart
 
@@ -379,8 +381,9 @@ const res = await replay({
 if (!res.succeeded) console.error('wire drift detected:', res.missing);
 ```
 
-See `docs/scripting.md` for the full `ScriptContext` API and the
-ObjController subtype dispatch.
+See `docs/scripting-quickref.md` (and the auto-generated
+`docs/views-reference.md` + `docs/actions-reference.md` it links to) for
+the full `ScriptContext` API and the ObjController subtype dispatch.
 
 ## Architecture
 
@@ -397,10 +400,14 @@ ObjController subtype dispatch.
 
 ## Reference
 
+- `docs/scripting-quickref.md` — `ScriptContext` landing page (start here)
+- `docs/views-reference.md` — every always-on view (auto-generated)
+- `docs/actions-reference.md` — every method (auto-generated)
+- `docs/scripting-cookbook.md` — every bundled scenario in `src/scenarios/` (auto-generated)
+- `docs/wire-reference.md` — every registered message + ObjController subtype (auto-generated)
 - `docs/wire-spec.md` — distilled byte-level spec
 - `docs/lifecycle.md` — 4-stage state diagram (with script hook)
 - `docs/adding-a-message.md` — recipe for new top-level messages + ObjController subtypes
-- `docs/scripting.md` — `ScriptContext` API, bundled scenarios, Fleet, capture/replay
 - `assets/README.md` — TRE/TRN asset staging (for terrain features + city builder)
 - `../swg-main/CLAUDE.md` — the server side (read this first if you're new)
 

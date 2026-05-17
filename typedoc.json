@@ -8,24 +8,28 @@
   "readme": "docs/docs-portal-readme.md",
   "projectDocuments": [
     "docs/scripting-quickref.md",
-    "docs/scripting.md",
+    "docs/views-reference.md",
+    "docs/actions-reference.md",
+    "docs/wire-reference.md",
     "docs/scripting-cookbook.md",
     "docs/lifecycle.md",
     "docs/wire-spec.md",
-    "docs/wire-reference.md",
     "docs/adding-a-message.md"
   ],
   "categorizeByGroup": true,
   "searchInComments": true,
   "navigationLinks": {
     "Repo": "https://github.com/t-harper/swg-client-ts",
-    "Wire reference": "documents/Wire-message_reference.html",
-    "Scripting quickref": "documents/Scripting_quickref.html"
+    "Quickstart": "documents/Scripting_quickref.html",
+    "Always-on views": "documents/Always-on_views.html",
+    "Actions": "documents/Actions.html"
   },
   "sidebarLinks": {
+    "Wire reference": "documents/Wire-message_reference.html",
     "Scripting cookbook": "documents/Scripting_cookbook.html",
-    "Lifecycle": "documents/lifecycle.html",
-    "Adding a message": "documents/adding-a-message.html"
+    "Lifecycle (internals)": "documents/lifecycle.html",
+    "Wire spec (internals)": "documents/wire-spec.html",
+    "Adding a message (internals)": "documents/adding-a-message.html"
   },
   "excludeInternal": true,
   "excludePrivate": true,

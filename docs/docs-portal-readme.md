@@ -1,6 +1,6 @@
-# `@swg/ts-client` — Docs portal
+# `@swg/ts-client` — Quickstart
 
-A headless TypeScript SWG wire-compatible client. Drives a full
+Headless TypeScript SWG wire-compatible client. Drives a full
 **login → ConnectionServer auth → character create → SelectCharacter →
 zone-in → scripted in-world behavior → clean logout** lifecycle against a
 real `swg-server`. The basic lifecycle finishes in ~5 seconds; scripted
@@ -10,65 +10,88 @@ paths).
 
 This portal is generated on every push to `main` via the
 [`Docs portal` GitHub Actions workflow](https://github.com/t-harper/swg-client-ts/actions).
-The `Wire-message reference` page is rebuilt from the live registries via
-`scripts/gen-wire-docs.ts` before TypeDoc runs, so it always reflects the
-current `messageRegistry` + `objControllerRegistry` populations.
+The auto-gen pages (Always-on views, Actions, Wire-message reference,
+Scripting cookbook) are rebuilt from source by `scripts/gen-wire-docs.ts`
+before TypeDoc runs, so they always reflect the current `ScriptContext`,
+`messageRegistry`, `objControllerRegistry`, and `src/scenarios/`.
 
 ## Where to start
 
-- **[Scripting quickref](documents/Scripting_quickref.html)** — every
-  method, sugar query, and always-on view a script can call during the
-  zoned-in dwell, grouped by category.
-- **[Scripting cookbook](documents/Scripting_cookbook.html)** — every
-  bundled scenario in `src/scenarios/` with its CLI name, factory link,
-  and the prose JSDoc.
-- **[ScriptContext API](interfaces/index.ScriptContext.html)** — the typed
-  interface with parameters, return types, and any `@example` blocks.
-- **[Wire-message reference](documents/Wire-message_reference.html)** —
-  auto-indexed table of every registered top-level `GameNetworkMessage`
-  and every `ObjController` subtype, with CRCs, ids, source paths, and
-  one-line descriptions.
-- **[Lifecycle](documents/lifecycle.html)** — state diagram and
-  per-stage walkthrough.
-- **[Wire spec](documents/wire-spec.html)** — distilled byte-level spec
-  for the SOE UDP layer and `GameNetworkMessage` framing.
-- **[Adding a message](documents/adding-a-message.html)** — recipe for
-  wiring a new wire-format message in.
+1. **[Quickstart snippet](#one-minute-quickstart)** below — copy / paste a
+   full lifecycle into a `.ts` file.
+2. **[Always-on views](documents/Always-on_views.html)** — every `ctx.*`
+   field a script can read at any time. Reactive snapshots kept current by
+   the dispatcher loop; no polling required.
+3. **[Actions](documents/Actions.html)** — every method on
+   `ScriptContext` (movement, combat, chat, crafting, survey, missions,
+   vehicles, SUI dialogs, NPC conversation, trade, bazaar).
+4. **[Wire-message reference](documents/Wire-message_reference.html)** —
+   auto-indexed table of every registered top-level `GameNetworkMessage`
+   and every `ObjController` subtype, with CRCs, ids, source paths, and
+   one-line descriptions.
+5. **[Scripting cookbook](documents/Scripting_cookbook.html)** — every
+   bundled scenario in `src/scenarios/` with its CLI name, factory link,
+   and the prose JSDoc.
+6. **Internals** (less commonly needed):
+   - [Lifecycle](documents/lifecycle.html) — state diagram and per-stage
+     walkthrough.
+   - [Wire spec](documents/wire-spec.html) — distilled byte-level spec
+     for the SOE UDP layer and `GameNetworkMessage` framing.
+   - [Adding a message](documents/adding-a-message.html) — recipe for
+     wiring a new wire-format message in.
 
-## Always-on views (`ctx.world`, `ctx.character`, `ctx.inventory`, `ctx.datapad`)
-
-Reactive snapshots, kept current by the dispatcher loop — no polling, no
-transcript walking. Read them at any time inside a scenario; they pin to
-the player at zone-in and detach automatically at logout.
-
-| View | Symbol | Purpose |
-|---|---|---|
-| `ctx.world` | [`WorldModel`](classes/index.WorldModel.html) | Live `Map<NetworkId, WorldObject>` populated by the baseline flood. |
-| `ctx.character` | [`CharacterSheet`](interfaces/index.CharacterSheet.html) | Live view of the player's CREO + PLAY baselines (HAM, posture, cash, skills, level, group). |
-| `ctx.inventory` | [`InventoryView`](interfaces/index.InventoryView.html) | Auto-opened at zone-in; `items`, `findByTemplate(re)`, `findById(id)`. |
-| `ctx.datapad` | [`DatapadView`](interfaces/index.DatapadView.html) | Auto-opened at zone-in; `vehicles()`, `pets()`, `waypoints()`, `missions()`. |
-
-## Entry point
-
-The public surface for consumers lives at [`src/index.ts`](modules.html).
-Anything not re-exported from there is internal and may change without
-notice.
+## One-minute quickstart
 
 ```ts
-import {
-  SwgClient,
-  type ScenarioFn,
-  scenarios,
-} from '@swg/ts-client';
+import { SwgClient, type ScenarioFn, scenarios } from '@swg/ts-client';
 
-const client = new SwgClient({ loginServer: { host: '10.254.0.253', port: 44453 } });
+// 1) Compose a scenario from `ctx.*` views + actions.
+const myScenario: ScenarioFn = async (ctx) => {
+  // Always-on views: read live state any time, no polling.
+  console.log('Health:', ctx.character.health, '/', ctx.character.maxHealth);
+  console.log('Players in range:', ctx.playersInRange(50).length);
+
+  // Actions: drive wire traffic.
+  await ctx.walkTo({ x: -100, z: 50 }, { speed: 5 });
+  const target = ctx.nearestHostile({ maxRadiusM: 40 });
+  if (target) await ctx.combat.attackingNearest({ timeoutMs: 30_000 });
+  await ctx.logout();
+};
+
+// 2) Or pick a bundled scenario from `src/scenarios/`.
+const walkLoop = scenarios['walk-circle']({ radius: '8', durationMs: '5000' });
+
+// 3) Hand it to the orchestrator.
+const client = new SwgClient({
+  loginServer: { host: '10.254.0.253', port: 44453 },
+});
 const result = await client.fullLifecycle({
   account: 'ci-test',
   characterName: 'TsTest',
-  script: scenarios['walk-circle']({ radius: '8', durationMs: '5000' }),
+  script: myScenario,            // or `walkLoop`
 });
-console.log(result.scriptResult);
+
+console.log(result.scriptResult); // { elapsedMs, sendsCount, didLogout, error? }
 ```
+
+## Public API surface
+
+The full typed surface for consumers is at
+[`src/index.ts`](modules.html). Anything not re-exported from there is
+internal and may change without notice.
+
+The canonical entry types are:
+
+- [`SwgClient`](classes/index.SwgClient.html) — orchestrator with
+  `fullLifecycle()`.
+- [`ScriptContext`](interfaces/index.ScriptContext.html) — the runtime
+  passed into every scenario (parameters, return types, `@example`
+  blocks).
+- [`Fleet`](classes/index.Fleet.html) — N independent `SwgClient`s in
+  parallel for load tests.
+- [`captureLifecycle`](functions/index.captureLifecycle.html) +
+  [`replay`](functions/index.replay.html) — wire-transcript capture +
+  replay for drift detection.
 
 ## Wire-format gotchas
 

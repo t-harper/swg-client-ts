@@ -288,3 +288,12 @@ export type {
   ReplayScenarioOptions,
   ReplayScriptContext,
 } from './client/replay.js';
+
+// =============================================================================
+// Reconnect-verification harness (Feature 6)
+// =============================================================================
+export { reconnectVerify } from './client/reconnect-harness.js';
+export type {
+  ReconnectHarnessOptions,
+  ReconnectHarnessResult,
+} from './client/reconnect-harness.js';

@@ -40,6 +40,8 @@
 
 import {
   BaselinePackageIds,
+  ObjectTypeTags,
+  type ResourceContainerObjectSharedBaseline,
   type TangibleObjectSharedBaseline,
 } from '../messages/game/baselines/index.js';
 import type { NetworkId } from '../types.js';
@@ -47,6 +49,20 @@ import type { WorldEvent, WorldModel, WorldObject } from './world-model.js';
 
 /** Same template pattern as `extractInventoryContainerId` in baseline-helpers. */
 const PLAYER_INVENTORY_TEMPLATE_PATTERN = /(^|\/)(shared_)?character_inventory\.iff$/;
+
+/**
+ * Capacity of the player inventory container (volume units). The capacity
+ * is not in any baseline — `VolumeContainer.m_totalVolume` is set
+ * server-side from the SHARED template's `containerVolumeLimit` field
+ * (see `~/code/swg-main/dsrc/.../shared_character_inventory.tpf:21`).
+ * The current Windows-client value is 80 for the inventory; expose it as
+ * a constant here so the client can derive `freeSlots` without round-
+ * tripping the asset.
+ *
+ * Override via {@link InventoryViewImpl.setTotalSlots} if a later
+ * Bestine-style expansion changes this on a particular character.
+ */
+export const DEFAULT_PLAYER_INVENTORY_VOLUME = 80;
 
 /**
  * Canonical slot-name signal from the TANO SHARED baseline. The inventory
@@ -90,6 +106,22 @@ export interface InventoryItem {
 }
 
 /**
+ * One ResourceContainerObject (RCNO) currently sitting in the player's
+ * inventory. Resource crates show up in the inventory like any other item,
+ * but they carry an RCNO SHARED baseline that includes the live quantity
+ * + resource-type NetworkId — surface those here so callers can ask
+ * "how much iron do I have?" without manually walking baselines.
+ */
+export interface InventoryResourceCrate {
+  /** This crate's NetworkId — same as the {@link InventoryItem.networkId}. */
+  readonly containerId: NetworkId;
+  /** NetworkId of the underlying ResourceTypeObject. */
+  readonly resourceType: NetworkId;
+  /** Current units of resource stacked in this crate. */
+  readonly quantity: number;
+}
+
+/**
  * Live, query-able view of the player's inventory contents. Implementation
  * is derived state over `WorldModel`; do not store a separate copy of the
  * items list — read `view.items` every time.
@@ -110,12 +142,41 @@ export interface InventoryView {
    */
   readonly ready: boolean;
   /**
+   * Slots currently used. Counted as the number of items directly inside
+   * the inventory container (each item takes one inventory slot regardless
+   * of its volume — the live server enforces a per-character limit on
+   * top-level inventory items, not on stacked volume).
+   *
+   * Equal to `items.length`.
+   */
+  readonly usedSlots: number;
+  /**
+   * Total inventory slot capacity. Defaults to
+   * {@link DEFAULT_PLAYER_INVENTORY_VOLUME} (80, matching the SHARED
+   * template asset). Overridable via {@link InventoryViewImpl.setTotalSlots}
+   * for characters with extended capacity.
+   *
+   * The wire NEVER carries this value — `VolumeContainer.m_totalVolume`
+   * is a server-only field set from the SHARED template's
+   * `containerVolumeLimit` field.
+   */
+  readonly totalSlots: number;
+  /** Free slots = `totalSlots - usedSlots`. Clamped at 0. */
+  readonly freeSlots: number;
+  /**
    * Items whose `templateName` matches `re` (case-insensitive on the
    * regex's own flags). Items only known by CRC are excluded.
    */
   findByTemplate(re: RegExp): InventoryItem[];
   /** Look up one item by exact NetworkId; `undefined` if not present. */
   findById(id: NetworkId): InventoryItem | undefined;
+  /**
+   * All ResourceContainerObject (RCNO) entries currently in the
+   * inventory, with their live resource-type + quantity pulled from each
+   * crate's RCNO SHARED baseline. Returns `[]` if none in inventory or
+   * if no SHARED baselines have arrived yet.
+   */
+  resources(): InventoryResourceCrate[];
 }
 
 /**
@@ -153,6 +214,7 @@ export class InventoryViewImpl implements InventoryView {
   private _containerId: NetworkId | null = null;
   private discoverySource: DiscoverySource = DiscoverySource.NONE;
   private _ready = false;
+  private _totalSlots: number = DEFAULT_PLAYER_INVENTORY_VOLUME;
   private unsubscribe: (() => void) | null = null;
   /**
    * NetworkIds directly contained by the player — candidates for the
@@ -181,6 +243,58 @@ export class InventoryViewImpl implements InventoryView {
     for (const obj of this.world.objects()) {
       if (obj.containerId !== containerId) continue;
       out.push(this.toItem(obj, containerId));
+    }
+    return out;
+  }
+
+  get usedSlots(): number {
+    if (this._containerId === null) return 0;
+    const containerId = this._containerId;
+    let count = 0;
+    for (const obj of this.world.objects()) {
+      if (obj.containerId === containerId) count++;
+    }
+    return count;
+  }
+
+  get totalSlots(): number {
+    return this._totalSlots;
+  }
+
+  get freeSlots(): number {
+    const free = this._totalSlots - this.usedSlots;
+    return free < 0 ? 0 : free;
+  }
+
+  /**
+   * Override the inventory's slot capacity. Useful when a character has
+   * an extended inventory (Bestine perks, GM-issued bumps, etc.) and the
+   * default {@link DEFAULT_PLAYER_INVENTORY_VOLUME} doesn't match. Set to
+   * 0 to disable derived `freeSlots` calculations entirely.
+   */
+  setTotalSlots(slots: number): void {
+    this._totalSlots = slots;
+  }
+
+  resources(): InventoryResourceCrate[] {
+    if (this._containerId === null) return [];
+    const containerId = this._containerId;
+    const out: InventoryResourceCrate[] = [];
+    for (const obj of this.world.objects()) {
+      if (obj.containerId !== containerId) continue;
+      // RCNO items carry a typeId tag of 'RCNO' once their first
+      // baseline arrives. Pre-baseline items (typeId === 0) are
+      // skipped to avoid false positives.
+      if (obj.typeId !== ObjectTypeTags.RCNO) continue;
+      const shared = obj.baselines.get(BaselinePackageIds.SHARED);
+      if (shared === undefined || shared instanceof Uint8Array) continue;
+      const rcno = shared as Partial<ResourceContainerObjectSharedBaseline>;
+      if (rcno.resourceType === undefined || rcno.quantity === undefined) continue;
+      out.push({
+        containerId: obj.id,
+        resourceType: rcno.resourceType,
+        quantity: rcno.quantity,
+      });
     }
     return out;
   }

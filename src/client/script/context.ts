@@ -103,6 +103,17 @@ import {
   RadialMenuTypes,
 } from '../../messages/game/object-menu-select-message.js';
 import { SuiCreatePageMessage, SuiEventNotification } from '../../messages/game/sui/index.js';
+import type { SuiPageData } from '../../messages/game/sui/sui-page-data.js';
+import {
+  type LastNpcDialog,
+  NpcConverseTracker,
+  runNpcConversation,
+} from '../npc-converse.js';
+import {
+  type SuiAutoResponse,
+  type SuiPage,
+  SuiAutoResponder,
+} from '../sui-auto.js';
 import {
   ResourceListForSurveyMessage,
   type ResourceListItem,
@@ -130,18 +141,55 @@ import type { GroupView } from '../group-view.js';
 import { createGroupView } from '../group-view.js';
 import type { GuildView } from '../guild-view.js';
 import { createGuildView } from '../guild-view.js';
+import {
+  type CombatTimerHandle,
+  type CombatTimerView,
+  type CooldownTrackerHandle,
+  type CooldownView,
+  type ServerTimeTrackerHandle,
+  type ServerTimeView,
+  createCombatTimer,
+  createCooldownTracker,
+  createServerTimeTracker,
+} from '../timing.js';
+import { type LocationView, createLocationView } from '../location.js';
+import {
+  type NavigateOptions,
+  type NavigateTarget,
+  navigate as navigateImpl,
+} from '../navigate.js';
 import { SceneCreateObjectByCrc } from '../../messages/game/scene-create-object-by-crc.js';
 import { SceneCreateObjectByName } from '../../messages/game/scene-create-object-by-name.js';
 import {
   InventoryViewImpl,
   type InventoryView,
 } from '../inventory-view.js';
+import {
+  type CombatHelpersHandle,
+  type CombatView,
+  type SafetyView,
+  attachCombatHelpers,
+} from '../combat-helpers.js';
+import { BankViewImpl, type BankView } from '../bank-view.js';
 import type { WorldModel, WorldObject } from '../world-model.js';
 import {
   PLAYER_DATAPAD_TEMPLATE_CRC,
   extractDatapadContainerId,
 } from '../baseline-helpers.js';
 import { type DatapadView, DatapadViewImpl } from './datapad-view.js';
+import {
+  type CraftingCacheView,
+  CraftingSessionCacheImpl,
+} from '../crafting-session.js';
+import {
+  type MissionsCacheView,
+  MissionsCacheImpl,
+} from '../missions-cache.js';
+import {
+  type BestKnownSample,
+  type SurveyLastResults,
+  SurveyCacheImpl,
+} from '../survey-cache.js';
 import {
   type ExpectOptions,
   expectAbsent as expectAbsentImpl,
@@ -233,6 +281,98 @@ export interface NpcDialogPrompt {
   prompt: string;
   /** Menu option strings (Unicode). Empty when the prompt is auto-advance. */
   options: readonly string[];
+}
+
+/**
+ * Surfaced as `ctx.sui` — the high-level SUI helper namespace. Lower-level
+ * primitives (`waitForSui`, `respondToSui`) remain on the context root for
+ * back-compat.
+ */
+export interface SuiContextNamespace {
+  /**
+   * Register a standing handler that fires `SuiEventNotification`
+   * automatically when an incoming SUI page matches `predicate`.
+   *
+   * `response` is one of:
+   *   - `'ok'`     — eventType 0, returnList []
+   *   - `'cancel'` — eventType 1, returnList []
+   *   - `{ eventType, returnList }` — fully-specified reply
+   *
+   * Multiple handlers allowed; first matching predicate wins. Returns an
+   * unsubscribe fn. All registered handlers are dropped during `runScript`
+   * cleanup; no manual teardown needed for the common case.
+   *
+   * Example — auto-dismiss any "you found a rare resource!" notification
+   * during a long sampling run:
+   *
+   *   ctx.sui.autoRespond(
+   *     (page) => /rare_resource_found|sample_located/.test(page.pageName),
+   *     'ok',
+   *   );
+   *
+   * Example — auto-accept any "are you sure?" confirm dialog:
+   *
+   *   ctx.sui.autoRespond((p) => p.pageName === 'Script.areYouSure', 'ok');
+   */
+  autoRespond(
+    predicate: (page: SuiPageData) => boolean,
+    response: SuiAutoResponse,
+  ): () => void;
+
+  /**
+   * Live, read-only list of every currently-displayed SUI page (i.e. pages
+   * that have been pushed via `SuiCreatePageMessage` and NOT yet closed via
+   * `SuiForceClosePage`). Empty when no dialogs are open.
+   *
+   * Each entry carries `pageId` (for `respondToSui`), a best-effort `title`
+   * (extracted from the page's `setProperty` commands), the full
+   * `commands` list, and the associated object/location.
+   */
+  readonly active: readonly SuiPage[];
+}
+
+/**
+ * Surfaced as `ctx.npc` — high-level NPC conversation helpers. Lower-level
+ * primitives (`talkTo`, `selectDialog`, `endConversation`, `waitForNpcDialog`)
+ * remain on the context root for back-compat.
+ */
+export interface NpcContextNamespace {
+  /**
+   * Walk a known NPC conversation tree end-to-end with a pre-declared path.
+   *
+   * `path` is a series of option selectors:
+   *   - `string` — case-insensitive substring match against the response
+   *                menu text. First match wins.
+   *   - `number` — numeric index into the menu (0-based).
+   *
+   * For each step the engine:
+   *   1. `waitForNpcDialog` — waits for the next prompt + responses pair.
+   *   2. Resolves the next selector against the available options.
+   *   3. `selectDialog(matchedIndex)` — submits the pick.
+   *
+   * When `path` is exhausted: one more `waitForNpcDialog` is awaited (so
+   * the closing prose is captured), then `endConversation` is sent.
+   *
+   * Throws (NOT a soft-fail) if any path step doesn't match an available
+   * option — the error message includes the failing selector + the
+   * available options.
+   *
+   * Returns the final NPC prose text for inspection.
+   */
+  converse(
+    npcId: NetworkId,
+    path: ReadonlyArray<string | number>,
+    opts?: { timeoutMs?: number; pairWindowMs?: number },
+  ): Promise<string>;
+
+  /**
+   * Most-recent NPC dialog state, or `null` if no prompt has arrived yet
+   * (or if the conversation has been stopped via `CM_npcConversationStop`).
+   *
+   * Maintained passively by a listener installed when the script context is
+   * constructed; cleared at every conversation-stop and at context detach.
+   */
+  readonly lastDialog: LastNpcDialog | null;
 }
 
 /** Options for `ctx.tradeWith()`. */
@@ -355,6 +495,23 @@ export interface ListForSaleResult {
   errorReason?: string;
 }
 
+/**
+ * Hybrid callable+propertied surface for `ctx.survey`.
+ *
+ * `ctx.survey(toolId, name)` still issues the wire-level `requestsurvey`
+ * command (the existing behavior); the function carries `lastResults`
+ * + `bestKnown` properties auto-populated from inbound `SurveyMessage`
+ * events. This lets scripts ask `ctx.survey.bestKnown('Resotine')` after
+ * one or more `ctx.survey(...)` calls without juggling a separate cache.
+ */
+export interface SurveyCallable {
+  (toolId: NetworkId, resourceTypeName: string): number;
+  /** Most recent `SurveyMessage` parsed into `{ resourceType, points }`, or `null`. */
+  readonly lastResults: SurveyLastResults | null;
+  /** Best-concentration sample seen this session for the named resource type. */
+  bestKnown(resourceType: string): BestKnownSample | null;
+}
+
 /** Optional overrides for `ctx.say()` — directed chat, shout, mood, etc. */
 export interface SayOptions {
   /** Directed chat (e.g. `/whisper`); `0n` ⇒ broadcast. Default: 0n. */
@@ -429,6 +586,45 @@ export interface ScriptContext {
   readonly character: CharacterSheet;
 
   /**
+   * Live cooldown tracker — `ctx.cooldowns.msUntil('mount')` returns the
+   * remaining cooldown in ms (0 if ready or unknown); `ctx.cooldowns.isReady('mount')`
+   * is the boolean equivalent; `ctx.cooldowns.all()` snapshots every tracked
+   * command. Driven by `CM_commandTimer` (762) ObjController subtypes — when
+   * the server sends a cooldown timer for a command, the expiry timestamp
+   * is stored and decays against `Date.now()` on every read.
+   *
+   * Pair with `useAbility` to issue a command and then poll readiness; the
+   * dispatcher-side subscribe means the cooldown surfaces within one tick
+   * of the server's reply.
+   */
+  readonly cooldowns: CooldownView;
+
+  /**
+   * Live server-time view — `ctx.serverTime.ms()` returns the best estimate
+   * of the current server wall-clock in ms (Unix epoch), seeded from
+   * `CmdStartScene.serverEpoch` (the i32 Unix-epoch field — NOT
+   * `serverTimeSeconds`, which is the server's GameTime / uptime) and
+   * continuously refined by ClockReflect samples. Useful for comparing
+   * mission expiry timestamps, bazaar listing windows, and anything tied
+   * to a wall-clock reading on the server.
+   *
+   * `samples` is the count of ClockReflect samples folded in; when 0 the
+   * view falls back to pure seed projection (still accurate to within a
+   * couple of ms on a healthy connection, but drift accumulates over long
+   * runs without samples).
+   */
+  readonly serverTime: ServerTimeView;
+
+  /**
+   * Hit-timer view — `ctx.hitTimer.timeSinceLastHitMs` returns ms since the
+   * player was last targeted by a `CM_combatAction` (204) delivery
+   * (`Number.POSITIVE_INFINITY` if never hit this run); `ctx.hitTimer.engaged`
+   * is a derived boolean (true within 10s of last hit). Distinct from the
+   * higher-level `ctx.combat` (target tracking, autoLoot, attackingNearest).
+   */
+  readonly hitTimer: CombatTimerView;
+
+  /**
    * Always-fresh view of the player's datapad — vehicle/pet PCDs,
    * waypoints, missions, ship items, manufacturing schematics.
    *
@@ -443,6 +639,8 @@ export interface ScriptContext {
    * Updated live from baselines/deltas/scene-destroy.
    *
    *   ctx.inventory.items                          // every item now
+   *   ctx.inventory.totalSlots / usedSlots / freeSlots   // capacity math
+   *   ctx.inventory.resources()                    // RCNO crates only
    *   ctx.inventory.findByTemplate(/survey_tool/i) // pattern-match
    *   ctx.inventory.findById(0xabcdn)              // by NetworkId
    *   ctx.inventory.ready                          // true once populated
@@ -484,6 +682,50 @@ export interface ScriptContext {
    *   ctx.chat.onSystemMessage(/level up/, (text) => ...)
    */
   readonly chat: ChatHandlers;
+  /**
+   * Live high-level location view — planet, position, and current cell.
+   *
+   *   ctx.location.planet              // e.g. 'tatooine'
+   *   ctx.location.position            // current world coord
+   *   ctx.location.cell                // { buildingId, cellName, cellNumber, isPublic } | null
+   *
+   * `planet` is immutable per zone-in. `position` is the orchestrator's pose
+   * cursor (the same as `ctx.position()`). `cell` is computed live from the
+   * WorldModel: it walks the player CREO's `containerId` to a SCLT object
+   * and reads that cell's SHARED + SHARED_NP baselines. Returns `null` when
+   * the player is outdoors.
+   */
+  readonly location: LocationView;
+  /**
+   * Combat helpers — `targets()` (who's targeting us), `engaged` (heuristic
+   * "we're in a fight"), `autoLoot` (auto-fire `loot` on creature death),
+   * and `attackingNearest()` (sugar over nearestHostile + attackTarget loop).
+   *
+   * See `src/client/combat-helpers.ts` for the full surface.
+   */
+  readonly combat: CombatView;
+  /**
+   * Safety helpers — currently `fleeWhenHealthBelow(ratio, opts?)`, which
+   * registers a watcher that breaks combat (peace), optionally calls and
+   * mounts a vehicle, then walks to safe coordinates when our HAM health
+   * drops below the given fraction.
+   */
+  readonly safety: SafetyView;
+  /**
+   * Always-accessible, auto-synced view of the player's bank container.
+   * Unlike the inventory + datapad, the live server does NOT auto-open
+   * the bank at zone-in — its items only populate after the script (or
+   * the user) invokes `ctx.bank.use(terminalId)` on a nearby bank
+   * terminal (which fires `ObjectMenuSelectMessage(terminalId, ITEM_USE)`),
+   * then the server-side `openBankContainer` JNI call streams the bank
+   * contents to the client.
+   *
+   *   ctx.bank.use()                       // auto-find nearest terminal
+   *   ctx.bank.use(terminalId)             // explicit terminal id
+   *   ctx.bank.items                       // bank contents after open
+   *   ctx.bank.findByTemplate(/credit/i)   // pattern-match
+   */
+  readonly bank: BankView;
   /**
    * Find the nearest `WorldObject` matching `typeId` (one of `ObjectTypeTags`),
    * sorted by 2D distance from the player. Excludes the player itself by
@@ -580,6 +822,25 @@ export interface ScriptContext {
     target: { x: number; z: number; y?: number },
     opts?: WalkToCellOptions,
   ): Promise<void>;
+  /**
+   * Multi-segment "go there" primitive that handles mounting, dismounting,
+   * and cell entry automatically.
+   *
+   * Target shapes:
+   *   - `{ x, z }`                       — outdoor coordinate
+   *   - `{ buildingId, cellName }`       — interior cell (cellName: 'cell1', 'living_room', or '' for first public)
+   *   - `{ buildingId, cellName, position }` — interior cell with a cell-relative coord
+   *
+   * Decision engine:
+   *   - If `useMount === 'auto'` (default) AND distance > 50m AND a vehicle
+   *     PCD is in the datapad: call vehicle → mount → walk → (dismount before
+   *     cell entry) → enter cell.
+   *   - Else: walk the whole way on foot.
+   *
+   * Throws (no soft-fail) when the target cell is unreachable — building
+   * not in WorldModel, no matching cell, etc.
+   */
+  navigate(target: NavigateTarget, opts?: NavigateOptions): Promise<void>;
   /**
    * Current best estimate of the player's cell-relative position. Only valid
    * when `parentCell()` is non-zero; otherwise returns the last-known
@@ -851,8 +1112,16 @@ export interface ScriptContext {
    * `ResourceListForSurveyMessage.data` array of currently-spawned types.
    *
    * Returns the command-queue sequence id used.
+   *
+   * Also exposes:
+   *   - `ctx.survey.lastResults` — `{ resourceType, points }` from the most
+   *     recent inbound `SurveyMessage`, paired with the resource type from
+   *     the corresponding outbound `ctx.survey()` call. `null` until the
+   *     first survey reply arrives.
+   *   - `ctx.survey.bestKnown(resourceType)` — best-concentration sample
+   *     observed this session for the named type, or `null`.
    */
-  survey(toolId: NetworkId, resourceTypeName: string): number;
+  survey: SurveyCallable;
 
   /**
    * Fetch the list of currently-spawned resource types this `toolId` can
@@ -1043,6 +1312,35 @@ export interface ScriptContext {
    */
   abortMission(missionId: NetworkId): void;
 
+  /**
+   * Live cache of active `MissionObject` instances. Populated automatically
+   * from MISO baselines that arrive via the WorldModel (typically after
+   * `requestMissionList`, or already in the world after zone-in if the
+   * player has accepted missions). Reads through to WorldModel on each
+   * access, so the snapshot is always current.
+   *
+   *   ctx.missions.active                       // every active mission now
+   *   ctx.missions.findByCategory(/destroy/i)   // filter by type regex
+   *   ctx.missions.bestPayout()                 // highest-credits mission
+   */
+  readonly missions: MissionsCacheView;
+
+  /**
+   * Live cache of the in-flight crafting session. `{ active: false }` when
+   * no session is open; `{ active: true, schematic, slots, ... }` once the
+   * server has pushed a `DraftSlots` message (i.e. a schematic has been
+   * picked and the ManufactureSchematicObject is live).
+   *
+   *   if (ctx.crafting.session.active) {
+   *     for (const slot of ctx.crafting.session.slots) { ... }
+   *   }
+   *
+   * Slot assignment state (`slot.assignedId`) is tracked locally from
+   * outbound `assignCraftingSlot` / `clearCraftingSlot` calls so it
+   * reflects the client's intent even before the server confirms.
+   */
+  readonly crafting: CraftingCacheView;
+
   // --- Vehicle / Mount / Pet primitives ---
 
   /**
@@ -1177,6 +1475,20 @@ export interface ScriptContext {
    */
   respondToSui(pageId: number, eventType: number, returnList?: readonly string[]): void;
 
+  /**
+   * High-level SUI helpers — auto-responders + a live view of open pages.
+   *
+   *   ctx.sui.autoRespond(p => /found a rare/.test(p.pageName), 'ok')
+   *   ctx.sui.active   // [{pageId, title, ...}]
+   *
+   * The auto-responder engine subscribes to `SuiCreatePageMessage` /
+   * `SuiUpdatePageMessage` / `SuiForceClosePage` on context creation and
+   * fires a `SuiEventNotification` whenever a registered predicate matches.
+   * Multiple handlers allowed; first match wins. All handlers detach during
+   * `runScript` cleanup so registrations don't leak across script runs.
+   */
+  readonly sui: SuiContextNamespace;
+
   // --- NPC conversation primitives ---
 
   /**
@@ -1219,6 +1531,24 @@ export interface ScriptContext {
     timeoutMs?: number;
     pairWindowMs?: number;
   }): Promise<NpcDialogPrompt>;
+
+  /**
+   * High-level NPC conversation helpers — `converse(npcId, path)` for
+   * scripted dialog trees, plus `lastDialog` for the most-recent state.
+   *
+   *   const final = await ctx.npc.converse(npcId, ['greet', 'inquire']);
+   *   ctx.npc.lastDialog  // { text, options } | null
+   *
+   * `converse` walks the path step-by-step against the server's responses
+   * menu (matching by case-insensitive substring or by index), calling
+   * `selectDialog` after each match. Throws if any path step fails to
+   * resolve — error message includes the failing selector plus the
+   * available options. Returns the final prompt text for inspection.
+   *
+   * `lastDialog` is maintained by a passive listener installed at context
+   * creation and reset to `null` on each `CM_npcConversationStop`.
+   */
+  readonly npc: NpcContextNamespace;
 
   // --- SecureTrade handshake ---
 
@@ -1333,6 +1663,30 @@ interface InternalContext extends ScriptContext {
   readonly _guildViewDetach: () => void;
   /** Detach handle for every ctx.chat.* subscription registered during the run. */
   readonly _chatHandlersDetach: () => void;
+  /** Crafting-session cache; detached at script teardown. */
+  readonly _craftingCache: CraftingSessionCacheImpl;
+  /** Survey results cache; detached at script teardown. */
+  readonly _surveyCache: SurveyCacheImpl;
+  /** Missions cache; detached at script teardown. */
+  readonly _missionsCache: MissionsCacheImpl;
+  /** Detach handle for the cooldown tracker's dispatcher subscriptions. */
+  readonly _cooldownTrackerDetach: () => void;
+  /** Detach handle for the server-time tracker's clock-reflect subscription. */
+  readonly _serverTimeTrackerDetach: () => void;
+  /** Detach handle for the combat timer's dispatcher subscriptions. */
+  readonly _combatTimerDetach: () => void;
+  /** Internal handle for cooldown tracker — allows useAbility to register names. */
+  readonly _cooldownTrackerHandle: CooldownTrackerHandle;
+  /** Internal handle for the server-time tracker — exposed for the orchestrator's seed call. */
+  readonly _serverTimeTrackerHandle: ServerTimeTrackerHandle;
+  /** Internal handle for the combat timer — exposed mainly for tests. */
+  readonly _combatTimerHandle: CombatTimerHandle;
+  /** Engine driving `ctx.sui.autoRespond` + `ctx.sui.active`. Detached at teardown. */
+  readonly _suiAutoResponder: SuiAutoResponder;
+  /** Engine driving `ctx.npc.lastDialog`. Detached at teardown. */
+  readonly _npcConverseTracker: NpcConverseTracker;
+  /** Detach handle for the combat / safety helpers' listeners. */
+  readonly _combatHelpersDetach: () => void;
   /** Tracking for the orchestrator. */
   readonly _state: {
     sendsCount: number;
@@ -1340,6 +1694,8 @@ interface InternalContext extends ScriptContext {
     pose: { x: number; y: number; z: number; yaw: number };
     /** Cell-relative pose cursor — separate from the world pose. */
     cellPose: { parentId: NetworkId; x: number; y: number; z: number; yaw: number };
+    /** Previous world pose, captured by `setPose` before mutating `pose`. */
+    previousPose: { x: number; y: number; z: number };
     sequenceNumber: number;
     /** Wall-clock ms when the context was created — base for syncStamp derivation. */
     scriptStartTime: number;
@@ -1380,6 +1736,16 @@ interface InternalContext extends ScriptContext {
      * externally).
      */
     ownedInventoryView: InventoryViewImpl | null;
+    /**
+     * Bank view created and attached by `createScriptContext`. Detached
+     * during `runScript` teardown.
+     */
+    bankView: BankViewImpl;
+    /**
+     * Live datapad view. The script context always owns this — the
+     * orchestrator never injects one.
+     */
+    datapadView: DatapadViewImpl;
   };
 }
 
@@ -1428,6 +1794,14 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     inventoryView = impl;
   }
 
+  // Bank view — owned by the script context, attached now.
+  const bankView = new BankViewImpl(
+    opts.world,
+    opts.dispatcher,
+    opts.sceneStart.playerNetworkId,
+  );
+  bankView.attach();
+
   const state = {
     sendsCount: 0,
     didLogout: false,
@@ -1444,6 +1818,21 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
       z: 0,
       yaw: 0,
     },
+    /**
+     * Previous outdoor pose. Updated by `setPose`: every new pose shifts the
+     * current pose into `previousPose` so `character.heading` can compute
+     * yaw as `atan2(dx, dz)` over the last two transforms.
+     *
+     * Both fields read `{x:0,y:0,z:0}` at construction; `previousPose` stays
+     * at the spawn coord until the first walk sends a transform. The heading
+     * getter handles the degenerate `dx === dz === 0` case as "no signal" by
+     * returning 0.
+     */
+    previousPose: {
+      x: opts.sceneStart.startPosition.x,
+      y: opts.sceneStart.startPosition.y,
+      z: opts.sceneStart.startPosition.z,
+    },
     sequenceNumber: opts.initialSequenceNumber ?? 1,
     scriptStartTime: Date.now(),
     lastSyncStamp: 0,
@@ -1458,6 +1847,10 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     assertionFailures: [] as string[],
     datapadCreateUnsubscribe: null as (() => void) | null,
     ownedInventoryView,
+    bankView,
+    // Populated after construction below — TypeScript requires it on the
+    // initializer so we placeholder with the same instance we just built.
+    datapadView: undefined as unknown as DatapadViewImpl,
   };
 
   // DatapadView — seeded from any datapad create event already in the
@@ -1466,7 +1859,8 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
   // the script context is constructed (e.g. respawn / mid-script re-create).
   // The live server sends the datapad via ByCrc (compact form); we
   // subscribe to both ByName and ByCrc to cover any wire shape.
-  const datapadView = new DatapadViewImpl(opts.world);
+  const datapadView = new DatapadViewImpl(opts.world, null, opts.sceneStart.playerNetworkId);
+  datapadView.attach();
   const seedDatapadId = extractDatapadContainerId(opts.dispatcher.transcript);
   if (seedDatapadId !== null) datapadView.setContainerId(seedDatapadId);
   const datapadByNameUnsubscribe = opts.dispatcher.onMessage(SceneCreateObjectByName, (m) => {
@@ -1485,17 +1879,85 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     datapadByNameUnsubscribe();
     datapadByCrcUnsubscribe();
   };
+  state.datapadView = datapadView;
+
+  // Build the LocationView first — `ctx.location.cell` is computed live from
+  // the WorldModel, so no async wiring. The pose-cursor accessor closes over
+  // `state` to stay in sync with `setPose`.
+  const locationView = createLocationView({
+    world: opts.world,
+    playerId: opts.sceneStart.playerNetworkId,
+    planet: opts.sceneStart.sceneName,
+    position: () => ({ x: state.pose.x, y: state.pose.y, z: state.pose.z }),
+  });
 
   const characterSheetHandle = createCharacterSheet({
     dispatcher: opts.dispatcher,
     playerNetworkId: opts.sceneStart.playerNetworkId,
     world: opts.world,
     templateName: opts.sceneStart.templateName,
+    // Sugar getter — `ctx.character.inCell === ctx.location.cell !== null`.
+    isInCell: (): boolean => locationView.cell !== null,
+    // Heading is computed from the last two outdoor poses recorded by
+    // `setPose` (which the movement primitives call after each send).
+    // Returns 0 when no movement has happened OR when the last two poses
+    // are at the same x/z (idle character).
+    getHeading: (): number => {
+      const dx = state.pose.x - state.previousPose.x;
+      const dz = state.pose.z - state.previousPose.z;
+      if (Math.abs(dx) < 1e-6 && Math.abs(dz) < 1e-6) return 0;
+      return Math.atan2(dx, dz);
+    },
   });
 
   const groupViewHandle = createGroupView({
+    dispatcher: opts.dispatcher,
+    playerNetworkId: opts.sceneStart.playerNetworkId,
     world: opts.world,
     character: characterSheetHandle.view,
+  });
+
+  // Live caches — all detached in `runScript`'s finally block.
+  const surveyCache = new SurveyCacheImpl(opts.dispatcher);
+  surveyCache.attach();
+  const craftingCache = new CraftingSessionCacheImpl(opts.dispatcher);
+  craftingCache.attach();
+  // Missions are pure derived state over the WorldModel — attach is a no-op.
+  const missionsCache = new MissionsCacheImpl(opts.world);
+  missionsCache.attach();
+
+  // Build the callable+propertied `ctx.survey` surface. The callable
+  // closes over `ctx` (declared below) — JS hoists the binding even though
+  // `ctx` is `const`, and the call only happens after `ctx` is fully built.
+  const surveyFn = (toolId: NetworkId, resourceTypeName: string): number => {
+    // Tag the cache BEFORE sending so a fast server reply can't race the
+    // assignment. The cache pairs the next SurveyMessage with this name.
+    surveyCache.recordSurveyRequest(resourceTypeName);
+    return ctx.useAbility('requestsurvey', toolId, resourceTypeName);
+  };
+  const surveyCallable = Object.defineProperties(surveyFn, {
+    lastResults: { get: () => surveyCache.lastResults, enumerable: true },
+    bestKnown: {
+      value: (resourceType: string): BestKnownSample | null =>
+        surveyCache.bestKnown(resourceType),
+      enumerable: true,
+    },
+  }) as SurveyCallable;
+  // Timing trackers — cooldowns, server-time, combat. All three are wire-
+  // driven; the orchestrator's only obligation is to seed serverTime with
+  // the absolute server wall-clock from CmdStartScene (which the dispatcher
+  // never sees again, so we can't subscribe to it after the fact).
+  const cooldownTrackerHandle = createCooldownTracker({ dispatcher: opts.dispatcher });
+  const serverTimeTrackerHandle = createServerTimeTracker({ dispatcher: opts.dispatcher });
+  // CmdStartScene carries two time fields: `serverTimeSeconds` (the
+  // server's GameTime — seconds-since-server-process-start — NOT a Unix
+  // epoch) and `serverEpoch` (i32 = `time(0)` server wall-clock as Unix
+  // seconds). Seed the server-time tracker from `serverEpoch` so `ms()`
+  // returns a real Unix-epoch ms reading.
+  if (opts.sceneStart.serverEpoch > 0) {
+    serverTimeTrackerHandle.setSeed(BigInt(opts.sceneStart.serverEpoch));
+  }
+  const combatTimerHandle = createCombatTimer({
     dispatcher: opts.dispatcher,
     playerNetworkId: opts.sceneStart.playerNetworkId,
   });
@@ -1508,6 +1970,51 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
   const chatHandlersHandle = createChatHandlers({
     dispatcher: opts.dispatcher,
   });
+  // SUI auto-responder engine + currently-displayed page index. Hung off the
+  // dispatcher's onMessage; detached during runScript teardown so handlers
+  // don't leak across script runs.
+  const suiAutoResponder = new SuiAutoResponder(opts.dispatcher);
+
+  // NPC dialog tracker — passive listener that pairs CM_npcConversationMessage
+  // prompts with their companion CM_npcConversationResponses menus to keep
+  // `ctx.npc.lastDialog` current. Cleared on CM_npcConversationStop and at
+  // detach time.
+  // The tracker needs a ScriptContext-shaped object only for its `sceneStart`
+  // + `dispatcher`. We construct it AFTER ctx is built (it's wired in below)
+  // — but it needs `ctx.dispatcher` + `ctx.sceneStart`, so we can use a
+  // lightweight shim instead of waiting for the full object.
+  const npcConverseTracker = new NpcConverseTracker({
+    dispatcher: opts.dispatcher,
+    sceneStart: opts.sceneStart,
+  } as unknown as ScriptContext);
+
+  const suiNamespace: SuiContextNamespace = {
+    autoRespond(predicate, response) {
+      return suiAutoResponder.register(predicate, response);
+    },
+    get active() {
+      return suiAutoResponder.active;
+    },
+  };
+
+  const npcNamespace: NpcContextNamespace = {
+    converse(npcId, path, npcOpts) {
+      return runNpcConversation(ctx, npcId, path, npcOpts);
+    },
+    get lastDialog() {
+      return npcConverseTracker.sink.value;
+    },
+  };
+
+  // combat / safety helpers are constructed below (after `ctx` exists, since
+  // they reference ctx methods). We declare placeholders so the
+  // `InternalContext` literal type-checks; they're overwritten with the
+  // real implementations right after construction.
+  const combatPlaceholder = undefined as unknown as CombatView;
+  const safetyPlaceholder = undefined as unknown as SafetyView;
+  let combatHelpersDetachImpl: () => void = () => {
+    /* no-op until the helpers attach below */
+  };
 
   const ctx: InternalContext = {
     dispatcher: opts.dispatcher,
@@ -1515,6 +2022,9 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     signal: opts.signal,
     world: opts.world,
     character: characterSheetHandle.view,
+    cooldowns: cooldownTrackerHandle.view,
+    serverTime: serverTimeTrackerHandle.view,
+    hitTimer: combatTimerHandle.view,
     datapad: datapadView,
     inventory: inventoryView,
     group: groupViewHandle.view,
@@ -1525,6 +2035,27 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     _groupViewDetach: groupViewHandle.detach,
     _guildViewDetach: guildViewHandle.detach,
     _chatHandlersDetach: chatHandlersHandle.detach,
+    missions: missionsCache,
+    crafting: craftingCache,
+    _craftingCache: craftingCache,
+    _surveyCache: surveyCache,
+    _missionsCache: missionsCache,
+    survey: surveyCallable,
+    location: locationView,
+    sui: suiNamespace,
+    npc: npcNamespace,
+    bank: bankView,
+    _cooldownTrackerDetach: cooldownTrackerHandle.detach,
+    _serverTimeTrackerDetach: serverTimeTrackerHandle.detach,
+    _combatTimerDetach: combatTimerHandle.detach,
+    _cooldownTrackerHandle: cooldownTrackerHandle,
+    _serverTimeTrackerHandle: serverTimeTrackerHandle,
+    _combatTimerHandle: combatTimerHandle,
+    _suiAutoResponder: suiAutoResponder,
+    _npcConverseTracker: npcConverseTracker,
+    combat: combatPlaceholder,
+    safety: safetyPlaceholder,
+    _combatHelpersDetach: (): void => combatHelpersDetachImpl(),
 
     findNearest(
       typeId: number,
@@ -1666,6 +2197,11 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
       await sleep(50, opts.signal);
     },
     setPose(position: Vector3, yaw: number): void {
+      // Shift pose → previousPose before mutating, so character.heading can
+      // compute atan2(dx, dz) over the last two outdoor poses.
+      state.previousPose.x = state.pose.x;
+      state.previousPose.y = state.pose.y;
+      state.previousPose.z = state.pose.z;
       state.pose.x = position.x;
       state.pose.y = position.y;
       state.pose.z = position.z;
@@ -1695,6 +2231,10 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
 
     walkToCell(parentId, target, walkOpts) {
       return walkToCellImpl(ctx, parentId, target, walkOpts ?? {});
+    },
+
+    navigate(target, navigateOpts) {
+      return navigateImpl(ctx, target, navigateOpts ?? {});
     },
 
     cellPosition(): Readonly<Vector3> {
@@ -1748,6 +2288,10 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
         params ?? '',
       );
       const wrapped = wrapAsObjControllerMessage(enqueue, opts.sceneStart.playerNetworkId);
+      // Tell the cooldown tracker the human-readable name BEFORE we send so
+      // any CM_commandTimer that arrives can be looked up by-name via
+      // ctx.cooldowns.msUntil(commandName).
+      cooldownTrackerHandle.registerCommandName(commandName);
       ctx.send(wrapped);
       return seq;
     },
@@ -1886,6 +2430,10 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
         { kind: CraftingSlotAssignDecoder.kind, data },
       );
       ctx.send(wrapped);
+      // Mirror the assignment into the local crafting-session cache so
+      // `ctx.crafting.session.slots[i].assignedId` reflects the client's
+      // intent immediately (the server doesn't echo per-slot state back).
+      craftingCache.recordSlotAssign(slotIndex, ingredientId);
       return seq;
     },
 
@@ -1907,6 +2455,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
         { kind: CraftingSlotEmptyDecoder.kind, data },
       );
       ctx.send(wrapped);
+      craftingCache.recordSlotEmpty(slotIndex);
       return seq;
     },
 
@@ -2000,15 +2549,9 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     },
 
     // --- Survey primitives ---
-
-    survey(toolId: NetworkId, resourceTypeName: string): number {
-      // Server-side commandFuncRequestSurvey (CommandCppFuncs.cpp:2761) takes
-      // the survey tool's NetworkId as `target` and the resource TYPE NAME
-      // (not class) as `params`. The script trigger
-      // `survey_tool_script.OnRequestSurvey` then calls `requestSurvey` JNI
-      // → SurveySystem::TaskSurvey which looks the type up by exact name.
-      return ctx.useAbility('requestsurvey', toolId, resourceTypeName);
-    },
+    // `survey` is the callable+propertied surface built above; the other
+    // helpers (fetchSurveyResources, waitForSurvey, sample, ...) are
+    // regular methods on the literal.
 
     async fetchSurveyResources(
       toolId: NetworkId,
@@ -2244,12 +2787,14 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     callVehicle(datapadItemId: NetworkId): number {
       const seq = ctx.nextCommandSequence();
       ctx.send(new ObjectMenuSelectMessage(datapadItemId, RadialMenuTypes.PET_CALL));
+      datapadView.notifyPetAction(datapadItemId, 'call');
       return seq;
     },
 
     storeVehicle(vehicleId: NetworkId): number {
       const seq = ctx.nextCommandSequence();
       ctx.send(new ObjectMenuSelectMessage(vehicleId, RadialMenuTypes.PET_STORE));
+      datapadView.notifyPetAction(vehicleId, 'store');
       return seq;
     },
 
@@ -2270,12 +2815,14 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     callPet(controlDeviceId: NetworkId): number {
       const seq = ctx.nextCommandSequence();
       ctx.send(new ObjectMenuSelectMessage(controlDeviceId, RadialMenuTypes.PET_CALL));
+      datapadView.notifyPetAction(controlDeviceId, 'call');
       return seq;
     },
 
     storePet(petId: NetworkId): number {
       const seq = ctx.nextCommandSequence();
       ctx.send(new ObjectMenuSelectMessage(petId, RadialMenuTypes.PET_STORE));
+      datapadView.notifyPetAction(petId, 'store');
       return seq;
     },
 
@@ -2293,6 +2840,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
       }
       const seq = ctx.nextCommandSequence();
       ctx.send(new ObjectMenuSelectMessage(petId, itemId));
+      datapadView.notifyPetAction(petId, command);
       return seq;
     },
 
@@ -2600,7 +3148,64 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     },
   };
 
+  // ── Combat / safety helpers ────────────────────────────────────────
+  // Attach after ctx is constructed because the helpers reference ctx
+  // methods (nearestHostile, useAbility, walkTo, mount, callVehicle, etc.).
+  // The placeholders above are overwritten with the live implementations
+  // here. We pass `ctx` directly as the `CombatHostContext` (it's a
+  // structural-subset interface, so this is type-safe).
+  const combatHandle: CombatHelpersHandle = attachCombatHelpers(ctx);
+  combatHelpersDetachImpl = combatHandle.detach;
+  Object.defineProperty(ctx, 'combat', {
+    value: combatHandle.combat,
+    enumerable: true,
+    writable: false,
+    configurable: true,
+  });
+  Object.defineProperty(ctx, 'safety', {
+    value: combatHandle.safety,
+    enumerable: true,
+    writable: false,
+    configurable: true,
+  });
+  // Wrap useAbility + attackTarget so the combat helpers' damaged-set is
+  // populated automatically whenever the script issues a combat verb. This
+  // lets `autoLoot` know which corpses to consider when ChatSystemMessage's
+  // outOfBand carries a kill confirmation.
+  const damagedAdd = (combatHandle.combat as unknown as { __damagedAdd?: (id: NetworkId) => void })
+    .__damagedAdd;
+  const wrappedUseAbility = ctx.useAbility.bind(ctx);
+  ctx.useAbility = ((commandName: string, targetId?: NetworkId, params?: string): number => {
+    const seq = wrappedUseAbility(commandName, targetId, params);
+    if (damagedAdd !== undefined && targetId !== undefined && isCombatVerb(commandName)) {
+      damagedAdd(targetId);
+    }
+    return seq;
+  }) as typeof ctx.useAbility;
+  ctx.attackTarget = ((targetId: NetworkId): number => ctx.useAbility('attack', targetId)) as typeof ctx.attackTarget;
+
   return ctx;
+}
+
+/**
+ * Heuristic: which command names should populate the combat helpers'
+ * damaged-set? Includes the obvious `attack` verbs plus the common combat
+ * abilities. Conservative — false negatives just mean autoLoot won't
+ * recognize that creature as our kill.
+ */
+function isCombatVerb(commandName: string): boolean {
+  const c = commandName.toLowerCase();
+  if (c === 'attack' || c === 'fire' || c === 'shoot' || c === 'duel') return true;
+  // Ability families: most combat specials start with these prefixes.
+  if (/^(melee|ranged|kinetic|energy|bleed|burst|berserk|charge|disarm|dizzy|knock|kick|punch|strike|stab|slash|cleave|grapple|sweep|throw|whirlwind|sniper)/i.test(
+      c,
+    )) {
+    return true;
+  }
+  // Many trooper/jedi/etc. abilities are explicitly named — anything with
+  // 'attack' as a substring counts.
+  if (c.includes('attack')) return true;
+  return false;
 }
 
 const PET_COMMAND_RADIAL: Record<'follow' | 'stay' | 'attack' | 'guard' | 'patrol', number> = {
@@ -2633,6 +3238,17 @@ export async function runScript(fn: ScenarioFn, ctx: ScriptContext): Promise<Scr
     internal._groupViewDetach();
     internal._guildViewDetach();
     internal._chatHandlersDetach();
+    // Detach the timing trackers (cooldowns / serverTime / combat).
+    internal._cooldownTrackerDetach();
+    internal._serverTimeTrackerDetach();
+    internal._combatTimerDetach();
+    // Detach the SUI auto-responder engine + drop all registered handlers.
+    internal._suiAutoResponder.detach();
+    // Detach the NPC dialog tracker + clear lastDialog.
+    internal._npcConverseTracker.detach();
+    // Detach the combat / safety helpers' dispatcher + world listeners
+    // (also cancels any active fleeWhenHealthBelow watcher). Idempotent.
+    internal._combatHelpersDetach();
     if (internal._state.datapadCreateUnsubscribe !== null) {
       internal._state.datapadCreateUnsubscribe();
       internal._state.datapadCreateUnsubscribe = null;
@@ -2641,6 +3257,12 @@ export async function runScript(fn: ScenarioFn, ctx: ScriptContext): Promise<Scr
       internal._state.ownedInventoryView.detach();
       internal._state.ownedInventoryView = null;
     }
+    // Live caches — survey / crafting / missions all detach idempotently.
+    internal._surveyCache.detach();
+    internal._craftingCache.detach();
+    internal._missionsCache.detach();
+    internal._state.bankView.detach();
+    internal._state.datapadView.detach();
   }
   return {
     elapsedMs: Date.now() - t0,

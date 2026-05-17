@@ -357,6 +357,38 @@ export function localSyncStampLong(): number {
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
+ * Full record of one ClockReflect observation. Delivered to listeners
+ * registered via `SoeConnection.addClockReflectListener`.
+ *
+ * Where `LatencyStats` is the RTT histogram, this is a per-sample record
+ * that includes the data needed to compute the client→server clock offset:
+ * the responder's `serverSyncStampLong` (low 32 bits of the server's local
+ * clock at the moment it reflected) and the wall-clock time on our side
+ * when we received the reflect packet.
+ */
+export interface ClockReflectSample {
+  /** Round-trip time in ms (from `clockReflectRttMs`). */
+  rttMs: number;
+  /**
+   * Responder's `LocalSyncStampLong` (low 32 bits of the server's local
+   * `Clock()` value at the time it built the reflect). Combined with our
+   * `clientRecvWallMs - rttMs/2` (one-way estimate of when the server
+   * actually stamped its clock) this gives us a server-vs-client offset
+   * usable to project current server time.
+   */
+  serverSyncStampLong: number;
+  /**
+   * Our `Date.now()` at the moment the reflect arrived. Use
+   * `clientRecvWallMs - rttMs / 2` as the best estimate of the server
+   * wall-clock when it stamped `serverSyncStampLong`.
+   */
+  clientRecvWallMs: number;
+}
+
+/** Listener for ClockReflect samples. See `SoeConnection.addClockReflectListener`. */
+export type ClockReflectListener = (sample: ClockReflectSample) => void;
+
+/**
  * Summary of accumulated RTT samples. `samples` is the count of samples; the
  * actual raw values are owned by the recorder.
  */

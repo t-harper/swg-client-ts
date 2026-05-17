@@ -404,6 +404,26 @@ ObjController subtype dispatch.
 - `assets/README.md` — TRE/TRN asset staging (for terrain features + city builder)
 - `../swg-main/CLAUDE.md` — the server side (read this first if you're new)
 
+## Docs portal
+
+Full typed API + wire-message reference + scripting quickref + scenario
+cookbook, regenerated on every push to `main`:
+
+- **Hosted**: <https://t-harper.github.io/swg-client-ts/> _(published by
+  `.github/workflows/docs.yml` after Pages is enabled in repo settings)_
+- **Build locally**: `pnpm docs:build` (writes to `docs-site/`; open
+  `docs-site/index.html` in any browser — no server required)
+- **Regenerate the wire / quickref / cookbook pages only**:
+  `pnpm docs:gen` (writes `docs/wire-reference.md`,
+  `docs/scripting-quickref.md`, `docs/scripting-cookbook.md` from the
+  live registries + `ScriptContext` interface)
+
+The generator (`scripts/gen-wire-docs.ts`) walks `messageRegistry` and
+`objControllerRegistry` for the wire tables, parses
+`src/client/script/context.ts` for the quickref, and parses
+`src/scenarios/index.ts` for the cookbook — TypeDoc then produces the
+typed HTML site from `src/index.ts`.
+
 ### Asset / format parsers (`src/iff/`, `src/tre/`, `src/terrain/`)
 
 For tooling that reads SWG's binary asset files:

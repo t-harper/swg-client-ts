@@ -465,6 +465,163 @@ describe('InventoryView', () => {
     });
   });
 
+  describe('slot capacity', () => {
+    it('totalSlots defaults to 80 (matches shared_character_inventory.iff containerVolumeLimit)', () => {
+      const { dispatcher } = makeFakeDispatcher();
+      const world = new WorldModel({ dispatcher });
+      const inv = new InventoryViewImpl(world, 0x1n);
+      expect(inv.totalSlots).toBe(80);
+      expect(inv.usedSlots).toBe(0);
+      expect(inv.freeSlots).toBe(80);
+    });
+
+    it('usedSlots counts items in the inventory; freeSlots = totalSlots - usedSlots', () => {
+      const { dispatcher, recv } = makeFakeDispatcher();
+      const world = new WorldModel({ dispatcher });
+      const inv = new InventoryViewImpl(world, 0x1n);
+      inv.attach();
+
+      const invId = 0xc0ffeen;
+      recv(new SceneCreateObjectByName(invId, IDENTITY, INVENTORY_TEMPLATE, false));
+
+      // Drop 3 items in.
+      recv(new UpdateContainmentMessage(0xa1n, invId, 1));
+      recv(new UpdateContainmentMessage(0xa2n, invId, 2));
+      recv(new UpdateContainmentMessage(0xa3n, invId, 3));
+
+      expect(inv.usedSlots).toBe(3);
+      expect(inv.freeSlots).toBe(77);
+      expect(inv.totalSlots).toBe(80);
+    });
+
+    it('setTotalSlots overrides the default capacity', () => {
+      const { dispatcher, recv } = makeFakeDispatcher();
+      const world = new WorldModel({ dispatcher });
+      const inv = new InventoryViewImpl(world, 0x1n);
+      inv.attach();
+      inv.setTotalSlots(100);
+
+      const invId = 0xc0ffeen;
+      recv(new SceneCreateObjectByName(invId, IDENTITY, INVENTORY_TEMPLATE, false));
+      recv(new UpdateContainmentMessage(0xa1n, invId, 1));
+
+      expect(inv.totalSlots).toBe(100);
+      expect(inv.usedSlots).toBe(1);
+      expect(inv.freeSlots).toBe(99);
+    });
+
+    it('freeSlots is clamped at 0 (never negative) even if usedSlots exceeds capacity', () => {
+      const { dispatcher, recv } = makeFakeDispatcher();
+      const world = new WorldModel({ dispatcher });
+      const inv = new InventoryViewImpl(world, 0x1n);
+      inv.attach();
+      inv.setTotalSlots(2);
+
+      const invId = 0xc0ffeen;
+      recv(new SceneCreateObjectByName(invId, IDENTITY, INVENTORY_TEMPLATE, false));
+      // Drop 5 items in (over capacity — possible if an admin override).
+      for (let i = 0; i < 5; i++) {
+        recv(new UpdateContainmentMessage(BigInt(0xa0 + i) as bigint, invId, i));
+      }
+
+      expect(inv.usedSlots).toBe(5);
+      expect(inv.freeSlots).toBe(0);
+    });
+  });
+
+  describe('resources()', () => {
+    it('returns an empty list when no resource crates are in the inventory', () => {
+      const { dispatcher, recv } = makeFakeDispatcher();
+      const world = new WorldModel({ dispatcher });
+      const inv = new InventoryViewImpl(world, 0x1n);
+      inv.attach();
+
+      const invId = 0xc0ffeen;
+      recv(new SceneCreateObjectByName(invId, IDENTITY, INVENTORY_TEMPLATE, false));
+      recv(new UpdateContainmentMessage(0xa1n, invId, 1));
+
+      expect(inv.resources()).toEqual([]);
+    });
+
+    it('returns RCNO entries with their decoded quantity + resourceType', () => {
+      const { dispatcher, recv } = makeFakeDispatcher();
+      const world = new WorldModel({ dispatcher });
+      const inv = new InventoryViewImpl(world, 0x1n);
+      inv.attach();
+
+      const invId = 0xc0ffeen;
+      recv(new SceneCreateObjectByName(invId, IDENTITY, INVENTORY_TEMPLATE, false));
+
+      // Resource crate: RCNO baseline with quantity=1234, resourceType=0xc0n.
+      const crateId = 0xa1n;
+      recv(new UpdateContainmentMessage(crateId, invId, 1));
+      recv(
+        new BaselinesMessage(
+          crateId,
+          ObjectTypeTags.RCNO,
+          BaselinePackageIds.SHARED,
+          new Uint8Array(0),
+          {
+            kind: 'ResourceContainerObjectShared',
+            data: {
+              complexity: 0,
+              nameStringId: { table: '', text: '' },
+              objectName: '',
+              volume: 1,
+              pvpFaction: 0,
+              pvpType: 0,
+              appearanceData: '',
+              components: [],
+              condition: 0,
+              count: 0,
+              damageTaken: 0,
+              maxHitPoints: 0,
+              visible: true,
+              quantity: 1234,
+              resourceType: 0xc0n,
+            },
+          },
+        ),
+      );
+      // A non-resource item also in inventory — must NOT show up in resources().
+      recv(new UpdateContainmentMessage(0xa2n, invId, 2));
+      recv(
+        new BaselinesMessage(
+          0xa2n,
+          ObjectTypeTags.TANO,
+          BaselinePackageIds.SHARED,
+          new Uint8Array(0),
+          {
+            kind: 'TangibleObjectShared',
+            data: {
+              complexity: 0,
+              nameStringId: { table: '', text: 'foo' },
+              objectName: '',
+              volume: 1,
+              pvpFaction: 0,
+              pvpType: 0,
+              appearanceData: '',
+              components: [],
+              condition: 0,
+              count: 0,
+              damageTaken: 0,
+              maxHitPoints: 0,
+              visible: true,
+            },
+          },
+        ),
+      );
+
+      const res = inv.resources();
+      expect(res).toHaveLength(1);
+      expect(res[0]).toEqual({
+        containerId: crateId,
+        resourceType: 0xc0n,
+        quantity: 1234,
+      });
+    });
+  });
+
   describe('ScriptContext integration', () => {
     it('ctx.inventory.items reflects WorldModel state after simulated baselines', () => {
       const playerId = 0x1n;

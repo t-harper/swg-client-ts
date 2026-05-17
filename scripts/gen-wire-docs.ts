@@ -474,7 +474,7 @@ function renderScriptContextQuickref(): string {
   lines.push('# `ScriptContext` quickref');
   lines.push('');
   lines.push(
-    'Auto-generated from the `ScriptContext` interface in `src/client/script/context.ts`. Every method, sugar query, and always-on view a script can call during the zoned-in dwell. For the typed API (parameters, return types, `@example` blocks), see [ScriptContext](../interfaces/ScriptContext.html).',
+    'Auto-generated from the `ScriptContext` interface in `src/client/script/context.ts`. Every method, sugar query, and always-on view a script can call during the zoned-in dwell. For the typed API (parameters, return types, `@example` blocks), see [ScriptContext](../interfaces/index.ScriptContext.html).',
   );
   lines.push('');
   lines.push(
@@ -508,16 +508,16 @@ function renderScriptContextQuickref(): string {
   lines.push('| View | Type | Purpose |');
   lines.push('|---|---|---|');
   lines.push(
-    '| `ctx.world` | [`WorldModel`](../classes/WorldModel.html) | Live `Map<NetworkId, WorldObject>` populated by the baseline flood; updated by deltas + transforms + containment changes + scene-destroy. |',
+    '| `ctx.world` | [`WorldModel`](../classes/index.WorldModel.html) | Live `Map<NetworkId, WorldObject>` populated by the baseline flood; updated by deltas + transforms + containment changes + scene-destroy. |',
   );
   lines.push(
-    "| `ctx.character` | [`CharacterSheet`](../interfaces/CharacterSheet.html) | Live view of the player's CREO + PLAY baselines (HAM, posture, skills, cash, bank, group, level, etc.). |",
+    "| `ctx.character` | [`CharacterSheet`](../interfaces/index.CharacterSheet.html) | Live view of the player's CREO + PLAY baselines (HAM, posture, skills, cash, bank, group, level, etc.). |",
   );
   lines.push(
-    '| `ctx.inventory` | [`InventoryView`](../interfaces/InventoryView.html) | Auto-opened at zone-in. `items`, `findByTemplate(re)`, `findById(id)`, `ready`. |',
+    '| `ctx.inventory` | [`InventoryView`](../interfaces/index.InventoryView.html) | Auto-opened at zone-in. `items`, `findByTemplate(re)`, `findById(id)`, `ready`. |',
   );
   lines.push(
-    '| `ctx.datapad` | [`DatapadView`](../interfaces/DatapadView.html) | Auto-opened at zone-in. `vehicles()`, `pets()`, `waypoints()`, `missions()`. |',
+    '| `ctx.datapad` | [`DatapadView`](../interfaces/index.DatapadView.html) | Auto-opened at zone-in. `vehicles()`, `pets()`, `waypoints()`, `missions()`. |',
   );
   lines.push(
     '| `ctx.world` sugar — `findNearest(typeId, opts?)` | `WorldObject \\| undefined` | Nearest `WorldObject` matching the IFF tag; defaults to excluding self. |',
@@ -632,11 +632,21 @@ function renderScenariosCookbook(): string {
   lines.push('');
   lines.push('Invoke: `pnpm cli zone --script=<cli-name> [--script-arg=key=value]...`.');
   lines.push('');
+  // Only three factories are individually re-exported from src/index.ts
+  // (the rest live behind the `scenarios` map). Cross-link to the typed
+  // page only for those — for the others, link to the source file directly.
+  const exportedFactories = new Set(['groupTradeScenario', 'rideVehicle', 'bazaarSnipe']);
   for (const f of factories) {
     const cliName = cliByFactory.get(f.name) ?? f.name;
     lines.push(`## \`${cliName}\``);
     lines.push('');
-    lines.push(`Factory: [\`${f.name}\`](../variables/${f.name}.html)`);
+    if (exportedFactories.has(f.name)) {
+      lines.push(`Factory: [\`${f.name}\`](../variables/index.${f.name}.html)`);
+    } else {
+      lines.push(
+        `Factory: \`${f.name}\` (registered in the [\`scenarios\`](../variables/index.scenarios.html) map; not individually re-exported from \`src/index.ts\`).`,
+      );
+    }
     lines.push('');
     lines.push(formatJsDocAsMarkdown(f.doc));
     lines.push('');

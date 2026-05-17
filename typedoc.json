@@ -24,8 +24,8 @@
   },
   "sidebarLinks": {
     "Scripting cookbook": "documents/Scripting_cookbook.html",
-    "Lifecycle": "documents/Lifecycle.html",
-    "Adding a message": "documents/Adding_a_message.html"
+    "Lifecycle": "documents/lifecycle.html",
+    "Adding a message": "documents/adding-a-message.html"
   },
   "excludeInternal": true,
   "excludePrivate": true,

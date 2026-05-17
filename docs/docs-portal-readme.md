@@ -22,17 +22,17 @@ current `messageRegistry` + `objControllerRegistry` populations.
 - **[Scripting cookbook](documents/Scripting_cookbook.html)** — every
   bundled scenario in `src/scenarios/` with its CLI name, factory link,
   and the prose JSDoc.
-- **[ScriptContext API](interfaces/ScriptContext.html)** — the typed
+- **[ScriptContext API](interfaces/index.ScriptContext.html)** — the typed
   interface with parameters, return types, and any `@example` blocks.
 - **[Wire-message reference](documents/Wire-message_reference.html)** —
   auto-indexed table of every registered top-level `GameNetworkMessage`
   and every `ObjController` subtype, with CRCs, ids, source paths, and
   one-line descriptions.
-- **[Lifecycle](documents/Lifecycle.html)** — state diagram and
+- **[Lifecycle](documents/lifecycle.html)** — state diagram and
   per-stage walkthrough.
-- **[Wire spec](documents/Wire-spec.html)** — distilled byte-level spec
+- **[Wire spec](documents/wire-spec.html)** — distilled byte-level spec
   for the SOE UDP layer and `GameNetworkMessage` framing.
-- **[Adding a message](documents/Adding_a_message.html)** — recipe for
+- **[Adding a message](documents/adding-a-message.html)** — recipe for
   wiring a new wire-format message in.
 
 ## Always-on views (`ctx.world`, `ctx.character`, `ctx.inventory`, `ctx.datapad`)
@@ -43,10 +43,10 @@ the player at zone-in and detach automatically at logout.
 
 | View | Symbol | Purpose |
 |---|---|---|
-| `ctx.world` | [`WorldModel`](classes/WorldModel.html) | Live `Map<NetworkId, WorldObject>` populated by the baseline flood. |
-| `ctx.character` | [`CharacterSheet`](interfaces/CharacterSheet.html) | Live view of the player's CREO + PLAY baselines (HAM, posture, cash, skills, level, group). |
-| `ctx.inventory` | [`InventoryView`](interfaces/InventoryView.html) | Auto-opened at zone-in; `items`, `findByTemplate(re)`, `findById(id)`. |
-| `ctx.datapad` | [`DatapadView`](interfaces/DatapadView.html) | Auto-opened at zone-in; `vehicles()`, `pets()`, `waypoints()`, `missions()`. |
+| `ctx.world` | [`WorldModel`](classes/index.WorldModel.html) | Live `Map<NetworkId, WorldObject>` populated by the baseline flood. |
+| `ctx.character` | [`CharacterSheet`](interfaces/index.CharacterSheet.html) | Live view of the player's CREO + PLAY baselines (HAM, posture, cash, skills, level, group). |
+| `ctx.inventory` | [`InventoryView`](interfaces/index.InventoryView.html) | Auto-opened at zone-in; `items`, `findByTemplate(re)`, `findById(id)`. |
+| `ctx.datapad` | [`DatapadView`](interfaces/index.DatapadView.html) | Auto-opened at zone-in; `vehicles()`, `pets()`, `waypoints()`, `missions()`. |
 
 ## Entry point
 
@@ -80,6 +80,6 @@ repo; the most-cited:
 3. Client→server movement is `ObjControllerMessage(CM_netUpdateTransform=113)`,
    not the top-level `UpdateTransformMessage`.
 
-See [Wire spec](documents/Wire-spec.html) and
+See [Wire spec](documents/wire-spec.html) and
 [Wire-message reference](documents/Wire-message_reference.html) for the
 full set.

@@ -28,6 +28,11 @@ export {
 export { ChatRoomList, ChatRoomListDecoder } from './chat-room-list.js';
 export { ChatSendToRoom, ChatSendToRoomDecoder } from './chat-send-to-room.js';
 export {
+  ChatSystemMessage,
+  ChatSystemMessageDecoder,
+  ChatSystemMessageFlags,
+} from './chat-system-message.js';
+export {
   ChatPersistentMessageToServer,
   ChatPersistentMessageToServerDecoder,
   PERSISTENT_MESSAGE_MAX_SIZE,

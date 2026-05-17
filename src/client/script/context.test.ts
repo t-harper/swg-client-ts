@@ -559,6 +559,84 @@ describe('ScriptContext: survey primitives', () => {
     expect(sent.length).toBe(4);
   });
 
+  it('sample() emits a CommandQueueEnqueue with cmd=requestcoresample and resource name as params', () => {
+    const playerId = 0x501n;
+    const { ctx, sent } = createFakeContext({ playerNetworkId: playerId });
+    const TOOL = 0x17354b8bn;
+    const seq = ctx.sample(TOOL, 'Carboseuweroris');
+    expect(seq).toBe(1);
+    expect(sent.length).toBe(1);
+    const obj = sent[0] as ObjControllerMessage;
+    expect(obj.message).toBe(CM_COMMAND_QUEUE_ENQUEUE);
+    expect(obj.networkId).toBe(playerId);
+    const cq = CommandQueueEnqueue.unpack(new ReadIterator(obj.data));
+    expect(cq.commandHash).toBe(hashCommand('requestcoresample'));
+    expect(cq.targetId).toBe(TOOL);
+    expect(cq.params).toBe('Carboseuweroris');
+  });
+
+  it('waitForSampleEvent() classifies sample_located → "located"', async () => {
+    const { ctx, simulateRecv } = createFakeContext();
+    const { ChatSystemMessage } = await import('../../messages/game/chat/index.js');
+    // Build a fake oob with "sample_located" packed into UTF-16 (low+high byte pairs).
+    // Easiest: re-use the same logic the production code uses — encode chars
+    // as raw bytes packed into u16 codepoints.
+    const oobAscii = '\0\0\0\0\0\0survey\0sample_located\0Carboseuweroris';
+    let oob = '';
+    for (let i = 0; i < oobAscii.length; i += 2) {
+      const lo = oobAscii.charCodeAt(i);
+      const hi = i + 1 < oobAscii.length ? oobAscii.charCodeAt(i + 1) : 0;
+      oob += String.fromCharCode((hi << 8) | lo);
+    }
+    const promise = ctx.waitForSampleEvent({ timeoutMs: 1_000 });
+    simulateRecv(new ChatSystemMessage(0, '', oob));
+    const evt = await promise;
+    expect(evt.kind).toBe('located');
+    expect(evt.raw).toContain('sample_located');
+    expect(evt.raw).toContain('Carboseuweroris');
+  });
+
+  it('waitForSampleEvent() classifies the common STF tokens', async () => {
+    const { decodeSampleOob } = await import('./context.js');
+    void decodeSampleOob; // imported for completeness
+    const { ChatSystemMessage } = await import('../../messages/game/chat/index.js');
+    function makeOob(token: string): string {
+      const ascii = `\0\0\0\0\0\0survey\0${token}\0`;
+      let oob = '';
+      for (let i = 0; i < ascii.length; i += 2) {
+        const lo = ascii.charCodeAt(i);
+        const hi = i + 1 < ascii.length ? ascii.charCodeAt(i + 1) : 0;
+        oob += String.fromCharCode((hi << 8) | lo);
+      }
+      return oob;
+    }
+    const cases: Array<[string, string]> = [
+      ['sample_failed', 'failed'],
+      ['sample_cancel', 'cancel'],
+      ['already_sampling', 'in_progress'],
+      ['start_sampling', 'start'],
+      ['sample_mind', 'mind'],
+      ['density_below_threshold', 'density'],
+      ['trace_amt', 'trace'],
+    ];
+    for (const [token, expectedKind] of cases) {
+      const { ctx, simulateRecv } = createFakeContext();
+      const promise = ctx.waitForSampleEvent({ timeoutMs: 500 });
+      simulateRecv(new ChatSystemMessage(0, '', makeOob(token)));
+      const evt = await promise;
+      expect(evt.kind).toBe(expectedKind);
+    }
+  });
+
+  it('waitForSampleEvent() ignores unrelated ChatSystemMessages (kind=other)', async () => {
+    const { ctx, simulateRecv } = createFakeContext();
+    const { ChatSystemMessage } = await import('../../messages/game/chat/index.js');
+    const promise = ctx.waitForSampleEvent({ timeoutMs: 100 });
+    // Send an unrelated message — predicate filters it out
+    simulateRecv(new ChatSystemMessage(0, 'random combat narration', ''));
+    await expect(promise).rejects.toThrow(/Timed out/);
+  });
+
   it('fetchSurveyResources() filters by surveyToolId — ignores responses for a different tool', async () => {
     const OTHER_TOOL = 0x999n;
     const { ctx, simulateRecv } = createFakeContext();

@@ -65,6 +65,7 @@ import {
   type TeleportAckData,
   TeleportAckDecoder,
 } from '../../messages/game/obj-controller/index.js';
+import { ChatSystemMessage } from '../../messages/game/chat/index.js';
 import {
   ResourceListForSurveyMessage,
   type ResourceListItem,
@@ -104,6 +105,53 @@ const POSTURE_COMMAND: Record<Posture, string> = {
 };
 
 export type ScenarioFn = (ctx: ScriptContext) => Promise<void>;
+
+/**
+ * Categorized outcome of one server-side sample-loop tick. Derived from the
+ * STF token embedded in `ChatSystemMessage.outOfBand`. See
+ * `ctx.waitForSampleEvent`.
+ */
+export type SampleEventKind =
+  | 'located'
+  | 'failed'
+  | 'cancel'
+  | 'in_progress'
+  | 'start'
+  | 'mind'
+  | 'density'
+  | 'trace'
+  | 'other';
+
+/**
+ * Internal helper — decode `ChatSystemMessage.outOfBand` to a printable
+ * ASCII string (the wire packs each pair of bytes into one UTF-16
+ * codepoint via Unicode::String encoding).
+ */
+export function decodeSampleOob(oob: string): string {
+  let s = '';
+  for (let i = 0; i < oob.length; i++) {
+    const cu = oob.charCodeAt(i);
+    const lo = cu & 0xff;
+    const hi = (cu >> 8) & 0xff;
+    for (const b of [lo, hi]) {
+      if (b >= 0x20 && b < 0x7f) s += String.fromCharCode(b);
+    }
+  }
+  return s;
+}
+
+function classifySampleEvent(oob: string): SampleEventKind {
+  const t = decodeSampleOob(oob);
+  if (/sample_located/.test(t)) return 'located';
+  if (/sample_failed/.test(t)) return 'failed';
+  if (/sample_cancel/.test(t)) return 'cancel';
+  if (/already_sampling/.test(t)) return 'in_progress';
+  if (/start_sampling/.test(t)) return 'start';
+  if (/sample_mind/.test(t)) return 'mind';
+  if (/density_below/.test(t)) return 'density';
+  if (/trace_amt/.test(t)) return 'trace';
+  return 'other';
+}
 
 /** Optional overrides for `ctx.say()` — directed chat, shout, mood, etc. */
 export interface SayOptions {
@@ -500,6 +548,72 @@ export interface ScriptContext {
   waitForSurvey(opts?: { timeoutMs?: number }): Promise<{
     points: SurveyPoint[];
   }>;
+
+  /**
+   * Start a core-sample loop for a SPECIFIC `resourceTypeName` (e.g.
+   * `"Carboseuweroris"`). Wraps `useAbility('requestcoresample', toolId,
+   * resourceTypeName)`. Server-side this runs `survey_tool_script.OnRequestCoreSample`
+   * which validates state (not in structure, not in combat, density ≥ 30%,
+   * etc.) and starts a ~30-second-tick sample loop. Each tick has a random
+   * chance (≈50% at no surveying skill, up to ~70% with skill) of producing
+   * units of the resource — the units **stack into an existing resource
+   * container of the same type** if one exists in inventory, otherwise a
+   * new container is created.
+   *
+   * The loop continues until any of:
+   *   - The player moves more than 1 meter from the start spot
+   *   - Action attribute drains to 0
+   *   - Density at current position drops below threshold
+   *
+   * To stop the loop: walk 2+ meters. The next tick sees the movement and
+   * cleans up. `cancelSampling()` is a convenience for this.
+   *
+   * **Stale state warning**: if a prior session disconnected mid-loop, the
+   * server keeps `surveying.takingSamples` set on the player; new calls
+   * return `already_sampling` (kind `'in_progress'`) until the stale loop
+   * times out (drain action / move check) or the server is restarted.
+   * Robust callers should `await ctx.cancelSampling()` first when they
+   * suspect stale state, or look for `'in_progress'` kind from
+   * `waitForSampleEvent` and act accordingly.
+   *
+   * Returns the command-queue sequence id used.
+   */
+  sample(toolId: NetworkId, resourceTypeName: string): number;
+
+  /**
+   * Walk 2 meters in-place to bust the server's sample loop (its move-check
+   * triggers cleanup on the next tick). Returns once the move is sent — the
+   * server's `sample_cancel` chat message arrives a few seconds later.
+   */
+  cancelSampling(): Promise<void>;
+
+  /**
+   * Wait for the next sample-loop event from the server, returned as a
+   * `{ kind, raw }` discriminated union. The `kind` is derived from the
+   * STF token in the `ChatSystemMessage`'s `outOfBand` payload:
+   *
+   *   - `'located'`     — `survey/sample_located` (a sample succeeded; units
+   *                       added to inventory's matching resource container,
+   *                       or a new container created)
+   *   - `'failed'`      — `survey/sample_failed` (this tick's random roll
+   *                       didn't pass; loop continues)
+   *   - `'cancel'`      — `survey/sample_cancel` (loop terminated, e.g.
+   *                       player moved)
+   *   - `'in_progress'` — `survey/already_sampling` (a stale loop from a
+   *                       prior session is still active; restart server or
+   *                       wait it out)
+   *   - `'start'`       — `survey/start_sampling`
+   *   - `'mind'`        — `survey/sample_mind` (out of action attribute)
+   *   - `'density'`     — `survey/density_below_threshold`
+   *   - `'trace'`       — `survey/trace_amt`
+   *   - `'other'`       — anything else (raw token in `raw`)
+   *
+   * Default timeout 60_000ms (long enough for one sample-loop tick).
+   */
+  waitForSampleEvent(opts?: {
+    timeoutMs?: number;
+    predicate?: (kind: SampleEventKind, raw: string) => boolean;
+  }): Promise<{ kind: SampleEventKind; raw: string }>;
 
   /**
    * Fetch the server-side attribute list for one or more objects via the
@@ -1128,6 +1242,48 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
       const timeoutMs = surveyOpts?.timeoutMs ?? 60_000;
       const msg = await opts.dispatcher.waitFor(SurveyMessage, { timeoutMs });
       return { points: msg.data };
+    },
+
+    sample(toolId: NetworkId, resourceTypeName: string): number {
+      return ctx.useAbility('requestcoresample', toolId, resourceTypeName);
+    },
+
+    async cancelSampling(): Promise<void> {
+      // The server's sample loop cancels when the player has moved > 1m
+      // from `surveying.sampleLocation`. Walk a small distance and let the
+      // next tick (~30s later) clean up. We don't wait for the cancel chat
+      // here — that's the caller's choice.
+      const cur = ctx.position();
+      // Use walkTo with a 2m offset; default tickMs/speed give us a quick send.
+      const { walkTo: walkToImplLocal } = await import('./movement.js');
+      await walkToImplLocal(
+        ctx,
+        { x: cur.x + 2.5, z: cur.z + 2.5 },
+        { speed: 4, tickMs: 500 },
+      );
+    },
+
+    async waitForSampleEvent(
+      sampleOpts?: {
+        timeoutMs?: number;
+        predicate?: (kind: SampleEventKind, raw: string) => boolean;
+      },
+    ): Promise<{ kind: SampleEventKind; raw: string }> {
+      const timeoutMs = sampleOpts?.timeoutMs ?? 60_000;
+      const pred = sampleOpts?.predicate;
+      const msg = await opts.dispatcher.waitFor(ChatSystemMessage, {
+        timeoutMs,
+        predicate: (m) => {
+          const kind = classifySampleEvent(m.outOfBand);
+          if (kind === 'other') return false;
+          if (pred !== undefined) {
+            const raw = decodeSampleOob(m.outOfBand);
+            return pred(kind, raw);
+          }
+          return true;
+        },
+      });
+      return { kind: classifySampleEvent(msg.outOfBand), raw: decodeSampleOob(msg.outOfBand) };
     },
 
     async fetchResourceAttributes(

@@ -406,4 +406,239 @@ describe('WorldModel', () => {
     );
     expect(events.map((e) => e.kind)).toEqual(['create', 'transform']);
   });
+
+  describe('toSnapshot', () => {
+    it('returns an empty snapshot for a fresh world', () => {
+      const { dispatcher } = makeFakeDispatcher();
+      const world = new WorldModel({ dispatcher });
+
+      const snap = world.toSnapshot();
+      expect(snap.objectCount).toBe(0);
+      expect(snap.objects).toEqual([]);
+      expect(snap.playerId).toBeNull();
+      expect(typeof snap.takenAt).toBe('number');
+      // Round-trips through JSON without throwing.
+      expect(() => JSON.stringify(snap)).not.toThrow();
+    });
+
+    it('serializes NetworkIds (player + objects + parents + containers) as strings, never bigint', () => {
+      const { dispatcher, recv } = makeFakeDispatcher();
+      const playerId = 0xdeadbeefn;
+      const world = new WorldModel({ dispatcher, playerId });
+
+      // Player + a containing cell + an item parented inside that cell, in a container.
+      recv(
+        new SceneCreateObjectByCrc(
+          playerId,
+          { rotation: { x: 0, y: 0, z: 0, w: 1 }, position: { x: 10, y: 0, z: 20 } },
+          0x12345678,
+          false,
+        ),
+      );
+      const cellId = 0xce11n;
+      recv(new UpdateTransformWithParentMessage(cellId, 0x101n, 80, 8, 16, 3, 0, 16, 0, 0));
+      // Containment: 0x101 is contained in some container 0xc0n at slot 5.
+      recv(new UpdateContainmentMessage(0x101n, 0xc0n, 5));
+
+      const snap = world.toSnapshot();
+      expect(snap.objectCount).toBe(2);
+      expect(snap.playerId).toBe(playerId.toString());
+      expect(typeof snap.playerId).toBe('string');
+
+      const player = snap.objects.find((o) => o.id === playerId.toString());
+      expect(player).toBeDefined();
+      expect(typeof player?.id).toBe('string');
+      expect(player?.templateCrc).toBe(0x12345678);
+      expect(player?.position).toEqual({ x: 10, y: 0, z: 20 });
+      expect(player?.parentCell).toBe('0');
+
+      const child = snap.objects.find((o) => o.id === '257'); // 0x101
+      expect(child).toBeDefined();
+      expect(typeof child?.parentCell).toBe('string');
+      expect(child?.parentCell).toBe(cellId.toString());
+      expect(typeof child?.containerId).toBe('string');
+      expect(child?.containerId).toBe(0xc0n.toString());
+      expect(child?.slotArrangement).toBe(5);
+      expect(child?.cellPosition).toEqual({ x: 10, y: 1, z: 2 });
+
+      // Verify no bigint leaks anywhere (JSON.stringify throws on bigint).
+      const json = JSON.stringify(snap);
+      expect(json).toContain(playerId.toString());
+      expect(json).toContain(cellId.toString());
+    });
+
+    it('captures multiple objects with type tags and baseline package ids (no data by default)', () => {
+      const { dispatcher, recv } = makeFakeDispatcher();
+      const world = new WorldModel({ dispatcher });
+
+      recv(
+        new BaselinesMessage(
+          0x1n,
+          ObjectTypeTags.TANO,
+          BaselinePackageIds.CLIENT_SERVER,
+          new Uint8Array(0),
+          { kind: 'TangibleObjectClientServer', data: { bankBalance: 100, cashBalance: 50 } },
+        ),
+      );
+      recv(
+        new BaselinesMessage(
+          0x1n,
+          ObjectTypeTags.TANO,
+          BaselinePackageIds.SHARED,
+          new Uint8Array(0),
+          null,
+        ),
+      );
+      recv(
+        new BaselinesMessage(0x2n, ObjectTypeTags.CREO, 1, new Uint8Array(0), {
+          kind: 'TangibleObjectClientServer',
+          data: { bankBalance: 1, cashBalance: 2 },
+        }),
+      );
+      recv(
+        new SceneCreateObjectByName(
+          0x3n,
+          { rotation: { x: 0, y: 0, z: 0, w: 1 }, position: { x: 0, y: 0, z: 0 } },
+          'object/creature/npc/foo.iff',
+          false,
+        ),
+      );
+
+      const snap = world.toSnapshot();
+      expect(snap.objectCount).toBe(3);
+
+      const o1 = snap.objects.find((o) => o.id === '1');
+      expect(o1?.typeIdString).toBe('TANO');
+      // Two baselines arrived for 0x1: CLIENT_SERVER and SHARED — keys sorted ascending.
+      expect(o1?.baselinePackageIds).toEqual(
+        [BaselinePackageIds.CLIENT_SERVER, BaselinePackageIds.SHARED].sort((a, b) => a - b),
+      );
+      // Default mode: no baseline data field at all.
+      expect(o1?.baselines).toBeUndefined();
+
+      const o2 = snap.objects.find((o) => o.id === '2');
+      expect(o2?.typeIdString).toBe('CREO');
+
+      const o3 = snap.objects.find((o) => o.id === '3');
+      expect(o3?.templateName).toBe('object/creature/npc/foo.iff');
+      expect(o3?.baselinePackageIds).toEqual([]); // Scene-create only, no baselines.
+    });
+
+    it('includeBaselineData=true round-trips the per-package data with bigint/Uint8Array normalized', () => {
+      const { dispatcher, recv } = makeFakeDispatcher();
+      const world = new WorldModel({ dispatcher });
+
+      recv(
+        new BaselinesMessage(
+          0xfn,
+          ObjectTypeTags.TANO,
+          BaselinePackageIds.CLIENT_SERVER,
+          new Uint8Array(0),
+          {
+            kind: 'TangibleObjectClientServer',
+            data: { bankBalance: 1234, cashBalance: 5678 },
+          },
+        ),
+      );
+      // A second package whose data is the raw bytes (no decoder match).
+      const opaqueBytes = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+      recv(
+        new BaselinesMessage(
+          0xfn,
+          ObjectTypeTags.TANO,
+          BaselinePackageIds.SHARED,
+          opaqueBytes,
+          null,
+        ),
+      );
+
+      const snap = world.toSnapshot({ includeBaselineData: true });
+      const obj = snap.objects.find((o) => o.id === '15');
+      expect(obj).toBeDefined();
+      expect(obj?.baselines).toBeDefined();
+      // Typed decoded data is preserved as-is for plain-object payloads.
+      expect(obj?.baselines?.[BaselinePackageIds.CLIENT_SERVER]).toEqual({
+        bankBalance: 1234,
+        cashBalance: 5678,
+      });
+      // Uint8Array → hex string.
+      expect(obj?.baselines?.[BaselinePackageIds.SHARED]).toBe('deadbeef');
+
+      // The full snapshot must round-trip through JSON cleanly.
+      const json = JSON.stringify(snap);
+      const parsed = JSON.parse(json);
+      expect(parsed.objects[0].baselines[BaselinePackageIds.CLIENT_SERVER]).toEqual({
+        bankBalance: 1234,
+        cashBalance: 5678,
+      });
+      expect(parsed.objects[0].baselines[BaselinePackageIds.SHARED]).toBe('deadbeef');
+    });
+
+    it('normalizes nested bigint / Uint8Array / Map values inside baseline data', () => {
+      const { dispatcher, recv } = makeFakeDispatcher();
+      const world = new WorldModel({ dispatcher });
+
+      // Synthesize a baseline whose decoded data contains nested complexity:
+      // bigint, Uint8Array, Map<string, ...>, Map<number, bigint>, and a Date.
+      recv(
+        new BaselinesMessage(
+          0x42n,
+          ObjectTypeTags.TANO,
+          BaselinePackageIds.CLIENT_SERVER,
+          new Uint8Array(0),
+          {
+            kind: 'TangibleObjectClientServer',
+            data: {
+              ownerId: 0x123456789abcdefn,
+              bytes: new Uint8Array([0x01, 0x02, 0x03]),
+              stringKeyedMap: new Map<string, unknown>([
+                ['a', 1n],
+                ['b', new Uint8Array([0xff])],
+              ]),
+              numericKeyedMap: new Map<number, bigint>([
+                [1, 100n],
+                [2, 200n],
+              ]),
+              when: new Date('2026-05-17T12:00:00.000Z'),
+              nested: { deepBigInt: 999n },
+            },
+          },
+        ),
+      );
+
+      const snap = world.toSnapshot({ includeBaselineData: true });
+      const data = snap.objects[0]?.baselines?.[BaselinePackageIds.CLIENT_SERVER] as Record<
+        string,
+        unknown
+      >;
+      expect(data.ownerId).toBe('81985529216486895');
+      expect(data.bytes).toBe('010203');
+      expect(data.stringKeyedMap).toEqual({ a: '1', b: 'ff' });
+      expect(data.numericKeyedMap).toEqual([
+        [1, '100'],
+        [2, '200'],
+      ]);
+      expect(data.when).toBe('2026-05-17T12:00:00.000Z');
+      expect(data.nested).toEqual({ deepBigInt: '999' });
+
+      // JSON.stringify must not throw.
+      expect(() => JSON.stringify(snap)).not.toThrow();
+    });
+
+    it('preserves first-seen ordering and reflects scene-destroy removals', () => {
+      const { dispatcher, recv } = makeFakeDispatcher();
+      const world = new WorldModel({ dispatcher });
+      const ident = { rotation: { x: 0, y: 0, z: 0, w: 1 }, position: { x: 0, y: 0, z: 0 } };
+
+      recv(new SceneCreateObjectByCrc(0x1n, ident, 1, false));
+      recv(new SceneCreateObjectByCrc(0x2n, ident, 2, false));
+      recv(new SceneCreateObjectByCrc(0x3n, ident, 3, false));
+      recv(new SceneDestroyObject(0x2n, false));
+
+      const snap = world.toSnapshot();
+      expect(snap.objectCount).toBe(2);
+      // Insertion order: 0x1, 0x3 (0x2 was destroyed).
+      expect(snap.objects.map((o) => o.id)).toEqual(['1', '3']);
+    });
+  });
 });

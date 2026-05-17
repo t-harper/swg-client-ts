@@ -15,6 +15,7 @@ import {
   decodeGroupDelta,
   decodeGroupInviterDelta,
 } from '../messages/game/baselines/deltas-message.js';
+import { ObjectTypeTags } from '../messages/game/baselines/registry.js';
 import type { NetworkId } from '../types.js';
 
 export type ScenarioFactory = (args: Record<string, string>) => ScenarioFn;
@@ -71,27 +72,52 @@ export const dwell: ScenarioFactory = (args) => {
 };
 
 /**
- * Queue `attack` against a fixed target every ~tickMs for durationMs.
+ * Queue `attack` against a target every ~tickMs for durationMs.
+ *
+ * When `targetId` is omitted, the scenario auto-resolves a victim from the
+ * live `WorldModel` via the Wave-A sugar API:
+ *   - `mode=manual` (default) → `ctx.findNearest(CREO, { maxRadiusM: 40 })`
+ *   - `mode=hostile`          → `ctx.nearestHostile({ maxRadiusM: 40 })`
+ * If nothing matches, the scenario soft-fails via `ctx.fail('no target')`
+ * and returns without sending any commands.
  *
  * Args:
- *   targetId   (required) hex (0x...) or decimal NetworkId of the victim
+ *   targetId   (optional) hex (0x...) or decimal NetworkId of the victim.
+ *                         When omitted, auto-resolved from `ctx.world`.
+ *   mode       (default 'manual') 'manual' picks any nearby CREO;
+ *                                 'hostile' restricts to CREOs whose
+ *                                 SHARED_NP `inCombat` flag is set.
  *   durationMs (default 5000) total attack window
  *   tickMs     (default 1000) cadence between enqueues
  */
 export const combatAttack: ScenarioFactory = (args) => {
-  const targetId = networkIdArg(args, 'targetId');
+  const hasTargetId = args.targetId !== undefined && args.targetId !== '';
+  const targetId: NetworkId | null = hasTargetId ? networkIdArg(args, 'targetId') : null;
+  const mode = args.mode === 'hostile' ? 'hostile' : 'manual';
   const durationMs = numArg(args, 'durationMs', 5000);
   const tickMs = numArg(args, 'tickMs', 1000);
   if (tickMs <= 0) {
     throw new Error(`combat-attack: tickMs must be > 0 (got ${tickMs})`);
   }
   return async (ctx) => {
+    let victim = targetId;
+    if (victim === null) {
+      const found =
+        mode === 'hostile'
+          ? ctx.nearestHostile({ maxRadiusM: 40 })
+          : ctx.findNearest(ObjectTypeTags.CREO, { maxRadiusM: 40 });
+      if (found === undefined) {
+        ctx.fail('no target');
+        return;
+      }
+      victim = found.id;
+    }
     const deadline = Date.now() + durationMs;
     // Emit one immediately, then re-queue every tickMs until durationMs elapses.
-    ctx.attackTarget(targetId);
+    ctx.attackTarget(victim);
     while (Date.now() + tickMs <= deadline) {
       await ctx.wait(tickMs);
-      ctx.attackTarget(targetId);
+      ctx.attackTarget(victim);
     }
   };
 };
@@ -199,7 +225,11 @@ export const surveyScenario: ScenarioFactory = (args) => {
  *
  * Args:
  *   role            (required) 'leader' or 'invitee'
- *   otherId         (required) NetworkId of the other character (hex or decimal)
+ *   otherId         (optional) NetworkId of the other character (hex or decimal).
+ *                   When omitted, the scenario auto-resolves via
+ *                   `ctx.playersInRange(50)[0]`. If no other player is within
+ *                   range, soft-fails via `ctx.fail('no other player in range')`
+ *                   and returns.
  *   tradeAmount     (default 0) credits to transfer leader → invitee via the
  *                   full SecureTrade handshake. Skipped when 0.
  *   waitForOtherMs  (default 8000) per-step timeout for cross-client waits.
@@ -212,13 +242,24 @@ export const groupTradeScenario: ScenarioFactory = (args) => {
       `group-trade: --script-arg=role=leader|invitee is required (got "${args.role ?? ''}")`,
     );
   }
-  const otherId = networkIdArg(args, 'otherId');
+  const hasOtherId = args.otherId !== undefined && args.otherId !== '';
+  const otherIdArg: NetworkId | null = hasOtherId ? networkIdArg(args, 'otherId') : null;
   const tradeAmount = numArg(args, 'tradeAmount', 0);
   const waitForOtherMs = numArg(args, 'waitForOtherMs', 8_000);
   const dwellMs = numArg(args, 'dwellMs', 1_000);
 
   return async (ctx) => {
     const selfId = ctx.sceneStart.playerNetworkId;
+    let otherId = otherIdArg;
+    if (otherId === null) {
+      const candidates = ctx.playersInRange(50);
+      const other = candidates[0];
+      if (other === undefined) {
+        ctx.fail('no other player in range');
+        return;
+      }
+      otherId = other.id;
+    }
 
     if (role === 'leader') {
       // 0. Clear stale group state from any prior aborted test run.
@@ -330,10 +371,10 @@ export const groupTradeScenario: ScenarioFactory = (args) => {
  * to end.
  *
  * The datapad PCD id is the persistent control device for the vehicle —
- * it's in the player's datapad container; you can find it via the
- * baseline scan (`extractInventoryContainerId` + walking the datapad
- * tree) once the player is zoned in. This scenario takes it as an arg
- * so it stays deterministic for CI runs.
+ * it's in the player's datapad container. When omitted, the scenario
+ * auto-resolves by scanning `ctx.world` for an object whose `templateName`
+ * matches `/vehicle_control_device|_pcd\.iff/`. Pass `datapadItemId`
+ * explicitly to keep CI runs deterministic.
  *
  * Wire flow:
  *   1. `ObjectMenuSelectMessage(datapadItemId, PET_CALL=45)` — spawns the
@@ -350,7 +391,10 @@ export const groupTradeScenario: ScenarioFactory = (args) => {
  *      back into the PCD.
  *
  * Args:
- *   datapadItemId  (required) hex/decimal NetworkId of the datapad PCD
+ *   datapadItemId  (optional) hex/decimal NetworkId of the datapad PCD.
+ *                  When omitted, auto-resolved by scanning `ctx.world` for
+ *                  a vehicle_control_device / _pcd object. If none found,
+ *                  soft-fails via `ctx.fail('no vehicle PCD found')`.
  *   vehicleId      (optional) NetworkId of the spawned vehicle creature.
  *                  If omitted, the scenario tries to grab the most-recent
  *                  inbound CreateObjectByCrc that lands during `settleMs`;
@@ -365,7 +409,10 @@ export const groupTradeScenario: ScenarioFactory = (args) => {
  *                  only call/store, never mount
  */
 export const rideVehicle: ScenarioFactory = (args) => {
-  const datapadItemId = networkIdArg(args, 'datapadItemId');
+  const hasDatapadItemId = args.datapadItemId !== undefined && args.datapadItemId !== '';
+  const datapadItemIdArg: NetworkId | null = hasDatapadItemId
+    ? networkIdArg(args, 'datapadItemId')
+    : null;
   const radius = numArg(args, 'radius', 30);
   const durationMs = numArg(args, 'durationMs', 10_000);
   const speed = numArg(args, 'speed', 12);
@@ -375,6 +422,18 @@ export const rideVehicle: ScenarioFactory = (args) => {
   const vehicleId = vehicleIdRaw !== undefined && vehicleIdRaw !== '' ? BigInt(vehicleIdRaw) : null;
 
   return async (ctx) => {
+    let datapadItemId = datapadItemIdArg;
+    if (datapadItemId === null) {
+      const found = ctx.world.filter((o) =>
+        /vehicle_control_device|_pcd\.iff/.test(o.templateName ?? ''),
+      )[0];
+      if (found === undefined) {
+        ctx.fail('no vehicle PCD found');
+        return;
+      }
+      datapadItemId = found.id;
+    }
+
     ctx.callVehicle(datapadItemId);
     if (settleMs > 0) await ctx.wait(settleMs);
 
@@ -410,14 +469,22 @@ export const rideVehicle: ScenarioFactory = (args) => {
  *    (soft-log into `ScriptResult.assertionFailures`; no other console
  *    primitive exists from a scenario).
  *
+ * When `terminalId` is omitted, the scenario auto-resolves by scanning
+ * `ctx.world` for an object whose `templateName` matches
+ * `/bazaar|commodities/i`, then picks the one nearest the player (2D
+ * distance). Anything farther than 30m is rejected and the scenario
+ * soft-fails via `ctx.fail('no bazaar terminal nearby')`.
+ *
  * Args:
- *   terminalId  (required) bazaar terminal NetworkId
+ *   terminalId  (optional) bazaar terminal NetworkId. When omitted,
+ *               auto-resolved from `ctx.world` (must be within 30m).
  *   auctionId   (optional) when set, just bid; otherwise browse
  *   credits     (required iff auctionId is set) bid amount
  *   browseMs    (default 5000) wait window for the browse response
  */
 export const bazaarSnipe: ScenarioFactory = (args) => {
-  const terminalId = networkIdArg(args, 'terminalId');
+  const hasTerminalId = args.terminalId !== undefined && args.terminalId !== '';
+  const terminalIdArg: NetworkId | null = hasTerminalId ? networkIdArg(args, 'terminalId') : null;
   const hasAuctionId = args.auctionId !== undefined && args.auctionId !== '';
   const browseMs = numArg(args, 'browseMs', 5000);
   let auctionId: NetworkId | null = null;
@@ -433,6 +500,26 @@ export const bazaarSnipe: ScenarioFactory = (args) => {
     if (auctionId !== null) {
       ctx.bidOn(auctionId, credits);
       return;
+    }
+    let terminalId = terminalIdArg;
+    if (terminalId === null) {
+      const here = ctx.position();
+      const MAX_RADIUS_M = 30;
+      const maxR2 = MAX_RADIUS_M * MAX_RADIUS_M;
+      const candidates = ctx.world
+        .filter((o) => /bazaar|commodities/i.test(o.templateName ?? ''))
+        .map((o) => {
+          const dx = o.position.x - here.x;
+          const dz = o.position.z - here.z;
+          return { obj: o, d2: dx * dx + dz * dz };
+        })
+        .sort((a, b) => a.d2 - b.d2);
+      const nearest = candidates[0];
+      if (nearest === undefined || nearest.d2 > maxR2) {
+        ctx.fail('no bazaar terminal nearby');
+        return;
+      }
+      terminalId = nearest.obj.id;
     }
     const listings = await ctx.browseBazaar(terminalId, { timeoutMs: browseMs });
     const sorted = [...listings].sort((a, b) => {

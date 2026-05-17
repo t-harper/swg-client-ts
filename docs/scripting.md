@@ -50,6 +50,11 @@ Declared in `src/client/script/context.ts`.
 | `send(msg)` | Escape hatch: send any `GameNetworkMessage` and count it in `sendsCount` |
 | `wait(ms)` | Sleep; rejects with `aborted` if the signal fires |
 | `waitForMessage(ctor, { timeoutMs?, predicate? })` | Resolve on next matching inbound message |
+| **World queries** | (sugar over `ctx.world.*` — see `WorldModel`) |
+| `findNearest(typeId, { maxRadiusM?, excludeSelf? })` | Nearest `WorldObject` matching `typeId` (`ObjectTypeTags.CREO`, etc.), sorted by 2D distance from the player. Excludes self by default. `maxRadiusM` caps the search; omit to scan the whole world. Returns `undefined` if nothing matches. |
+| `nearestHostile({ maxRadiusM? })` | Nearest CREO with `inCombat === true` (from its SHARED_NP baseline) that isn't us. Use this for auto-targeting in combat scripts instead of asking the user to paste a hardcoded `--targetId`. |
+| `findInContainer(containerId)` | Every `WorldObject` whose `containerId === containerId`. Mid-script accurate — reflects the current containment graph (per `UpdateContainmentMessage`), not a stale transcript scan. |
+| `playersInRange(radiusM)` | All `PLAY`-type objects within `radiusM` of the player, sorted by ascending distance. Excludes us. |
 | **Movement** | |
 | `walkTo({ x, z, y? }, { speed?, tickMs?, y? })` | Linear walk; defaults: speed 4 m/s, tickMs 500. Uses `ObjControllerMessage(CM_netUpdateTransform=113)` with float positions, server-validated speed window. |
 | `walkCircle({ centerX, centerZ, radius, durationMs, speed?, tickMs?, direction?, y? })` | Parametric circle, same wire path as `walkTo` |
@@ -141,7 +146,9 @@ Registered in `src/scenarios/index.ts`. Pass `--script=<name>` and zero or more 
 
 To add a scenario, drop a new factory in `src/scenarios/index.ts`, add it to the `scenarios` map. Unit-test it with `createFakeContext()` from `src/client/script/test-helpers.ts`.
 
-Looking for more advanced examples? `scripts/examples/` has ~25 ready-to-run scripts: walking patterns (figure-eight, spiral-out, square-patrol, random-walk, parade), survey loops (survey-loop, survey-walking-grid, gradient-ascent-survey, multi-resource-survey, find-best-resource), chat/mail (channel-bot, mail-blast, chat-spam, town-crier, welcome-greeter), combat (combat-then-flee, endless-combat, target-acquisition), crafting (crafting-bench-soak, experiment-spam), social (dance-party, synchronized-dance, parade), and infrastructure (capture-soak, idle-fleet, reconnect-loop, swarm-circle, whirlwind).
+Looking for more advanced examples? `scripts/examples/` has 30+ ready-to-run scripts: walking patterns (figure-eight, spiral-out, square-patrol, random-walk, parade), survey loops (survey-loop, survey-walking-grid, gradient-ascent-survey, multi-resource-survey, find-best-resource), chat/mail (channel-bot, mail-blast, chat-spam, town-crier, welcome-greeter), combat (combat-then-flee, endless-combat, target-acquisition), crafting (crafting-bench-soak, experiment-spam), social (dance-party, synchronized-dance, parade), infrastructure (capture-soak, idle-fleet, reconnect-loop, swarm-circle, whirlwind), and reactive WorldModel patterns (loot-on-death, flee-on-aggro, mirror-bot, spawn-detector, crowd-density).
+
+**World-aware modernization (release/0.1.1)**: combat-attack / ride-vehicle / bazaar-snipe / group-trade scenarios + target-acquisition / endless-combat / combat-then-flee / bank-tourist / container-spelunker / welcome-greeter / town-crier examples no longer require hardcoded `--targetId` / `--datapadItemId` / `--terminalId` / `--otherId` args. Omit them and the script auto-resolves via the new `ctx.findNearest` / `ctx.nearestHostile` / `ctx.findInContainer` / `ctx.playersInRange` sugar. Existing CLI invocations that pass IDs explicitly still work.
 
 ### Wire details worth knowing
 

@@ -17,10 +17,13 @@ import { ObjControllerMessage } from '../messages/game/obj-controller-message.js
 import { scenarios } from './index.js';
 
 describe('combat-attack scenario', () => {
-  it('throws if targetId is missing', () => {
+  it('does NOT throw when targetId is missing (auto-resolved at runtime via ctx.findNearest/nearestHostile)', () => {
+    // targetId is now optional — the factory defers resolution to runtime so
+    // missing means "auto-pick from the live WorldModel". Factory-time
+    // validation is limited to arg parse-ability + tickMs sanity.
     const factory = scenarios['combat-attack'];
     if (!factory) throw new Error('combat-attack not registered');
-    expect(() => factory({})).toThrow(/targetId/);
+    expect(() => factory({})).not.toThrow();
   });
 
   it('throws if targetId is unparseable', () => {

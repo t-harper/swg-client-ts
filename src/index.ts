@@ -33,10 +33,13 @@ export {
 export { SwgClient, lifecycleResultToJSON } from './client/swg-client.js';
 export { WorldModel } from './client/world-model.js';
 export type {
+  ToSnapshotOptions,
   WorldEvent,
   WorldEventKind,
   WorldModelOptions,
   WorldObject,
+  WorldSnapshot,
+  WorldSnapshotObject,
 } from './client/world-model.js';
 export type {
   FullLifecycleOptions,
@@ -324,6 +327,7 @@ export type {
   BaselineDecoder,
   BaselinePackageId,
   BitArrayValue,
+  CreatureObjectSharedNpBaseline,
   DecodedBaseline,
   DecodedDelta,
   DeltaFieldCodec,

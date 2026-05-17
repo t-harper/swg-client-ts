@@ -15,7 +15,21 @@ import type { NetworkId } from '../../src/types.js';
 import { adminGiveMoney, adminGodModeOn, adminPlanetWarp } from './admin.js';
 import type { CharacterSlot, DecorationSlot } from './layout.js';
 import { CITY_CENTER, CITY_NAME, CITY_PLANET, distance } from './layout.js';
-import { declareResidence, placeDeed, walkInAndDeclareResidence } from './place.js';
+import { classifyDeedKind, declareResidence, placeDeed, walkInAndDeclareResidence } from './place.js';
+import type { PlaceDeedResult } from './place.js';
+import type { StructureRecord } from './state.js';
+
+/**
+ * Callback invoked once per successful placement. Scenarios call this after
+ * a `placeDeed` returns with a non-null `structureOid` (or for civic/cityhall
+ * placements that the orchestrator wants to record even if `structureOid` is
+ * null, e.g. for retry diagnostics).
+ *
+ * Callback is fire-and-forget — failures inside it should not abort the
+ * scenario. The orchestrator owns the implementation (typically: mutate
+ * `state.structures[ownerAccount]` and persist via `saveState`).
+ */
+export type StructurePlacedCallback = (record: StructureRecord) => void;
 
 const POCKET_MONEY = 100_000_000;
 const CITY_TREASURY = 50_000_000;
@@ -60,6 +74,50 @@ async function walkIfFar(
   await ctx.walkTo({ x: target.x, z: target.z }, { speed: 6 });
 }
 
+/**
+ * Build a `StructureRecord` from a placement result + the owning slot/coords.
+ * Centralizes the deed→kind classification and OID stringification so each
+ * scenario can call `onStructurePlaced(buildStructureRecord(...))` uniformly.
+ */
+function buildStructureRecord(args: {
+  ownerAccount: string;
+  deedTemplate: string;
+  placement: PlaceDeedResult;
+  x: number;
+  z: number;
+  rotation: number;
+  subKind?: string;
+  isResidence?: boolean;
+}): StructureRecord {
+  const kind = classifyDeedKind(args.deedTemplate);
+  const record: StructureRecord = {
+    ownerAccount: args.ownerAccount,
+    kind,
+    deedOid: args.placement.deedOid.toString(),
+    structureOid:
+      args.placement.structureOid === null ? null : args.placement.structureOid.toString(),
+    x: args.x,
+    z: args.z,
+    rotation: args.rotation,
+  };
+  if (args.subKind !== undefined) record.subKind = args.subKind;
+  if (args.isResidence !== undefined) record.isResidence = args.isResidence;
+  return record;
+}
+
+/** Safely invoke an optional `onStructurePlaced` callback — never throws. */
+function reportPlacement(
+  cb: StructurePlacedCallback | undefined,
+  record: StructureRecord,
+): void {
+  if (cb === undefined) return;
+  try {
+    cb(record);
+  } catch {
+    // swallow — orchestrator owns persistence and shouldn't break scenarios
+  }
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Mayor scenario
 // ────────────────────────────────────────────────────────────────────────────
@@ -71,6 +129,10 @@ export interface MayorScenarioInputs {
   cityName?: string;
   /** Mayor's placement rotation. */
   rotation?: number;
+  /** Owner account label (for the persisted StructureRecord). Defaults to 'mayor'. */
+  ownerAccount?: string;
+  /** Called after a successful cityhall placement, with the persisted record. */
+  onStructurePlaced?: StructurePlacedCallback;
 }
 
 /**
@@ -85,6 +147,8 @@ export interface MayorScenarioInputs {
 export function mayorScenario(inputs: MayorScenarioInputs): ScenarioFn {
   const cityName = inputs.cityName ?? CITY_NAME;
   const rotation = inputs.rotation ?? 0;
+  const ownerAccount = inputs.ownerAccount ?? 'mayor';
+  const cityhallTemplate = 'object/tangible/deed/city_deed/cityhall_naboo_deed.iff';
 
   return async (ctx) => {
     await bootstrap(ctx, inputs.cityCenter);
@@ -94,13 +158,9 @@ export function mayorScenario(inputs: MayorScenarioInputs): ScenarioFn {
     await ctx.wait(500);
 
     // Place city hall via the real-client wire flow (radial USE → SUI confirm + cityName)
-    let placeResult;
+    let placeResult: PlaceDeedResult;
     try {
-      placeResult = await placeDeed(
-        ctx,
-        'object/tangible/deed/city_deed/cityhall_naboo_deed.iff',
-        { cityName, expectedSuiCount: 2 },
-      );
+      placeResult = await placeDeed(ctx, cityhallTemplate, { cityName, expectedSuiCount: 2 });
     } catch (err) {
       ctx.fail(`mayor: cityhall placeDeed failed: ${err instanceof Error ? err.message : String(err)}`);
       return;
@@ -114,6 +174,21 @@ export function mayorScenario(inputs: MayorScenarioInputs): ScenarioFn {
       ctx.fail(`mayor: cityhall expected 2 SUI dialogs, saw ${placeResult.suiSeen}`);
       return;
     }
+
+    // Persist the placement — structureOid may be null if we didn't scrape the
+    // SceneCreateObjectByName in time, but we still want the deed OID + coords.
+    reportPlacement(
+      inputs.onStructurePlaced,
+      buildStructureRecord({
+        ownerAccount,
+        deedTemplate: cityhallTemplate,
+        placement: placeResult,
+        x: inputs.cityCenter.x,
+        z: inputs.cityCenter.z,
+        rotation,
+        subKind: 'cityhall',
+      }),
+    );
 
     // Fund treasury — we don't have the structure OID handy, but we can pay
     // the mayor's bank account (anti-cheat ignores this for admins). The
@@ -137,6 +212,8 @@ export function mayorScenario(inputs: MayorScenarioInputs): ScenarioFn {
 
 export interface ResidentScenarioInputs {
   slot: CharacterSlot;
+  /** Called after a successful house placement, with the persisted record. */
+  onStructurePlaced?: StructurePlacedCallback;
 }
 
 /**
@@ -163,7 +240,7 @@ export function residentScenario(inputs: ResidentScenarioInputs): ScenarioFn {
     await ctx.wait(500);
 
     // Place house (reclaim-able deeds → 0 SUI roundtrips, fires queueCommand directly)
-    let placeResult;
+    let placeResult: PlaceDeedResult;
     try {
       placeResult = await placeDeed(ctx, deedTemplate, { expectedSuiCount: 0 });
     } catch (err) {
@@ -188,6 +265,21 @@ export function residentScenario(inputs: ResidentScenarioInputs): ScenarioFn {
         `resident ${slot.characterName}: declareresidence didn't confirm via chat (citizen count may still increase)`,
       );
     }
+
+    // Persist the placement (with isResidence=true only if declareresidence
+    // confirmed, since otherwise the server may not have actually flipped it).
+    reportPlacement(
+      inputs.onStructurePlaced,
+      buildStructureRecord({
+        ownerAccount: slot.account,
+        deedTemplate,
+        placement: placeResult,
+        x: slot.x,
+        z: slot.z,
+        rotation: slot.rotation,
+        isResidence: declared,
+      }),
+    );
   };
 }
 
@@ -197,6 +289,8 @@ export function residentScenario(inputs: ResidentScenarioInputs): ScenarioFn {
 
 export interface CivicScenarioInputs {
   slot: CharacterSlot;
+  /** Called after a successful civic placement, with the persisted record. */
+  onStructurePlaced?: StructurePlacedCallback;
 }
 
 /**
@@ -219,17 +313,33 @@ export function civicScenario(inputs: CivicScenarioInputs): ScenarioFn {
     await walkIfFar(ctx, slot, 8);
     await ctx.wait(500);
 
+    let placement: PlaceDeedResult | null = null;
     try {
       // Civic deeds are NOT reclaim-able → 1 SUI confirm roundtrip
-      const result = await placeDeed(ctx, deedTemplate, { expectedSuiCount: 1 });
-      if (result.rejected) {
+      placement = await placeDeed(ctx, deedTemplate, { expectedSuiCount: 1 });
+      if (placement.rejected) {
         ctx.fail(
-          `civic ${slot.characterName} (${slot.civicKind}): placement rejected: ${result.chatErrors.join('; ')}`,
+          `civic ${slot.characterName} (${slot.civicKind}): placement rejected: ${placement.chatErrors.join('; ')}`,
         );
       }
     } catch (err) {
       ctx.fail(
         `civic ${slot.characterName} (${slot.civicKind}): placeDeed failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    if (placement !== null && !placement.rejected) {
+      reportPlacement(
+        inputs.onStructurePlaced,
+        buildStructureRecord({
+          ownerAccount: slot.account,
+          deedTemplate,
+          placement,
+          x: slot.x,
+          z: slot.z,
+          rotation: slot.rotation,
+          ...(slot.civicKind !== undefined ? { subKind: slot.civicKind } : {}),
+        }),
       );
     }
   };
@@ -243,6 +353,8 @@ export interface GuildScenarioInputs {
   slot: CharacterSlot;
   /** For "extra" guild chars (no deed): host resident's house OID, if known. */
   hostResidenceOid?: NetworkId;
+  /** Called after a successful guildhall placement, with the persisted record. */
+  onStructurePlaced?: StructurePlacedCallback;
 }
 
 /**
@@ -263,16 +375,31 @@ export function guildScenario(inputs: GuildScenarioInputs): ScenarioFn {
 
     if (slot.deedTemplate !== null) {
       // Guild01: place guild hall (non-reclaim → 1 SUI confirm)
+      const guildhallTemplate = slot.deedTemplate;
+      let placement: PlaceDeedResult | null = null;
       try {
-        const result = await placeDeed(ctx, slot.deedTemplate, { expectedSuiCount: 1 });
-        if (result.rejected) {
+        placement = await placeDeed(ctx, guildhallTemplate, { expectedSuiCount: 1 });
+        if (placement.rejected) {
           ctx.fail(
-            `guild ${slot.characterName}: guildhall placement rejected: ${result.chatErrors.join('; ')}`,
+            `guild ${slot.characterName}: guildhall placement rejected: ${placement.chatErrors.join('; ')}`,
           );
         }
       } catch (err) {
         ctx.fail(
           `guild ${slot.characterName}: guildhall placeDeed failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      if (placement !== null && !placement.rejected) {
+        reportPlacement(
+          inputs.onStructurePlaced,
+          buildStructureRecord({
+            ownerAccount: slot.account,
+            deedTemplate: guildhallTemplate,
+            placement,
+            x: slot.x,
+            z: slot.z,
+            rotation: slot.rotation,
+          }),
         );
       }
       return;
@@ -303,6 +430,10 @@ export function guildScenario(inputs: GuildScenarioInputs): ScenarioFn {
 
 export interface DecorationScenarioInputs {
   decorations: readonly DecorationSlot[];
+  /** Owning account label for persisted decoration records (default: 'mayor'). */
+  ownerAccount?: string;
+  /** Called after each successful decoration placement, with the persisted record. */
+  onStructurePlaced?: StructurePlacedCallback;
 }
 
 /**
@@ -312,6 +443,8 @@ export interface DecorationScenarioInputs {
  *   - if mode='spawnAtXYZ': direct admin createIn world spawn (lamps, fountains)
  */
 export function decorationScenario(inputs: DecorationScenarioInputs): ScenarioFn {
+  const ownerAccount = inputs.ownerAccount ?? 'mayor';
+
   return async (ctx) => {
     await bootstrap(ctx, CITY_CENTER);
 
@@ -325,7 +458,20 @@ export function decorationScenario(inputs: DecorationScenarioInputs): ScenarioFn
           const result = await placeDeed(ctx, dec.template, { expectedSuiCount: 0 });
           if (result.rejected) {
             ctx.fail(`decoration ${dec.label}: rejected: ${result.chatErrors.join('; ')}`);
+            continue;
           }
+          reportPlacement(
+            inputs.onStructurePlaced,
+            buildStructureRecord({
+              ownerAccount,
+              deedTemplate: dec.template,
+              placement: result,
+              x: dec.x,
+              z: dec.z,
+              rotation: dec.rotation ?? 0,
+              subKind: dec.label,
+            }),
+          );
         }
         // For 'spawnAtXYZ', we'd use adminSpawnAtXYZ — but that requires direct
         // world cell access which is not modeled here yet. Skip for MVP.

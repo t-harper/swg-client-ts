@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { CountdownLatch, Gate, Semaphore } from './coordination.js';
 import {
+  type CityState,
+  type StructureRecord,
   createScratchState,
   isPhaseComplete,
   markPhaseFinished,
@@ -64,6 +66,104 @@ describe('CityState helpers', () => {
     expect(networkIdFromString(s)).toBe(id);
     expect(networkIdFromString(null)).toBeNull();
     expect(networkIdFromString('')).toBeNull();
+  });
+});
+
+describe('StructureRecord persistence', () => {
+  it('round-trips a cityhall StructureRecord through JSON.stringify/parse', () => {
+    const s = createScratchState();
+    const cityhall: StructureRecord = {
+      ownerAccount: 'tscity01',
+      kind: 'cityhall',
+      subKind: 'cityhall',
+      deedOid: '16039260784',
+      structureOid: '16039260999',
+      x: 2800,
+      z: -2800,
+      rotation: 0,
+    };
+    s.structures.tscity01 = cityhall;
+
+    // Serialize and parse to simulate save/load via state.json
+    const serialized = JSON.stringify(s);
+    const restored = JSON.parse(serialized) as CityState;
+
+    expect(restored.structures.tscity01).toEqual(cityhall);
+    // NetworkIds round-trip via the dedicated helper
+    expect(networkIdFromString(restored.structures.tscity01!.structureOid)).toBe(16039260999n);
+    expect(networkIdFromString(restored.structures.tscity01!.deedOid)).toBe(16039260784n);
+  });
+
+  it('supports a heterogeneous mix of kinds keyed by owner account', () => {
+    const s = createScratchState();
+    s.structures.tscity01 = {
+      ownerAccount: 'tscity01',
+      kind: 'cityhall',
+      deedOid: '100',
+      structureOid: '101',
+      x: 2800,
+      z: -2800,
+      rotation: 0,
+    };
+    s.structures.tscity02 = {
+      ownerAccount: 'tscity02',
+      kind: 'civic',
+      subKind: 'bank',
+      deedOid: '200',
+      structureOid: '201',
+      x: 2900,
+      z: -2800,
+      rotation: 270,
+    };
+    s.structures.tscity03 = {
+      ownerAccount: 'tscity03',
+      kind: 'house',
+      deedOid: '300',
+      structureOid: '301',
+      x: 3000,
+      z: -2800,
+      rotation: 270,
+      isResidence: true,
+    };
+    s.structures['tscity01:garden-N'] = {
+      ownerAccount: 'tscity01',
+      kind: 'garden',
+      subKind: 'garden-N',
+      deedOid: '400',
+      structureOid: '401',
+      x: 2800,
+      z: -2450,
+      rotation: 180,
+    };
+
+    const restored = JSON.parse(JSON.stringify(s)) as CityState;
+    expect(Object.keys(restored.structures).sort()).toEqual([
+      'tscity01',
+      'tscity01:garden-N',
+      'tscity02',
+      'tscity03',
+    ]);
+    expect(restored.structures.tscity02!.kind).toBe('civic');
+    expect(restored.structures.tscity02!.subKind).toBe('bank');
+    expect(restored.structures.tscity03!.isResidence).toBe(true);
+    expect(restored.structures['tscity01:garden-N']!.kind).toBe('garden');
+  });
+
+  it('preserves structureOid=null for placements that did not observe a scene event', () => {
+    const s = createScratchState();
+    s.structures.tscity05 = {
+      ownerAccount: 'tscity05',
+      kind: 'house',
+      deedOid: '500',
+      structureOid: null, // placement happened but SceneCreateObjectByName wasn't captured
+      x: 3100,
+      z: -2700,
+      rotation: 90,
+    };
+
+    const restored = JSON.parse(JSON.stringify(s)) as CityState;
+    expect(restored.structures.tscity05!.structureOid).toBeNull();
+    expect(networkIdFromString(restored.structures.tscity05!.structureOid)).toBeNull();
   });
 });
 

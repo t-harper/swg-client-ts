@@ -509,7 +509,13 @@ export type {
   StartNpcConversationData,
   StopNpcConversationData,
 } from './messages/game/npc/index.js';
-export type { NpcDialogPrompt } from './client/script/context.js';
+export type {
+  NpcContextNamespace,
+  NpcDialogPrompt,
+  SuiContextNamespace,
+} from './client/script/context.js';
+export type { LastNpcDialog } from './client/npc-converse.js';
+export type { SuiAutoHandler, SuiAutoResponse, SuiPage } from './client/sui-auto.js';
 
 // =============================================================================
 // SecureTrade handshake (Feature 2)

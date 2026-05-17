@@ -16,8 +16,8 @@ The server side lives at `~/code/swg-main/`. **Read `~/code/swg-main/CLAUDE.md` 
 cd ~/code/swg-ts-client
 nvm use                # Node 24 (LTS as of 2026-05)
 pnpm install
-pnpm test              # ~1395 unit tests — no server needed
-LIVE=1 pnpm test       # ~1421 total under LIVE (includes ~26 integration tests against 10.254.0.253)
+pnpm test              # ~1735 unit tests — no server needed
+LIVE=1 pnpm test       # ~1761 total under LIVE (includes ~28 integration tests against 10.254.0.253)
 pnpm cli zone --host=10.254.0.253 --user=ci-test --character=TsTest
 ```
 
@@ -105,8 +105,8 @@ The client started as just `SwgClient.fullLifecycle()` and is now a full program
 | **Commodities / bazaar** | `ctx.browseBazaar` / `getAuctionDetails` / `bidOn` / `listForSale` / `retrieveBazaarItem` / `cancelMyListing` | Full `Auction*` / `Bid*` top-level message family — palettized headers response decoder, advanced-search conditions, and `bazaar-snipe` bundled scenario. |
 | **Chat** | `ctx.say` / `tell` / `sendMail` / `sendToChannel` / `requestChannelList` | `say` uses the server-side `spatialChatInternal` CommandQueue command (the path the real Windows client uses) |
 | **Combat / posture / dance** | `attackTarget` / `useAbility` / `changePosture` / `startDance` | Posture cycling, dance/perform, combat queueing |
-| **SUI dialogs** | `ctx.waitForSui()` / `ctx.respondToSui(pageId, eventType, returnList?)` | Receive server-pushed SUI pages (`SuiCreatePageMessage` / `SuiUpdatePageMessage` / `SuiForceClosePage`) and reply with `SuiEventNotification`. **Page widget tree is now decoded** (`SuiPageData` with 9 typed `SuiCommand` variants — see `src/messages/game/sui/sui-page-data.ts`). Raw bytes still available via `msg.pageDataBytes`. |
-| **NPC conversation** | `ctx.talkTo(npcId)` / `ctx.waitForNpcDialog()` / `ctx.selectDialog(n)` / `ctx.endConversation()` | Start/respond/stop handshake via command-queue. `waitForNpcDialog` pairs the server's `CM_npcConversationMessage(223)` prompt with its `CM_npcConversationResponses(224)` option menu. |
+| **SUI dialogs** | `ctx.waitForSui()` / `ctx.respondToSui(pageId, eventType, returnList?)` plus **`ctx.sui.autoRespond(predicate, 'ok'|'cancel'|{eventType,returnList})`** + **`ctx.sui.active`** | Receive server-pushed SUI pages (`SuiCreatePageMessage` / `SuiUpdatePageMessage` / `SuiForceClosePage`) and reply with `SuiEventNotification`. Page widget tree decoded (`SuiPageData` with 9 typed `SuiCommand` variants). High-level `ctx.sui.autoRespond` registers standing handlers that fire `SuiEventNotification` automatically on matching pages (predicate inspects the full `SuiPageData`); first match wins; auto-detached during `runScript` cleanup. `ctx.sui.active` lists every currently-displayed page with its best-effort `title` (extracted from `setProperty` commands). |
+| **NPC conversation** | `ctx.talkTo(npcId)` / `ctx.waitForNpcDialog()` / `ctx.selectDialog(n)` / `ctx.endConversation()` plus **`ctx.npc.converse(npcId, path)`** + **`ctx.npc.lastDialog`** | Start/respond/stop handshake via command-queue. `waitForNpcDialog` pairs `CM_npcConversationMessage(223)` + `CM_npcConversationResponses(224)`. High-level `ctx.npc.converse(npcId, ['greet', 'inquire']|[0, 1])` walks a known dialog tree end-to-end (substring match on labels OR numeric indices). Throws if any step fails to match an available option. `ctx.npc.lastDialog` is a passive cache of the most-recent `{text, options}` pair, cleared on `CM_npcConversationStop`. |
 | **Bundled scenarios** | `src/scenarios/` + CLI `--script=<name>` | `walk-line`, `walk-circle`, `open-inventory`, `combat-attack`, `posture-cycle`, `survey`, `group-trade`, `bazaar-snipe`, `ride-vehicle`, `dwell` |
 | **Example scripts** | `scripts/examples/` | ~25 ready-to-run scripts: walking patterns, surveying loops, chat/mail bots, parade/dance, crafting soak, gradient-ascent surveys, etc. |
 | **Fleet (multi-client)** | `Fleet.run([cfgs], opts)` + CLI `swarm` | N independent clients in parallel with staggered launches + concurrency caps + per-message-name summary |
@@ -315,7 +315,7 @@ Individual stage drivers and the `dispatcher` are also exported as types — use
 
 ## When you next sit down
 
-1. `cd ~/code/swg-ts-client && nvm use && pnpm test` — confirm baseline (should be ~1395 unit green; ~1421 total under `LIVE=1`).
+1. `cd ~/code/swg-ts-client && nvm use && pnpm test` — confirm baseline (should be ~1735 unit green; ~1761 total under `LIVE=1`).
 2. If anything's red, check `git log --oneline` — most recent change is probably the culprit; revert it locally and retry.
 3. If you bumped `~/code/swg-main` submodules, the wire-format may have drifted. Run `LIVE=1 pnpm test tests/integration/live-login.test.ts` — if it fails with a `LoginIncorrectClientId` or `Archive::ReadException`-style error, the message struct shape changed server-side. Find the C++ commit that added/removed fields, update `varCount` + encode/decode here. For broader drift, replay a baseline NDJSON capture (`pnpm cli capture` once on green, then `pnpm cli replay --compare=count` after the bump).
 4. To do "more SWG protocol work" — read `docs/adding-a-message.md` and pick a message from `~/code/swg-main/src/engine/shared/library/sharedNetworkMessages/src/shared/`. The mechanical pattern handles itself. For ObjController subtypes (combat/movement/etc.) the recipe is the same but the file lives in `src/messages/game/obj-controller/` and registers via the subtype CRC instead of the top-level `messageRegistry`.

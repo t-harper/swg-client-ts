@@ -103,6 +103,17 @@ import {
   RadialMenuTypes,
 } from '../../messages/game/object-menu-select-message.js';
 import { SuiCreatePageMessage, SuiEventNotification } from '../../messages/game/sui/index.js';
+import type { SuiPageData } from '../../messages/game/sui/sui-page-data.js';
+import {
+  type LastNpcDialog,
+  NpcConverseTracker,
+  runNpcConversation,
+} from '../npc-converse.js';
+import {
+  type SuiAutoResponse,
+  type SuiPage,
+  SuiAutoResponder,
+} from '../sui-auto.js';
 import {
   ResourceListForSurveyMessage,
   type ResourceListItem,
@@ -244,6 +255,98 @@ export interface NpcDialogPrompt {
   prompt: string;
   /** Menu option strings (Unicode). Empty when the prompt is auto-advance. */
   options: readonly string[];
+}
+
+/**
+ * Surfaced as `ctx.sui` — the high-level SUI helper namespace. Lower-level
+ * primitives (`waitForSui`, `respondToSui`) remain on the context root for
+ * back-compat.
+ */
+export interface SuiContextNamespace {
+  /**
+   * Register a standing handler that fires `SuiEventNotification`
+   * automatically when an incoming SUI page matches `predicate`.
+   *
+   * `response` is one of:
+   *   - `'ok'`     — eventType 0, returnList []
+   *   - `'cancel'` — eventType 1, returnList []
+   *   - `{ eventType, returnList }` — fully-specified reply
+   *
+   * Multiple handlers allowed; first matching predicate wins. Returns an
+   * unsubscribe fn. All registered handlers are dropped during `runScript`
+   * cleanup; no manual teardown needed for the common case.
+   *
+   * Example — auto-dismiss any "you found a rare resource!" notification
+   * during a long sampling run:
+   *
+   *   ctx.sui.autoRespond(
+   *     (page) => /rare_resource_found|sample_located/.test(page.pageName),
+   *     'ok',
+   *   );
+   *
+   * Example — auto-accept any "are you sure?" confirm dialog:
+   *
+   *   ctx.sui.autoRespond((p) => p.pageName === 'Script.areYouSure', 'ok');
+   */
+  autoRespond(
+    predicate: (page: SuiPageData) => boolean,
+    response: SuiAutoResponse,
+  ): () => void;
+
+  /**
+   * Live, read-only list of every currently-displayed SUI page (i.e. pages
+   * that have been pushed via `SuiCreatePageMessage` and NOT yet closed via
+   * `SuiForceClosePage`). Empty when no dialogs are open.
+   *
+   * Each entry carries `pageId` (for `respondToSui`), a best-effort `title`
+   * (extracted from the page's `setProperty` commands), the full
+   * `commands` list, and the associated object/location.
+   */
+  readonly active: readonly SuiPage[];
+}
+
+/**
+ * Surfaced as `ctx.npc` — high-level NPC conversation helpers. Lower-level
+ * primitives (`talkTo`, `selectDialog`, `endConversation`, `waitForNpcDialog`)
+ * remain on the context root for back-compat.
+ */
+export interface NpcContextNamespace {
+  /**
+   * Walk a known NPC conversation tree end-to-end with a pre-declared path.
+   *
+   * `path` is a series of option selectors:
+   *   - `string` — case-insensitive substring match against the response
+   *                menu text. First match wins.
+   *   - `number` — numeric index into the menu (0-based).
+   *
+   * For each step the engine:
+   *   1. `waitForNpcDialog` — waits for the next prompt + responses pair.
+   *   2. Resolves the next selector against the available options.
+   *   3. `selectDialog(matchedIndex)` — submits the pick.
+   *
+   * When `path` is exhausted: one more `waitForNpcDialog` is awaited (so
+   * the closing prose is captured), then `endConversation` is sent.
+   *
+   * Throws (NOT a soft-fail) if any path step doesn't match an available
+   * option — the error message includes the failing selector + the
+   * available options.
+   *
+   * Returns the final NPC prose text for inspection.
+   */
+  converse(
+    npcId: NetworkId,
+    path: ReadonlyArray<string | number>,
+    opts?: { timeoutMs?: number; pairWindowMs?: number },
+  ): Promise<string>;
+
+  /**
+   * Most-recent NPC dialog state, or `null` if no prompt has arrived yet
+   * (or if the conversation has been stopped via `CM_npcConversationStop`).
+   *
+   * Maintained passively by a listener installed when the script context is
+   * constructed; cleared at every conversation-stop and at context detach.
+   */
+  readonly lastDialog: LastNpcDialog | null;
 }
 
 /** Options for `ctx.tradeWith()`. */
@@ -1227,6 +1330,20 @@ export interface ScriptContext {
    */
   respondToSui(pageId: number, eventType: number, returnList?: readonly string[]): void;
 
+  /**
+   * High-level SUI helpers — auto-responders + a live view of open pages.
+   *
+   *   ctx.sui.autoRespond(p => /found a rare/.test(p.pageName), 'ok')
+   *   ctx.sui.active   // [{pageId, title, ...}]
+   *
+   * The auto-responder engine subscribes to `SuiCreatePageMessage` /
+   * `SuiUpdatePageMessage` / `SuiForceClosePage` on context creation and
+   * fires a `SuiEventNotification` whenever a registered predicate matches.
+   * Multiple handlers allowed; first match wins. All handlers detach during
+   * `runScript` cleanup so registrations don't leak across script runs.
+   */
+  readonly sui: SuiContextNamespace;
+
   // --- NPC conversation primitives ---
 
   /**
@@ -1269,6 +1386,24 @@ export interface ScriptContext {
     timeoutMs?: number;
     pairWindowMs?: number;
   }): Promise<NpcDialogPrompt>;
+
+  /**
+   * High-level NPC conversation helpers — `converse(npcId, path)` for
+   * scripted dialog trees, plus `lastDialog` for the most-recent state.
+   *
+   *   const final = await ctx.npc.converse(npcId, ['greet', 'inquire']);
+   *   ctx.npc.lastDialog  // { text, options } | null
+   *
+   * `converse` walks the path step-by-step against the server's responses
+   * menu (matching by case-insensitive substring or by index), calling
+   * `selectDialog` after each match. Throws if any path step fails to
+   * resolve — error message includes the failing selector plus the
+   * available options. Returns the final prompt text for inspection.
+   *
+   * `lastDialog` is maintained by a passive listener installed at context
+   * creation and reset to `null` on each `CM_npcConversationStop`.
+   */
+  readonly npc: NpcContextNamespace;
 
   // --- SecureTrade handshake ---
 
@@ -1389,6 +1524,10 @@ interface InternalContext extends ScriptContext {
   readonly _serverTimeTrackerHandle: ServerTimeTrackerHandle;
   /** Internal handle for the combat timer — exposed mainly for tests. */
   readonly _combatTimerHandle: CombatTimerHandle;
+  /** Engine driving `ctx.sui.autoRespond` + `ctx.sui.active`. Detached at teardown. */
+  readonly _suiAutoResponder: SuiAutoResponder;
+  /** Engine driving `ctx.npc.lastDialog`. Detached at teardown. */
+  readonly _npcConverseTracker: NpcConverseTracker;
   /** Tracking for the orchestrator. */
   readonly _state: {
     sendsCount: number;
@@ -1607,6 +1746,42 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     playerNetworkId: opts.sceneStart.playerNetworkId,
   });
 
+  // SUI auto-responder engine + currently-displayed page index. Hung off the
+  // dispatcher's onMessage; detached during runScript teardown so handlers
+  // don't leak across script runs.
+  const suiAutoResponder = new SuiAutoResponder(opts.dispatcher);
+
+  // NPC dialog tracker — passive listener that pairs CM_npcConversationMessage
+  // prompts with their companion CM_npcConversationResponses menus to keep
+  // `ctx.npc.lastDialog` current. Cleared on CM_npcConversationStop and at
+  // detach time.
+  // The tracker needs a ScriptContext-shaped object only for its `sceneStart`
+  // + `dispatcher`. We construct it AFTER ctx is built (it's wired in below)
+  // — but it needs `ctx.dispatcher` + `ctx.sceneStart`, so we can use a
+  // lightweight shim instead of waiting for the full object.
+  const npcConverseTracker = new NpcConverseTracker({
+    dispatcher: opts.dispatcher,
+    sceneStart: opts.sceneStart,
+  } as unknown as ScriptContext);
+
+  const suiNamespace: SuiContextNamespace = {
+    autoRespond(predicate, response) {
+      return suiAutoResponder.register(predicate, response);
+    },
+    get active() {
+      return suiAutoResponder.active;
+    },
+  };
+
+  const npcNamespace: NpcContextNamespace = {
+    converse(npcId, path, npcOpts) {
+      return runNpcConversation(ctx, npcId, path, npcOpts);
+    },
+    get lastDialog() {
+      return npcConverseTracker.sink.value;
+    },
+  };
+
   const ctx: InternalContext = {
     dispatcher: opts.dispatcher,
     sceneStart: opts.sceneStart,
@@ -1619,6 +1794,8 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     datapad: datapadView,
     inventory: inventoryView,
     location: locationView,
+    sui: suiNamespace,
+    npc: npcNamespace,
     _state: state,
     _characterSheetDetach: characterSheetHandle.detach,
     _cooldownTrackerDetach: cooldownTrackerHandle.detach,
@@ -1627,6 +1804,8 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     _cooldownTrackerHandle: cooldownTrackerHandle,
     _serverTimeTrackerHandle: serverTimeTrackerHandle,
     _combatTimerHandle: combatTimerHandle,
+    _suiAutoResponder: suiAutoResponder,
+    _npcConverseTracker: npcConverseTracker,
 
     findNearest(
       typeId: number,
@@ -2744,11 +2923,14 @@ export async function runScript(fn: ScenarioFn, ctx: ScriptContext): Promise<Scr
     // multiple times — `detach()` empties the unsubscriber list on the
     // first call.
     internal._characterSheetDetach();
-    // Detach the timing trackers (cooldowns / serverTime / combat). All
-    // three are idempotent.
+    // Detach the timing trackers (cooldowns / serverTime / combat).
     internal._cooldownTrackerDetach();
     internal._serverTimeTrackerDetach();
     internal._combatTimerDetach();
+    // Detach the SUI auto-responder engine + drop all registered handlers.
+    internal._suiAutoResponder.detach();
+    // Detach the NPC dialog tracker + clear lastDialog.
+    internal._npcConverseTracker.detach();
     if (internal._state.datapadCreateUnsubscribe !== null) {
       internal._state.datapadCreateUnsubscribe();
       internal._state.datapadCreateUnsubscribe = null;

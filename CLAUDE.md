@@ -16,8 +16,8 @@ The server side lives at `~/code/swg-main/`. **Read `~/code/swg-main/CLAUDE.md` 
 cd ~/code/swg-ts-client
 nvm use                # Node 24 (LTS as of 2026-05)
 pnpm install
-pnpm test              # ~924 unit tests — no server needed
-LIVE=1 pnpm test       # ~945 total under LIVE (includes ~21 integration tests against 10.254.0.253)
+pnpm test              # ~1150 unit tests — no server needed
+LIVE=1 pnpm test       # ~1172 total under LIVE (includes ~22 integration tests against 10.254.0.253)
 pnpm cli zone --host=10.254.0.253 --user=ci-test --character=TsTest
 ```
 
@@ -38,16 +38,17 @@ pnpm cli zone --host=10.254.0.253 --user=ci-test --character=TsTest
                   character-pool.ts            ← persistent check-out DB for pre-created chars
                   transcript-io.ts             ← NDJSON capture I/O
                   replay.ts                    ← capture + replay harness
+                  reconnect-harness.ts         ← reconnectVerify() — mutate → logout → reconnect → diff
                   script/
-                    context.ts                 ← ScriptContext (movement/survey/craft/chat/...)
-                    movement.ts                ← walkTo / walkCircle / walkToCell over CM_netUpdateTransform
+                    context.ts                 ← ScriptContext (movement/survey/craft/chat/trade/bazaar/sui/npc/...)
+                    movement.ts                ← walkTo / walkCircle / walkToCell (mount-cap aware)
                     expectations.ts            ← expectWithin / expectAbsent / expectAfter
                 src/scenarios/                 ← bundled CLI-loadable scenarios
                                                   (walk-line, walk-circle, open-inventory,
                                                    combat-attack, posture-cycle, survey,
-                                                   group-trade, dwell)
+                                                   group-trade, ride-vehicle, bazaar-snipe, dwell)
                         ↑
-                src/messages/                  ← 37+ top-level + 30+ ObjController subtypes
+                src/messages/                  ← 63+ top-level + 28+ ObjController subtypes
                   login/         (8)           ← LoginClientId, LoginEnumCluster, ...
                   connection/    (10)          ← ClientIdMsg, EnumerateCharacterId, ...
                   game/          (12)          ← CmdStartScene, LogoutMessage,
@@ -60,6 +61,8 @@ pnpm cli zone --host=10.254.0.253 --user=ci-test --character=TsTest
                   game/crafting/ (multi)       ← session + draft + slots + experimentation
                   game/sui/      (4)           ← SuiCreatePageMessage + Update + ForceClose + EventNotification
                   game/npc/      (5)           ← StartNpcConversation + Stop + Message + Responses + Select (all CM_npcConversation*)
+                  game/trade/    (9)           ← SecureTrade handshake (BeginTrade / AddItem / RemoveItem / GiveMoney / AcceptTransaction / UnAccept / VerifyTrade / TradeComplete / AbortTrade)
+                  game/commodities/ (17)       ← bazaar / auction-house (AuctionQueryHeaders + Response + Bid + Accept + Create + Cancel + Retrieve + GetAuctionDetails + IsVendorOwner)
                   game/obj-controller/ (30+)   ← combat, movement (CM=113/241), teleport-ack,
                                                   posture, mood, chat, crafting, menus,
                                                   group, trade, dance, tip, npc-conversation, ...
@@ -79,7 +82,7 @@ pnpm cli zone --host=10.254.0.253 --user=ci-test --character=TsTest
                   constcrc.ts                  ← CrcConstexpr.hpp custom CRC, NOT standard CRC32
 ```
 
-183+ test files, **~951 tests (~930 unit + ~21 LIVE)**, all currently green. (Counts grow as features land — `pnpm test` to confirm.)
+228+ test files, **~1172 tests (~1150 unit + ~22 LIVE)**, all currently green. (Counts grow as features land — `pnpm test` to confirm.)
 
 ## High-level features
 
@@ -282,7 +285,7 @@ Individual stage drivers and the `dispatcher` are also exported as types — use
 
 - Some server-internal CRCs (e.g. `0x0e20d7e9 = DescribeConnection`, `0x58c07f21 = SystemAssignedProcessId`, plus various baseline/template hashes) arrive but aren't modeled — logged as `unknownCrc` in transcript; harmless.
 - Live integration tests leak timestamp-suffixed characters in the DB unless `CI_REUSE_ACCOUNT` + `CI_REUSE_CHARACTER` are set, or `CI_USE_POOL=1` leases from a pre-stocked character pool (see `tests/integration/helpers.ts`). In reuse mode, file parallelism is forced off (`vitest.config.ts`) because the server allows one session per account.
-- `ObjControllerMessage` subtype decoding covers 25+ subtypes (combat, movement, posture, mood, chat, crafting, missions, groups, trade, menus, dance, tip, etc.). Anything not registered flows as opaque bytes with a diagnostic `subtypeCrcHex`. Add more in `src/messages/game/obj-controller/`.
+- `ObjControllerMessage` subtype decoding covers 28+ subtypes (combat, movement, posture, mood, chat, crafting, missions, groups, trade, menus, dance, tip, NPC conversation, mount/dismount, etc.). Anything not registered flows as opaque bytes with a diagnostic `subtypeCrcHex`. Add more in `src/messages/game/obj-controller/`.
 - **Spatial chat** is fully wire-modeled. `ctx.say(text, opts?)` wraps the server's `spatialChatInternal` CommandQueue command — the same path the real Windows client uses. The direct `CM_spatialChatSend(243)` ObjController subtype is NOT a viable client→server path: the server's `ControllerMessageFactory::allowFromClient` registry has it set to `false` (MessageQueueSpatialChat.cpp:26), so anything sent via that subtype is logged as a HackAttempts entry and dropped (Client.cpp:972). Inbound broadcasts arrive as `ObjControllerMessage` with `message=CM_spatialChatReceive(244)`, decoded via `SpatialChatReceiveDecoder`. `tests/integration/live-spatial-chat.test.ts` exercises the round-trip end-to-end.
 - **Survey tools spawned via admin `/object createIn` work** (they have the right `VAR_SURVEY_CLASS` objvar). Fresh characters created via `domestics_trader` profession (or any non-NGE legacy profession) do NOT come with tools — the NPE roadmap reward table grants tools as the player completes phase-1 novice tasks, not at character creation. For scripted tests use a character that already has tools (admin-spawned or pre-NPE).
 - AckAll uses raw 16-bit wire seq rather than reconstructed 64-bit ID. Fine until we accumulate > 65k outstanding reliables (never happens).
@@ -295,7 +298,7 @@ Individual stage drivers and the `dispatcher` are also exported as types — use
 
 ## When you next sit down
 
-1. `cd ~/code/swg-ts-client && nvm use && pnpm test` — confirm baseline (should be ~924 unit green; ~945 total under `LIVE=1`).
+1. `cd ~/code/swg-ts-client && nvm use && pnpm test` — confirm baseline (should be ~1150 unit green; ~1172 total under `LIVE=1`).
 2. If anything's red, check `git log --oneline` — most recent change is probably the culprit; revert it locally and retry.
 3. If you bumped `~/code/swg-main` submodules, the wire-format may have drifted. Run `LIVE=1 pnpm test tests/integration/live-login.test.ts` — if it fails with a `LoginIncorrectClientId` or `Archive::ReadException`-style error, the message struct shape changed server-side. Find the C++ commit that added/removed fields, update `varCount` + encode/decode here. For broader drift, replay a baseline NDJSON capture (`pnpm cli capture` once on green, then `pnpm cli replay --compare=count` after the bump).
 4. To do "more SWG protocol work" — read `docs/adding-a-message.md` and pick a message from `~/code/swg-main/src/engine/shared/library/sharedNetworkMessages/src/shared/`. The mechanical pattern handles itself. For ObjController subtypes (combat/movement/etc.) the recipe is the same but the file lives in `src/messages/game/obj-controller/` and registers via the subtype CRC instead of the top-level `messageRegistry`.

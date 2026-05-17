@@ -55,8 +55,27 @@ What's available beyond the basic lifecycle:
   `scripts/craft-a-tool.ts` for a complete end-to-end demo that crafts a
   survey tool from harvested resources.
 - **Missions** — request mission list from a terminal, accept, abort, remove.
-- **Group + trade** — invite/join/disband + secure-trade two-client flows.
-  See `scripts/group-trade-demo.ts`.
+- **Group + full SecureTrade** — invite/join/disband + `ctx.tradeWith(otherId,
+  { items?, credits? })` drives the full 9-message handshake (BeginTrade /
+  AddItem / RemoveItem / GiveMoney / AcceptTransaction / UnAcceptTransaction
+  / VerifyTrade / TradeComplete / AbortTrade) end-to-end. See
+  `scripts/group-trade-demo.ts`.
+- **Commodities / bazaar / auction house** — `browseBazaar`, `getAuctionDetails`,
+  `bidOn`, `listForSale`, `retrieveBazaarItem`, `cancelMyListing`. Full
+  `Auction*`/`Bid*`/`Create*` message family with palettized headers response
+  decoder and advanced-search conditions. Bundled scenario: `bazaar-snipe`.
+- **SUI dialogs + NPC conversation** — receive server-pushed SUI pages
+  (`waitForSui` / `respondToSui`); drive NPC handshake (`talkTo` /
+  `waitForNpcDialog` / `selectDialog` / `endConversation`). Pairs the
+  server's two-subtype prompt + responses into one `NpcDialogPrompt`.
+- **Vehicle / Mount / Pet** — `callVehicle`, `mount`, `dismount`, `storeVehicle`,
+  `callPet`, `storePet`, `petCommand`. Movement primitives auto-clamp to
+  the mounted speed cap. Bundled scenario: `ride-vehicle`.
+- **Reconnect-verification harness** — `reconnectVerify({ mutate, observe? })`
+  runs two `fullLifecycle` passes and snapshots/diffs the persisted state
+  to catch DB save/load regressions automatically.
+- **Send-path fragmentation** — `SoeConnection.sendApp` auto-splits payloads
+  >489 bytes into chained `Fragment1` packets (was: small-sends only).
 - **Chat** — spatial `say` (uses the server's `spatialChatInternal` command,
   the same path the real Windows client uses), `tell`, mail, channel post.
 - **Combat / posture / dance** — `attackTarget`, `useAbility`,
@@ -68,9 +87,9 @@ What's available beyond the basic lifecycle:
 - **Character pool** — JSON-backed, lockfile-coordinated pool of pre-created
   characters for tests that need many accounts without leaking new chars per
   run.
-- **ObjController subtype decoders** — 25+ in-game message subtypes decoded
+- **ObjController subtype decoders** — 28+ in-game message subtypes decoded
   for assertion (combat, movement, posture, mood, chat, crafting, missions,
-  groups, trade, menus, etc.).
+  groups, trade, menus, NPC conversation, mount/dismount, etc.).
 
 See `docs/scripting.md` for the full `ScriptContext` API, `docs/wire-spec.md`
 for the byte-level reference, and `scripts/examples/` for ~25 ready-to-run
@@ -82,9 +101,9 @@ example scenarios.
 # Requires Node 24 (see .nvmrc) and pnpm
 nvm use
 pnpm install
-pnpm test                                              # ~930 unit tests, no server needed
+pnpm test                                              # ~1150 unit tests, no server needed
 LIVE=1 pnpm test tests/integration/live-login.test.ts  # one live test
-LIVE=1 pnpm test                                       # full suite (~951 tests)
+LIVE=1 pnpm test                                       # full suite (~1172 tests)
 
 # Plain zone-in
 pnpm cli zone --host=10.254.0.253 --user=ci-test --character=TsTest

@@ -130,6 +130,12 @@ import {
   InventoryViewImpl,
   type InventoryView,
 } from '../inventory-view.js';
+import {
+  type CombatHelpersHandle,
+  type CombatView,
+  type SafetyView,
+  attachCombatHelpers,
+} from '../combat-helpers.js';
 import type { WorldModel, WorldObject } from '../world-model.js';
 import {
   PLAYER_DATAPAD_TEMPLATE_CRC,
@@ -442,6 +448,21 @@ export interface ScriptContext {
    *   ctx.inventory.ready                          // true once populated
    */
   readonly inventory: InventoryView;
+  /**
+   * Combat helpers — `targets()` (who's targeting us), `engaged` (heuristic
+   * "we're in a fight"), `autoLoot` (auto-fire `loot` on creature death),
+   * and `attackingNearest()` (sugar over nearestHostile + attackTarget loop).
+   *
+   * See `src/client/combat-helpers.ts` for the full surface.
+   */
+  readonly combat: CombatView;
+  /**
+   * Safety helpers — currently `fleeWhenHealthBelow(ratio, opts?)`, which
+   * registers a watcher that breaks combat (peace), optionally calls and
+   * mounts a vehicle, then walks to safe coordinates when our HAM health
+   * drops below the given fraction.
+   */
+  readonly safety: SafetyView;
   /**
    * Find the nearest `WorldObject` matching `typeId` (one of `ObjectTypeTags`),
    * sorted by 2D distance from the player. Excludes the player itself by
@@ -1285,6 +1306,8 @@ export interface ScriptContext {
 interface InternalContext extends ScriptContext {
   /** Detach handle for the character sheet's dispatcher subscriptions. */
   readonly _characterSheetDetach: () => void;
+  /** Detach handle for the combat / safety helpers' listeners. */
+  readonly _combatHelpersDetach: () => void;
   /** Tracking for the orchestrator. */
   readonly _state: {
     sendsCount: number;
@@ -1445,6 +1468,16 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     templateName: opts.sceneStart.templateName,
   });
 
+  // combat / safety helpers are constructed below (after `ctx` exists, since
+  // they reference ctx methods). We declare placeholders so the
+  // `InternalContext` literal type-checks; they're overwritten with the
+  // real implementations right after construction.
+  const combatPlaceholder = undefined as unknown as CombatView;
+  const safetyPlaceholder = undefined as unknown as SafetyView;
+  let combatHelpersDetachImpl: () => void = () => {
+    /* no-op until the helpers attach below */
+  };
+
   const ctx: InternalContext = {
     dispatcher: opts.dispatcher,
     sceneStart: opts.sceneStart,
@@ -1453,8 +1486,11 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     character: characterSheetHandle.view,
     datapad: datapadView,
     inventory: inventoryView,
+    combat: combatPlaceholder,
+    safety: safetyPlaceholder,
     _state: state,
     _characterSheetDetach: characterSheetHandle.detach,
+    _combatHelpersDetach: (): void => combatHelpersDetachImpl(),
 
     findNearest(
       typeId: number,
@@ -2530,7 +2566,64 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     },
   };
 
+  // ── Combat / safety helpers ────────────────────────────────────────
+  // Attach after ctx is constructed because the helpers reference ctx
+  // methods (nearestHostile, useAbility, walkTo, mount, callVehicle, etc.).
+  // The placeholders above are overwritten with the live implementations
+  // here. We pass `ctx` directly as the `CombatHostContext` (it's a
+  // structural-subset interface, so this is type-safe).
+  const combatHandle: CombatHelpersHandle = attachCombatHelpers(ctx);
+  combatHelpersDetachImpl = combatHandle.detach;
+  Object.defineProperty(ctx, 'combat', {
+    value: combatHandle.combat,
+    enumerable: true,
+    writable: false,
+    configurable: true,
+  });
+  Object.defineProperty(ctx, 'safety', {
+    value: combatHandle.safety,
+    enumerable: true,
+    writable: false,
+    configurable: true,
+  });
+  // Wrap useAbility + attackTarget so the combat helpers' damaged-set is
+  // populated automatically whenever the script issues a combat verb. This
+  // lets `autoLoot` know which corpses to consider when ChatSystemMessage's
+  // outOfBand carries a kill confirmation.
+  const damagedAdd = (combatHandle.combat as unknown as { __damagedAdd?: (id: NetworkId) => void })
+    .__damagedAdd;
+  const wrappedUseAbility = ctx.useAbility.bind(ctx);
+  ctx.useAbility = ((commandName: string, targetId?: NetworkId, params?: string): number => {
+    const seq = wrappedUseAbility(commandName, targetId, params);
+    if (damagedAdd !== undefined && targetId !== undefined && isCombatVerb(commandName)) {
+      damagedAdd(targetId);
+    }
+    return seq;
+  }) as typeof ctx.useAbility;
+  ctx.attackTarget = ((targetId: NetworkId): number => ctx.useAbility('attack', targetId)) as typeof ctx.attackTarget;
+
   return ctx;
+}
+
+/**
+ * Heuristic: which command names should populate the combat helpers'
+ * damaged-set? Includes the obvious `attack` verbs plus the common combat
+ * abilities. Conservative — false negatives just mean autoLoot won't
+ * recognize that creature as our kill.
+ */
+function isCombatVerb(commandName: string): boolean {
+  const c = commandName.toLowerCase();
+  if (c === 'attack' || c === 'fire' || c === 'shoot' || c === 'duel') return true;
+  // Ability families: most combat specials start with these prefixes.
+  if (/^(melee|ranged|kinetic|energy|bleed|burst|berserk|charge|disarm|dizzy|knock|kick|punch|strike|stab|slash|cleave|grapple|sweep|throw|whirlwind|sniper)/i.test(
+      c,
+    )) {
+    return true;
+  }
+  // Many trooper/jedi/etc. abilities are explicitly named — anything with
+  // 'attack' as a substring counts.
+  if (c.includes('attack')) return true;
+  return false;
 }
 
 const PET_COMMAND_RADIAL: Record<'follow' | 'stay' | 'attack' | 'guard' | 'patrol', number> = {
@@ -2559,6 +2652,9 @@ export async function runScript(fn: ScenarioFn, ctx: ScriptContext): Promise<Scr
     // multiple times — `detach()` empties the unsubscriber list on the
     // first call.
     internal._characterSheetDetach();
+    // Detach the combat / safety helpers' dispatcher + world listeners
+    // (also cancels any active fleeWhenHealthBelow watcher). Idempotent.
+    internal._combatHelpersDetach();
     if (internal._state.datapadCreateUnsubscribe !== null) {
       internal._state.datapadCreateUnsubscribe();
       internal._state.datapadCreateUnsubscribe = null;

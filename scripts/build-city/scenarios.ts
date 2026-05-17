@@ -273,11 +273,19 @@ export function residentScenario(inputs: ResidentScenarioInputs): ScenarioFn {
       return;
     }
 
-    // Walk inside + declare residence
-    const declared = await walkInAndDeclareResidence(ctx, slot, {
+    // Walk inside + declare residence — prefer the cell-aware navigate path
+    // when we know the building's OID (placeResult populates structureOid
+    // after the SceneCreateObjectByName arrives for the placed structure).
+    // Falls back to the legacy outdoor walkTo when structureOid is null
+    // (rare — placement succeeded but the create event was missed).
+    const buildOpts: Parameters<typeof walkInAndDeclareResidence>[2] = {
       settleMs: 2000,
       declareTimeoutMs: 8000,
-    });
+    };
+    if (placeResult.structureOid !== null) {
+      buildOpts.buildingId = placeResult.structureOid;
+    }
+    const declared = await walkInAndDeclareResidence(ctx, slot, buildOpts);
     if (!declared) {
       // Soft-fail; city.java may still count us as a citizen if the building exists.
       ctx.fail(

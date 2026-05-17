@@ -16,8 +16,8 @@ The server side lives at `~/code/swg-main/`. **Read `~/code/swg-main/CLAUDE.md` 
 cd ~/code/swg-ts-client
 nvm use                # Node 24 (LTS as of 2026-05)
 pnpm install
-pnpm test              # ~1395 unit tests — no server needed
-LIVE=1 pnpm test       # ~1421 total under LIVE (includes ~26 integration tests against 10.254.0.253)
+pnpm test              # ~1759 unit tests — no server needed
+LIVE=1 pnpm test       # ~1787 total under LIVE (includes ~28 integration tests against 10.254.0.253)
 pnpm cli zone --host=10.254.0.253 --user=ci-test --character=TsTest
 ```
 
@@ -96,6 +96,7 @@ The client started as just `SwgClient.fullLifecycle()` and is now a full program
 | **Always-on datapad** | `ctx.datapad.items` / `vehicles()` / `pets()` / `waypoints()` / `missions()` / `findByTemplate(re)` | Auto-opened at zone-in via `ClientOpenContainerMessage(playerId, 'datapad')`. Items classified by templateName into vehicle-pcd / pet-pcd / waypoint / mission / ship / manufacturing-schematic / other. Used by `rideVehicleScenario` for zero-config PCD lookup. |
 | **Always-on character sheet** | `ctx.character.health` / `.cashBalance` / `.bankBalance` / `.skills` / `.posture` / `.level` / `.skillTitle` / `.playedTime` / `.position` / `.group` etc. | Live view of player CREO + PLAY baselines, kept current by the dispatcher loop. Subscribes to `BaselinesMessage` / `DeltasMessage` / `ObjControllerMessage(CM_setPosture=305)`. `ready` flips true after first CREO baseline. Detached automatically at logout. |
 | **Movement (working)** | `ctx.walkTo` / `walkCircle` / `walkToCell` | Real `ObjControllerMessage(CM_netUpdateTransform=113)` wire path with auto teleport-ack bootstrap. Float positions, server-validated speed. Character actually moves in-game. |
+| **Location + high-level navigate** | `ctx.location.{planet,position,cell}` + `ctx.navigate(target, opts?)` + sugar `ctx.character.{heading,inCell}` | Live `LocationView` reads planet from `sceneStart.sceneName`, position from the pose cursor, and cell from the player CREO's `containerId` resolved through the WorldModel (SCLT object → its SHARED+SHARED_NP baselines). `ctx.navigate({x,z})` or `ctx.navigate({buildingId,cellName})` plans a multi-segment walk (optional mount → walk → dismount → cell-entry) and runs it via `walkTo` / `walkToCell` / `mount` / `dismount`. `useMount: 'auto'` (default) mounts at distance > 50m when a vehicle PCD is in the datapad. Throws (no soft-fail) when target cell is unreachable. `ctx.character.heading` is computed atan2 from the last two `setPose` calls; `ctx.character.inCell` mirrors `ctx.location.cell !== null`. |
 | **Survey flow** | `ctx.fetchSurveyResources(toolId)` → `ctx.survey(toolId, name)` → `ctx.waitForSurvey()` | Two-step radial-menu Use → ResourceListForSurveyMessage → per-type requestsurvey → SurveyMessage. Returns 9 sample points per type. |
 | **Sampling / harvest** | `ctx.sample(toolId, name)` / `ctx.waitForSampleEvent()` / `ctx.cancelSampling()` | `requestcoresample` wire path with sample-loop event classification (`located`, `failed`, `cancel`, `in_progress`, `mind`, `density`, `trace`, `start`). Units stack into existing same-type inventory containers. |
 | **Resource stats** | `ctx.fetchResourceAttributes([ids])` | Batched `getAttributesBatch` → AttributeListMessage per id, chunked at 25 ids/call to stay under wire ceiling. Full OQ/CR/DR/HR/SR/UT/ER/PE/MA/CD stats for any ResourceTypeObject; no physical core-sampling needed. |
@@ -315,7 +316,7 @@ Individual stage drivers and the `dispatcher` are also exported as types — use
 
 ## When you next sit down
 
-1. `cd ~/code/swg-ts-client && nvm use && pnpm test` — confirm baseline (should be ~1395 unit green; ~1421 total under `LIVE=1`).
+1. `cd ~/code/swg-ts-client && nvm use && pnpm test` — confirm baseline (should be ~1759 unit green; ~1787 total under `LIVE=1`).
 2. If anything's red, check `git log --oneline` — most recent change is probably the culprit; revert it locally and retry.
 3. If you bumped `~/code/swg-main` submodules, the wire-format may have drifted. Run `LIVE=1 pnpm test tests/integration/live-login.test.ts` — if it fails with a `LoginIncorrectClientId` or `Archive::ReadException`-style error, the message struct shape changed server-side. Find the C++ commit that added/removed fields, update `varCount` + encode/decode here. For broader drift, replay a baseline NDJSON capture (`pnpm cli capture` once on green, then `pnpm cli replay --compare=count` after the bump).
 4. To do "more SWG protocol work" — read `docs/adding-a-message.md` and pick a message from `~/code/swg-main/src/engine/shared/library/sharedNetworkMessages/src/shared/`. The mechanical pattern handles itself. For ObjController subtypes (combat/movement/etc.) the recipe is the same but the file lives in `src/messages/game/obj-controller/` and registers via the subtype CRC instead of the top-level `messageRegistry`.

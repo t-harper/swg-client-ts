@@ -115,6 +115,26 @@ export type {
 } from './client/character-sheet.js';
 export type { WalkToOptions, CircleOptions, WalkToCellOptions } from './client/script/movement.js';
 export type { ExpectOptions } from './client/script/expectations.js';
+
+// Live location view + navigate planner — exposed on `ctx.location` and
+// `ctx.navigate(...)` during script runs.
+export type { LocationCell, LocationView, LocationViewOptions } from './client/location.js';
+export {
+  createLocationView,
+  findCellByName,
+  findFirstPublicCell,
+  normalizePlanetName,
+  resolvePlayerCell,
+} from './client/location.js';
+export type {
+  InteriorTarget,
+  NavigateOptions,
+  NavigatePlan,
+  NavigateStep,
+  NavigateTarget,
+  OutdoorTarget,
+} from './client/navigate.js';
+export { navigate, planNavigate, runPlan } from './client/navigate.js';
 export { groupTradeScenario, scenarios } from './scenarios/index.js';
 export type { ScenarioFactory } from './scenarios/index.js';
 

@@ -235,6 +235,27 @@ export interface CharacterSheet {
    * not on the WorldModel until the server echoes the position back).
    */
   readonly position: Readonly<Vector3>;
+  /**
+   * Computed heading (radians, atan2-style) derived from the player's most
+   * recent two `CM_netUpdateTransform` sends. Defaults to `0` when fewer than
+   * two transforms have been sent (idle character) or when the two transforms
+   * are at the same x/z (post-walk, character standing still).
+   *
+   * Sourced from the dispatcher's transcript — looks back at the last two
+   * outbound `ObjControllerMessage(CM_netUpdateTransform=113)` sends and
+   * computes `atan2(dx, dz)`. The cell-relative variant
+   * `CM_netUpdateTransformWithParent=241` is also considered.
+   */
+  readonly heading: number;
+  /**
+   * Sugar for `ctx.location.cell !== null` — true when the player is
+   * currently parented inside a cell (interior), false outdoors.
+   *
+   * Wired up via `CharacterSheetOptions.isInCell()`; when no callback is
+   * supplied this always reads `false` (the bare CharacterSheet doesn't
+   * know about cells on its own).
+   */
+  readonly inCell: boolean;
   /** Snapshot all readable fields as a plain JSON-safe object. */
   toJSON(): Record<string, unknown>;
 }
@@ -265,6 +286,24 @@ export interface CharacterSheetOptions {
   world?: WorldModel;
   /** Optional — captured at construction to seed `templateName`. */
   templateName?: string;
+  /**
+   * Optional callback consulted by `view.inCell` getter. Provided by the
+   * script-context factory so the character sheet can surface a sugar form
+   * of `ctx.location.cell !== null` without depending on `LocationView`
+   * (which lives in a higher-level module and would create an import cycle).
+   *
+   * Defaults to `() => false` when not supplied.
+   */
+  isInCell?: () => boolean;
+  /**
+   * Optional callback that returns the heading (radians, atan2-style)
+   * computed from the player's recent movement. Provided by the script
+   * context factory which has the orchestrator's pose history.
+   *
+   * Defaults to `() => 0` when not supplied (a bare character sheet has no
+   * movement history to compute from).
+   */
+  getHeading?: () => number;
 }
 
 /** Mutable backing store; getters on `CharacterSheet` read from this. */
@@ -569,6 +608,12 @@ export function createCharacterSheet(opts: CharacterSheetOptions): CharacterShee
       if (obj === undefined) return { x: 0, y: 0, z: 0 };
       return { x: obj.position.x, y: obj.position.y, z: obj.position.z };
     },
+    get heading(): number {
+      return opts.getHeading?.() ?? 0;
+    },
+    get inCell(): boolean {
+      return opts.isInCell?.() ?? false;
+    },
     toJSON(): Record<string, unknown> {
       return {
         ready: view.ready,
@@ -594,6 +639,8 @@ export function createCharacterSheet(opts: CharacterSheetOptions): CharacterShee
             ? null
             : { id: view.groupInviter.id.toString(), name: view.groupInviter.name },
         position: { ...view.position },
+        heading: view.heading,
+        inCell: view.inCell,
       };
     },
   };

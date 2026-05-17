@@ -299,15 +299,54 @@ export async function declareResidence(
 
 /**
  * Convenience: walk to a slot's entry point and declare residence.
+ *
+ * When `buildingId` is supplied, uses `ctx.navigate({ buildingId, cellName: '' })`
+ * to step inside the building's first public cell — this is the new, simpler
+ * path that handles dismount + cell-entry automatically and lands the player
+ * inside the cell so `declareresidence` resolves to the right building via
+ * the server-side `getStructure(self)` script-trigger.
+ *
+ * When `buildingId` is `undefined`, falls back to the legacy outdoor-walk path
+ * (`walkTo` to the slot's entry offset) — relies on the server's lenient
+ * "near enough" resolution which works for small houses but has been known
+ * to land the wrong building on dense slot layouts.
  */
 export async function walkInAndDeclareResidence(
   ctx: ScriptContext,
   slot: { x: number; z: number; entryOffset?: { x: number; z: number } },
-  opts: { settleMs?: number; declareTimeoutMs?: number } = {},
+  opts: {
+    settleMs?: number;
+    declareTimeoutMs?: number;
+    /** Building NetworkId from placeDeed's structureOid — enables the cell-aware navigate path. */
+    buildingId?: NetworkId;
+  } = {},
 ): Promise<boolean> {
-  const entry = slot.entryOffset ?? { x: 0, z: -5 };
   const settleMs = opts.settleMs ?? 1500;
-  await ctx.walkTo({ x: slot.x + entry.x, z: slot.z + entry.z }, { speed: 4 });
+  if (opts.buildingId !== undefined) {
+    // navigate() handles: walk outdoors to building anchor → enter first
+    // public cell. No need for an entry-offset heuristic — the cell-relative
+    // walk lands us inside the cell, which is what declareresidence's
+    // getStructure(self) expects.
+    try {
+      await ctx.navigate(
+        { buildingId: opts.buildingId, cellName: '' },
+        { useMount: 'never', speed: 4 },
+      );
+    } catch (err) {
+      // Fall through to the legacy walkTo on navigation failure — likely the
+      // building's SCLT baselines didn't arrive in time. Same risk as the
+      // legacy path but at least we tried the precise route.
+      const reason = err instanceof Error ? err.message : String(err);
+      process.stderr.write(
+        `[walkInAndDeclareResidence] navigate failed (${reason}); falling back to outdoor walkTo\n`,
+      );
+      const entry = slot.entryOffset ?? { x: 0, z: -5 };
+      await ctx.walkTo({ x: slot.x + entry.x, z: slot.z + entry.z }, { speed: 4 });
+    }
+  } else {
+    const entry = slot.entryOffset ?? { x: 0, z: -5 };
+    await ctx.walkTo({ x: slot.x + entry.x, z: slot.z + entry.z }, { speed: 4 });
+  }
   await ctx.wait(settleMs);
   return declareResidence(ctx, { timeoutMs: opts.declareTimeoutMs });
 }

@@ -124,6 +124,12 @@ import type { NetworkId, SceneStart, Vector3 } from '../../types.js';
 import type { CharacterSheet } from '../character-sheet.js';
 import { createCharacterSheet } from '../character-sheet.js';
 import type { MessageDispatcher } from '../dispatcher.js';
+import { type LocationView, createLocationView } from '../location.js';
+import {
+  type NavigateOptions,
+  type NavigateTarget,
+  navigate as navigateImpl,
+} from '../navigate.js';
 import { SceneCreateObjectByCrc } from '../../messages/game/scene-create-object-by-crc.js';
 import { SceneCreateObjectByName } from '../../messages/game/scene-create-object-by-name.js';
 import {
@@ -443,6 +449,20 @@ export interface ScriptContext {
    */
   readonly inventory: InventoryView;
   /**
+   * Live high-level location view — planet, position, and current cell.
+   *
+   *   ctx.location.planet              // e.g. 'tatooine'
+   *   ctx.location.position            // current world coord
+   *   ctx.location.cell                // { buildingId, cellName, cellNumber, isPublic } | null
+   *
+   * `planet` is immutable per zone-in. `position` is the orchestrator's pose
+   * cursor (the same as `ctx.position()`). `cell` is computed live from the
+   * WorldModel: it walks the player CREO's `containerId` to a SCLT object
+   * and reads that cell's SHARED + SHARED_NP baselines. Returns `null` when
+   * the player is outdoors.
+   */
+  readonly location: LocationView;
+  /**
    * Find the nearest `WorldObject` matching `typeId` (one of `ObjectTypeTags`),
    * sorted by 2D distance from the player. Excludes the player itself by
    * default. `maxRadiusM` caps the search; omit to consider the whole world.
@@ -538,6 +558,25 @@ export interface ScriptContext {
     target: { x: number; z: number; y?: number },
     opts?: WalkToCellOptions,
   ): Promise<void>;
+  /**
+   * Multi-segment "go there" primitive that handles mounting, dismounting,
+   * and cell entry automatically.
+   *
+   * Target shapes:
+   *   - `{ x, z }`                       — outdoor coordinate
+   *   - `{ buildingId, cellName }`       — interior cell (cellName: 'cell1', 'living_room', or '' for first public)
+   *   - `{ buildingId, cellName, position }` — interior cell with a cell-relative coord
+   *
+   * Decision engine:
+   *   - If `useMount === 'auto'` (default) AND distance > 50m AND a vehicle
+   *     PCD is in the datapad: call vehicle → mount → walk → (dismount before
+   *     cell entry) → enter cell.
+   *   - Else: walk the whole way on foot.
+   *
+   * Throws (no soft-fail) when the target cell is unreachable — building
+   * not in WorldModel, no matching cell, etc.
+   */
+  navigate(target: NavigateTarget, opts?: NavigateOptions): Promise<void>;
   /**
    * Current best estimate of the player's cell-relative position. Only valid
    * when `parentCell()` is non-zero; otherwise returns the last-known
@@ -1292,6 +1331,8 @@ interface InternalContext extends ScriptContext {
     pose: { x: number; y: number; z: number; yaw: number };
     /** Cell-relative pose cursor — separate from the world pose. */
     cellPose: { parentId: NetworkId; x: number; y: number; z: number; yaw: number };
+    /** Previous world pose, captured by `setPose` before mutating `pose`. */
+    previousPose: { x: number; y: number; z: number };
     sequenceNumber: number;
     /** Wall-clock ms when the context was created — base for syncStamp derivation. */
     scriptStartTime: number;
@@ -1396,6 +1437,21 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
       z: 0,
       yaw: 0,
     },
+    /**
+     * Previous outdoor pose. Updated by `setPose`: every new pose shifts the
+     * current pose into `previousPose` so `character.heading` can compute
+     * yaw as `atan2(dx, dz)` over the last two transforms.
+     *
+     * Both fields read `{x:0,y:0,z:0}` at construction; `previousPose` stays
+     * at the spawn coord until the first walk sends a transform. The heading
+     * getter handles the degenerate `dx === dz === 0` case as "no signal" by
+     * returning 0.
+     */
+    previousPose: {
+      x: opts.sceneStart.startPosition.x,
+      y: opts.sceneStart.startPosition.y,
+      z: opts.sceneStart.startPosition.z,
+    },
     sequenceNumber: opts.initialSequenceNumber ?? 1,
     scriptStartTime: Date.now(),
     lastSyncStamp: 0,
@@ -1438,11 +1494,33 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     datapadByCrcUnsubscribe();
   };
 
+  // Build the LocationView first — `ctx.location.cell` is computed live from
+  // the WorldModel, so no async wiring. The pose-cursor accessor closes over
+  // `state` to stay in sync with `setPose`.
+  const locationView = createLocationView({
+    world: opts.world,
+    playerId: opts.sceneStart.playerNetworkId,
+    planet: opts.sceneStart.sceneName,
+    position: () => ({ x: state.pose.x, y: state.pose.y, z: state.pose.z }),
+  });
+
   const characterSheetHandle = createCharacterSheet({
     dispatcher: opts.dispatcher,
     playerNetworkId: opts.sceneStart.playerNetworkId,
     world: opts.world,
     templateName: opts.sceneStart.templateName,
+    // Sugar getter — `ctx.character.inCell === ctx.location.cell !== null`.
+    isInCell: (): boolean => locationView.cell !== null,
+    // Heading is computed from the last two outdoor poses recorded by
+    // `setPose` (which the movement primitives call after each send).
+    // Returns 0 when no movement has happened OR when the last two poses
+    // are at the same x/z (idle character).
+    getHeading: (): number => {
+      const dx = state.pose.x - state.previousPose.x;
+      const dz = state.pose.z - state.previousPose.z;
+      if (Math.abs(dx) < 1e-6 && Math.abs(dz) < 1e-6) return 0;
+      return Math.atan2(dx, dz);
+    },
   });
 
   const ctx: InternalContext = {
@@ -1453,6 +1531,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     character: characterSheetHandle.view,
     datapad: datapadView,
     inventory: inventoryView,
+    location: locationView,
     _state: state,
     _characterSheetDetach: characterSheetHandle.detach,
 
@@ -1596,6 +1675,11 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
       await sleep(50, opts.signal);
     },
     setPose(position: Vector3, yaw: number): void {
+      // Shift pose → previousPose before mutating, so character.heading can
+      // compute atan2(dx, dz) over the last two outdoor poses.
+      state.previousPose.x = state.pose.x;
+      state.previousPose.y = state.pose.y;
+      state.previousPose.z = state.pose.z;
       state.pose.x = position.x;
       state.pose.y = position.y;
       state.pose.z = position.z;
@@ -1625,6 +1709,10 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
 
     walkToCell(parentId, target, walkOpts) {
       return walkToCellImpl(ctx, parentId, target, walkOpts ?? {});
+    },
+
+    navigate(target, navigateOpts) {
+      return navigateImpl(ctx, target, navigateOpts ?? {});
     },
 
     cellPosition(): Readonly<Vector3> {

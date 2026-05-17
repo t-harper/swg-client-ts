@@ -434,3 +434,23 @@ export type {
   ListForSaleResult,
 } from './client/script/context.js';
 export { bazaarSnipe } from './scenarios/index.js';
+
+// =============================================================================
+// Building permissions (Feature 0.1)
+// =============================================================================
+// ObjController subtype decoders for the four permission-mutation cross-auth
+// CM ids. The client never receives these directly, but they're useful for
+// transcript inspection of server-to-server traffic in test rigs and for
+// asserting "we did issue an add-allowed for player X to building Y" in
+// integration tests that have a server-side log scraper attached.
+export {
+  AddAllowedDecoder,
+  AddAllowedKind,
+  AddBannedDecoder,
+  AddBannedKind,
+  RemoveAllowedDecoder,
+  RemoveAllowedKind,
+  RemoveBannedDecoder,
+  RemoveBannedKind,
+} from './messages/game/obj-controller/index.js';
+export type { BuildingPermissionData } from './messages/game/obj-controller/index.js';

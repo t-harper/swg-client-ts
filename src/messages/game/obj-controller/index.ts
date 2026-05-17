@@ -14,6 +14,17 @@
 
 export { AttributeChangedDecoder, AttributeChangedKind } from './attribute-changed.js';
 export type { AttributeChangedData } from './attribute-changed.js';
+export {
+  AddAllowedDecoder,
+  AddAllowedKind,
+  AddBannedDecoder,
+  AddBannedKind,
+  RemoveAllowedDecoder,
+  RemoveAllowedKind,
+  RemoveBannedDecoder,
+  RemoveBannedKind,
+} from './building-permission.js';
+export type { BuildingPermissionData } from './building-permission.js';
 export { CombatActionDecoder, CombatActionKind } from './combat-action.js';
 export type {
   CombatActionAttacker,

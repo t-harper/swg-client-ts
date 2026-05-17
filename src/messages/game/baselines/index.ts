@@ -28,6 +28,78 @@ export {
   TangibleObjectClientServerDeltaKind,
 } from './tangible-object-delta-1.js';
 export {
+  TangibleObjectSharedDeltaDecoder,
+  TangibleObjectSharedDeltaKind,
+} from './tangible-object-delta-3.js';
+export {
+  TangibleObjectClientServerNpDeltaDecoder,
+  TangibleObjectClientServerNpDeltaKind,
+} from './tangible-object-delta-4.js';
+export {
+  TangibleObjectSharedNpDeltaDecoder,
+  TangibleObjectSharedNpDeltaKind,
+} from './tangible-object-delta-6.js';
+export {
+  CreatureObjectClientServerDeltaDecoder,
+  CreatureObjectClientServerDeltaKind,
+} from './creature-object-delta-1.js';
+export {
+  CreatureObjectSharedDeltaDecoder,
+  CreatureObjectSharedDeltaKind,
+} from './creature-object-delta-3.js';
+export {
+  CreatureObjectSharedNpDeltaDecoder,
+  CreatureObjectSharedNpDeltaKind,
+} from './creature-object-delta-6.js';
+export {
+  CreatureObjectFirstParentClientServerDeltaDecoder,
+  CreatureObjectFirstParentClientServerDeltaKind,
+} from './creature-object-delta-8.js';
+export {
+  CreatureObjectFirstParentClientServerNpDeltaDecoder,
+  CreatureObjectFirstParentClientServerNpDeltaKind,
+} from './creature-object-delta-9.js';
+export {
+  PlayerObjectClientServerDeltaDecoder,
+  PlayerObjectClientServerDeltaKind,
+} from './player-object-delta-1.js';
+export {
+  PlayerObjectSharedDeltaDecoder,
+  PlayerObjectSharedDeltaKind,
+} from './player-object-delta-3.js';
+export {
+  PlayerObjectClientServerNpDeltaDecoder,
+  PlayerObjectClientServerNpDeltaKind,
+} from './player-object-delta-4.js';
+export {
+  PlayerObjectSharedNpDeltaDecoder,
+  PlayerObjectSharedNpDeltaKind,
+} from './player-object-delta-6.js';
+export {
+  BuildingObjectSharedDeltaDecoder,
+  BuildingObjectSharedDeltaKind,
+} from './building-object-delta-3.js';
+export {
+  BuildingObjectSharedNpDeltaDecoder,
+  BuildingObjectSharedNpDeltaKind,
+} from './building-object-delta-6.js';
+export {
+  CellObjectSharedDeltaDecoder,
+  CellObjectSharedDeltaKind,
+} from './cell-object-delta-3.js';
+export {
+  CellObjectSharedNpDeltaDecoder,
+  CellObjectSharedNpDeltaKind,
+} from './cell-object-delta-6.js';
+export {
+  MissionObjectSharedDeltaDecoder,
+  MissionObjectSharedDeltaKind,
+} from './mission-object-delta-3.js';
+export {
+  ResourceContainerObjectSharedDeltaDecoder,
+  ResourceContainerObjectSharedDeltaKind,
+} from './resource-container-object-delta-3.js';
+export {
   type BuildingObjectSharedBaseline,
   BuildingObjectSharedDecoder,
   BuildingObjectSharedKind,

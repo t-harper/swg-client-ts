@@ -11,3 +11,9 @@ scripts/build-city/state.json.tmp
 # SWG asset binaries staged for terrain lookup — never commit (large + license unclear)
 assets/*.tre
 assets/terrain/*.trn
+# Generated TypeDoc output + intermediate markdown (built on every push to
+# main via .github/workflows/docs.yml; generator is scripts/gen-wire-docs.ts).
+docs-site/
+docs/wire-reference.md
+docs/scripting-quickref.md
+docs/scripting-cookbook.md

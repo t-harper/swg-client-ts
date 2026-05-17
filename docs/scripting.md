@@ -80,6 +80,12 @@ Declared in `src/client/script/context.ts`.
 | `waitForSampleEvent({ timeoutMs?, predicate? })` | Resolves to `{ kind: SampleEventKind, raw }` where `kind` is one of `'located'` / `'failed'` / `'cancel'` / `'in_progress'` / `'start'` / `'mind'` / `'density'` / `'trace'` / `'other'` (parsed from the STF token in `ChatSystemMessage.outOfBand`). |
 | **Missions** | |
 | `requestMissionList(terminalId, { flags? })` / `acceptMission` / `removeMission` / `abortMission` | Driven through `CM_mission*` subtypes; server replies with `MissionObject` baselines + `PopulateMissionBrowserMessage` + `CM_missionAcceptResponse` |
+| **Commodities / bazaar** | |
+| `browseBazaar(terminalId, { searchType?, category?, minPrice?, maxPrice?, textFilterAll?, textFilterAny?, advancedSearch?, queryOffset?, myVendorsOnly?, timeoutMs? })` | Sends `AuctionQueryHeadersMessage` and resolves with the depalettized `AuctionListing[]` from the matching `AuctionQueryHeadersResponseMessage`. Request id is auto-generated and used to filter responses so concurrent browses don't cross-talk. |
+| `getAuctionDetails(auctionId, { timeoutMs? })` | Sends `GetAuctionDetails`, awaits the matching `GetAuctionDetailsResponse`, returns `{ itemId, userDescription, propertyList, templateName, appearanceString }`. |
+| `bidOn(auctionId, credits, maxProxy?)` | Fire-and-forget `BidAuctionMessage`. `maxProxy` defaults to `credits` (no auto-rebid). Use `ctx.waitForMessage(BidAuctionResponseMessage, ...)` to confirm. |
+| `listForSale(terminalId, itemId, { price, durationHours?, description?, localizedName?, instantSale?, premium?, vendorTransfer? })` | Sends `CreateAuctionMessage` (auction-style) or `CreateImmediateAuctionMessage` (when `instantSale: true`) and resolves with `{ success, auctionId?, resultCode, errorReason? }` parsed from `CreateAuctionResponseMessage`. `durationHours` defaults to 24. |
+| `retrieveBazaarItem(terminalId, itemId)` / `cancelMyListing(auctionId)` | Fire-and-forget `RetrieveAuctionItemMessage` / `CancelLiveAuctionMessage`. Responses arrive asynchronously as `RetrieveAuctionItemResponseMessage` / `CancelLiveAuctionResponseMessage`. |
 | **Crafting** | |
 | `beginCrafting(toolId, schematicCrc?)` | `useAbility('requestCraftingSession', toolId, ...)`. Server opens session and replies with `CM_craftingResult` + `CM_draftSchematicsMessage`. |
 | `waitForDraftSchematics({ timeoutMs? })` | Resolves the server's `DraftSchematicsMessage` — list of `{serverCrc, sharedCrc, category}` entries you can choose from. Default timeout 8s. |
@@ -110,6 +116,7 @@ Registered in `src/scenarios/index.ts`. Pass `--script=<name>` and zero or more 
 | `posture-cycle` | `durationMs=5000 tickMs=1000` | Cycle standing → crouched → prone → standing |
 | `survey` | `toolId=(required) resourceTypeName=(required) waitMs=2000` | One-shot `requestsurvey` (assumes the tool is already activated; use `ctx.fetchSurveyResources` to discover legal `resourceTypeName` values) |
 | `group-trade` | `role=leader|invitee otherId=(required) tradeAmount?` | Two-client coordination — invite, form group, optional secure-trade, disband. See `scripts/group-trade-demo.ts`. |
+| `bazaar-snipe` | `terminalId=(required) auctionId?=(opt) credits=(required when auctionId set) browseMs=5000` | When `auctionId` is set, fire a `BidAuctionMessage(auctionId, credits)`. Otherwise browse the bazaar at `terminalId` for `browseMs` and surface the top-three lowest-priced listings via `ctx.fail(...)` (soft-log into `ScriptResult.assertionFailures`). |
 | `dwell` | `durationMs=5000` | Idle baseline |
 
 `NetworkId` args accept hex (`0x...`) or decimal.

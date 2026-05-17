@@ -416,6 +416,17 @@ Reference: `GenericValueTypeMessage.h`. Our impl: `src/messages/base.ts:defineGe
 | `SurveyMessage` | 0x877f79ac | varies | Server → client survey response with sample points |
 | `ResourceListForSurveyMessage` | 0x8a64b1d5 | 4 | Server → client list of resource types currently spawned for a tool's class |
 | `ChatSystemMessage` | 0x6d2a6413 | 4 | Server → client system-message prose. Trailer: `[u8 flags][UnicodeString message][UnicodeString outOfBand]`. The `outOfBand` field is a packed-bytes binary (each `u16` codepoint holds 2 wire bytes in LE order) carrying STF references like `survey/sample_located` — see `decodeSampleOob()` for unpacking. |
+| `AuctionQueryHeadersMessage` | constcrc | 17 | C→S: bazaar browse. Trailer fields (in `addVariable` order): `locationSearchType, requestId, searchType, itemType, itemTypeExactMatch, itemTemplateId, textFilterAll(UString), textFilterAny(UString), priceFilterMin, priceFilterMax, priceFilterIncludesFee, advancedSearch(vector<SearchCondition>), advancedSearchMatchAllAny(i8), container(NetworkId), myVendorsOnly, queryOffset(u16)`. `SearchCondition` is `[u32 attrCrc][bool req][i8 cmp]` then conditionally `[i32 i32]` / `[f64 f64]` / `[std::string]` based on `cmp`. |
+| `AuctionQueryHeadersResponseMessage` | constcrc | 8 | S→C: page of bazaar headers. Server palettizes shared strings: `[i32 requestId][i32 typeFlag][AutoArray<std::string> stringPalette][AutoArray<Unicode::String> widePalette][AutoArray<PalettizedItemDataHeader>][u16 queryOffset][bool hasMorePages]`. Decoder depalettizes back to `AuctionListing[]`. |
+| `BidAuctionMessage` / `BidAuctionResponseMessage` | constcrc | 4 / 3 | C→S `[NetworkId itemId][i32 bid][i32 maxProxyBid]`; S→C `[NetworkId itemId][i32 result]` |
+| `AcceptAuctionMessage` / `AcceptAuctionResponseMessage` | constcrc | 2 / 3 | Instant-buy on a buy-now auction; same wire shape as Bid response. |
+| `CreateAuctionMessage` | constcrc | 8 | C→S list (bidding-style): `[NetworkId itemId][UString name][NetworkId containerId][i32 minBid][i32 lengthSeconds][UString description][bool premium]` |
+| `CreateImmediateAuctionMessage` | constcrc | 9 | C→S list (instant-buy): same shape as CreateAuctionMessage with `price` replacing `minBid` plus trailing `[bool vendorTransfer]` |
+| `CreateAuctionResponseMessage` | constcrc | 4 | S→C `[NetworkId itemId][i32 result][std::string rejectionMessage]` |
+| `CancelLiveAuctionMessage` / `CancelLiveAuctionResponseMessage` | constcrc | 2 / 4 | C→S `[NetworkId itemId]`; S→C `[NetworkId itemId][i32 result][bool vendorRefusal]` |
+| `RetrieveAuctionItemMessage` / `RetrieveAuctionItemResponseMessage` | constcrc | 3 / 3 | C→S `[NetworkId itemId][NetworkId containerId]`; S→C `[NetworkId itemId][i32 result]` |
+| `GetAuctionDetails` / `GetAuctionDetailsResponse` | constcrc | 2 / 2 | C→S `[NetworkId itemId]`; S→C single `Auction::ItemDataDetails` struct `[NetworkId itemId][UString userDescription][vector<pair<std::string, Unicode::String>> propertyList][std::string templateName][std::string appearanceString]` |
+| `IsVendorOwnerMessage` / `IsVendorOwnerResponseMessage` | constcrc | 2 / 6 | C→S `[NetworkId containerId]`; S→C `[i32 ownerResult][i32 result][NetworkId containerId][std::string marketName][u16 maxPageSize]` — `ownerResult` is the `VendorOwnerResult` enum (IsOwner=0 / IsNotOwner=1 / HasNoOwner=2). |
 
 ### ObjController subtypes
 

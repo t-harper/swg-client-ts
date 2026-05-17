@@ -147,7 +147,9 @@ export const surveyScenario: ScenarioFactory = (args) => {
   const toolId = networkIdArg(args, 'toolId');
   const resourceTypeName = args.resourceTypeName;
   if (resourceTypeName === undefined || resourceTypeName === '') {
-    throw new Error(`survey scenario: --script-arg=resourceTypeName=<name> is required (must be a specific resource type, not a class)`);
+    throw new Error(
+      `survey scenario: --script-arg=resourceTypeName=<name> is required (must be a specific resource type, not a class)`,
+    );
   }
   const waitMs = numArg(args, 'waitMs', 2_000);
   return async (ctx) => {
@@ -320,6 +322,59 @@ function sendRequestTrade(
   ctx.send(wrapped);
 }
 
+/**
+ * Bid-and-snipe scenario for the bazaar / commodity marketplace.
+ *
+ * Two modes:
+ *  - With `auctionId` set, fire a `BidAuctionMessage(auctionId, credits)`
+ *    (fire-and-forget, no wait for response).
+ *  - Without `auctionId`, browse the bazaar at `terminalId` for `browseMs`,
+ *    then surface the top three lowest-priced listings via `ctx.fail(...)`
+ *    (soft-log into `ScriptResult.assertionFailures`; no other console
+ *    primitive exists from a scenario).
+ *
+ * Args:
+ *   terminalId  (required) bazaar terminal NetworkId
+ *   auctionId   (optional) when set, just bid; otherwise browse
+ *   credits     (required iff auctionId is set) bid amount
+ *   browseMs    (default 5000) wait window for the browse response
+ */
+export const bazaarSnipe: ScenarioFactory = (args) => {
+  const terminalId = networkIdArg(args, 'terminalId');
+  const hasAuctionId = args.auctionId !== undefined && args.auctionId !== '';
+  const browseMs = numArg(args, 'browseMs', 5000);
+  let auctionId: NetworkId | null = null;
+  let credits = 0;
+  if (hasAuctionId) {
+    auctionId = networkIdArg(args, 'auctionId');
+    credits = numArg(args, 'credits', -1);
+    if (credits < 0) {
+      throw new Error('bazaar-snipe: --script-arg=credits=<n> is required when auctionId is set');
+    }
+  }
+  return async (ctx) => {
+    if (auctionId !== null) {
+      ctx.bidOn(auctionId, credits);
+      return;
+    }
+    const listings = await ctx.browseBazaar(terminalId, { timeoutMs: browseMs });
+    const sorted = [...listings].sort((a, b) => {
+      const ap = a.buyNowPrice > 0 ? a.buyNowPrice : a.highBid;
+      const bp = b.buyNowPrice > 0 ? b.buyNowPrice : b.highBid;
+      return ap - bp;
+    });
+    ctx.fail(`bazaar-snipe: ${listings.length} listings returned`);
+    for (let i = 0; i < Math.min(3, sorted.length); i++) {
+      const l = sorted[i];
+      if (!l) continue;
+      const price = l.buyNowPrice > 0 ? l.buyNowPrice : l.highBid;
+      ctx.fail(
+        `  #${i + 1}: itemId=${l.itemId} name="${l.itemName}" price=${price} owner=${l.ownerName}`,
+      );
+    }
+  };
+};
+
 export const scenarios: Record<string, ScenarioFactory> = {
   'walk-line': walkLine,
   'walk-circle': walkCircle,
@@ -328,6 +383,7 @@ export const scenarios: Record<string, ScenarioFactory> = {
   'posture-cycle': postureCycle,
   survey: surveyScenario,
   'group-trade': groupTradeScenario,
+  'bazaar-snipe': bazaarSnipe,
   dwell,
 };
 

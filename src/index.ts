@@ -46,7 +46,12 @@ export type {
 export type { GameStageResult, GameStageOptions, BaselineSummary } from './client/game-stage.js';
 
 // Scripting engine
-export type { ScenarioFn, ScriptContext, ScriptResult, SampleEventKind } from './client/script/context.js';
+export type {
+  ScenarioFn,
+  ScriptContext,
+  ScriptResult,
+  SampleEventKind,
+} from './client/script/context.js';
 export { decodeSampleOob } from './client/script/context.js';
 export type { WalkToOptions, CircleOptions, WalkToCellOptions } from './client/script/movement.js';
 export type { ExpectOptions } from './client/script/expectations.js';
@@ -288,3 +293,48 @@ export type {
   ReplayScenarioOptions,
   ReplayScriptContext,
 } from './client/replay.js';
+
+// =============================================================================
+// Commodities / Bazaar / Auction House (Feature 3)
+// =============================================================================
+export {
+  AcceptAuctionMessage,
+  AcceptAuctionResponseMessage,
+  AdvancedSearchMatchAllAny,
+  AuctionFlags,
+  AuctionLocationSearch,
+  AuctionQueryHeadersMessage,
+  AuctionQueryHeadersResponseMessage,
+  AuctionResult,
+  AuctionSearchType,
+  BidAuctionMessage,
+  BidAuctionResponseMessage,
+  CancelLiveAuctionMessage,
+  CancelLiveAuctionResponseMessage,
+  CreateAuctionMessage,
+  CreateAuctionResponseMessage,
+  CreateImmediateAuctionMessage,
+  GetAuctionDetails,
+  GetAuctionDetailsResponse,
+  IsVendorOwnerMessage,
+  IsVendorOwnerResponseMessage,
+  RetrieveAuctionItemMessage,
+  RetrieveAuctionItemResponseMessage,
+  SearchConditionComparison,
+  VendorOwnerResult,
+} from './messages/game/commodities/index.js';
+export type {
+  AuctionItemDetails,
+  AuctionListing,
+  AuctionQueryHeadersFields,
+  AuctionResultValue,
+  SearchCondition,
+  VendorOwnerResultValue,
+} from './messages/game/commodities/index.js';
+export type {
+  AuctionDetails,
+  BrowseBazaarOptions,
+  ListForSaleOptions,
+  ListForSaleResult,
+} from './client/script/context.js';
+export { bazaarSnipe } from './scenarios/index.js';

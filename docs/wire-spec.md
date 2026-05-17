@@ -416,6 +416,10 @@ Reference: `GenericValueTypeMessage.h`. Our impl: `src/messages/base.ts:defineGe
 | `SurveyMessage` | 0x877f79ac | varies | Server → client survey response with sample points |
 | `ResourceListForSurveyMessage` | 0x8a64b1d5 | 4 | Server → client list of resource types currently spawned for a tool's class |
 | `ChatSystemMessage` | 0x6d2a6413 | 4 | Server → client system-message prose. Trailer: `[u8 flags][UnicodeString message][UnicodeString outOfBand]`. The `outOfBand` field is a packed-bytes binary (each `u16` codepoint holds 2 wire bytes in LE order) carrying STF references like `survey/sample_located` — see `decodeSampleOob()` for unpacking. |
+| `SuiCreatePageMessage` | 0xd44b7259 | 2 | Server → client. Opens a SUI dialog page (banker / vendor / quest / list picker). Payload is `AutoDeltaVariable<SuiPageData>` — modeled as opaque `Uint8Array` bytes on `pageData`. Leading 4 bytes are the LE i32 `pageId`. |
+| `SuiUpdatePageMessage` | 0x5f3342f6 | 2 | Server → client. Same wire shape as `SuiCreatePageMessage`; in-place widget updates to an already-open page. |
+| `SuiForceClosePage` | 0x990b5de0 | 2 | Server → client. Tells the client to close a SUI page. Payload is just `[i32 clientPageId]` (from the SUIMessage base ctor). |
+| `SuiEventNotification` | 0x092d3564 | 4 | Client → server. Reply to a SUI page: `[i32 pageId][i32 subscribedEventIndex][u32 returnList.length][u32 baselineCommandCount=0][UnicodeString]*length`. The baselineCommandCount comes from `AutoDeltaVector::pack` (always 0 for fresh client messages). |
 
 ### ObjController subtypes
 
@@ -427,6 +431,11 @@ Reference: `GenericValueTypeMessage.h`. Our impl: `src/messages/base.ts:defineGe
 | 204 | `CM_combatAction` | server | Combat-action broadcast: who attacked whom with what action |
 | 241 | `CM_netUpdateTransformWithParent` | both | Cell-relative variant: same as 113 prefixed with `[NetworkId parentCell]` |
 | 243/244 | `CM_spatialChatSend` / `CM_spatialChatReceive` | C/S | Chat — `allowFromClient=false` for send-from-client; use the `say` CommandQueue path instead |
+| 221 | `CM_npcConversationStart` | client* | Open NPC conversation. Trailer = `MessageQueueStartNpcConversation`: `[NetworkId npc][u8 starter][stdString conversationName][u32 appearanceOverrideTemplateCrc]`. *`allowFromClient=false` server-side; use `useAbility('npcConversationStart', npcId, '<starter> <name>')` via command queue instead. |
+| 222 | `CM_npcConversationStop` | both | End conversation. Trailer = `[NetworkId npc][StringId finalMessageId (table+textIndex+text)][UnicodeString finalMessageProse][UnicodeString finalResponse]`. Client send is `allowFromClient=false`; use `useAbility('npcConversationStop', 0n, '')`. |
+| 223 | `CM_npcConversationMessage` | server | NPC's current prompt text. Trailer = `[UnicodeString npcMessage]`. Paired with CM=224. |
+| 224 | `CM_npcConversationResponses` | server | Menu of option strings. Trailer = `MessageQueueStringList`: `[u8 count][UnicodeString]*count`. |
+| 225 | `CM_npcConversationSelect` | client* | Pick option. Response index is in parent `value` (f32 cast). Trailer is EMPTY. *`allowFromClient=false`; use `useAbility('npcConversationSelect', 0n, String(index))`. |
 | 245/249/251/256 | `CM_mission*Request` / `*Response` | both | Mission list, accept, remove, create |
 | 258/259/262/263/264/266/268/270/271 | `CM_*` (crafting) | both | Crafting session: draft schematics, slot assign/empty, experiment, finish, result |
 | 278 | `CM_commandQueueEnqueue` | client | Wraps a `CommandQueueEnqueue { sequenceId, commandHash, targetId, params }` — the path `useAbility` / `survey` / `say` / etc. all go through |

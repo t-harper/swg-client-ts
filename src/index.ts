@@ -46,7 +46,12 @@ export type {
 export type { GameStageResult, GameStageOptions, BaselineSummary } from './client/game-stage.js';
 
 // Scripting engine
-export type { ScenarioFn, ScriptContext, ScriptResult, SampleEventKind } from './client/script/context.js';
+export type {
+  ScenarioFn,
+  ScriptContext,
+  ScriptResult,
+  SampleEventKind,
+} from './client/script/context.js';
 export { decodeSampleOob } from './client/script/context.js';
 export type { WalkToOptions, CircleOptions, WalkToCellOptions } from './client/script/movement.js';
 export type { ExpectOptions } from './client/script/expectations.js';
@@ -288,3 +293,51 @@ export type {
   ReplayScenarioOptions,
   ReplayScriptContext,
 } from './client/replay.js';
+
+// =============================================================================
+// SUI + NPC conversation (Feature 1)
+// =============================================================================
+
+// SUI dialog framework — server-pushed UI pages and the client's reply.
+// Page widget trees are modeled as opaque bytes (sufficient for clients to
+// identify and respond to pages without full widget decoding).
+export {
+  SuiCreatePageMessage,
+  SuiCreatePageMessageDecoder,
+  SuiEventNotification,
+  SuiEventNotificationDecoder,
+  SuiForceClosePage,
+  SuiForceClosePageDecoder,
+  SuiUpdatePageMessage,
+  SuiUpdatePageMessageDecoder,
+} from './messages/game/sui/index.js';
+
+// NPC conversation handshake — all four CM_npcConversation* ObjController
+// subtypes plus the StringList responses companion (CM=224).
+export {
+  EMPTY_NPC_STRING_ID,
+  NpcConversationMessageDecoder,
+  NpcConversationMessageKind,
+  NpcConversationResponsesDecoder,
+  NpcConversationResponsesKind,
+  NpcConversationSelectDecoder,
+  NpcConversationSelectKind,
+  NpcConversationStarter,
+  StartNpcConversationDecoder,
+  StartNpcConversationKind,
+  StopNpcConversationDecoder,
+  StopNpcConversationKind,
+} from './messages/game/npc/index.js';
+export type {
+  NpcConversationMessageData,
+  NpcConversationResponsesData,
+  NpcConversationSelectData,
+  NpcConversationStarterValue,
+  NpcStringId,
+  StartNpcConversationData,
+  StopNpcConversationData,
+} from './messages/game/npc/index.js';
+
+// ScriptContext types added by Feature 1 (waitForSui / respondToSui / talkTo /
+// selectDialog / endConversation / waitForNpcDialog live on ScriptContext).
+export type { NpcDialogPrompt } from './client/script/context.js';

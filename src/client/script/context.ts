@@ -16,8 +16,8 @@
 
 import { ByteStream } from '../../archive/byte-stream.js';
 import {
-  type AttributePair,
   AttributeListMessage,
+  type AttributePair,
 } from '../../messages/game/attribute-list-message.js';
 import {
   type ChatAvatarId,
@@ -27,6 +27,7 @@ import {
   ChatSendToRoom,
   chatAvatarId,
 } from '../../messages/game/chat/index.js';
+import { ChatSystemMessage } from '../../messages/game/chat/index.js';
 import { ClientOpenContainerMessage } from '../../messages/game/client-open-container.js';
 import {
   CLIENT_TO_AUTH_SERVER_FLAGS,
@@ -35,11 +36,13 @@ import {
   hashCommand,
   wrapAsObjControllerMessage,
 } from '../../messages/game/command-queue/index.js';
-import { LogoutMessage } from '../../messages/game/logout-message.js';
 import {
-  ObjectMenuSelectMessage,
-  RadialMenuTypes,
-} from '../../messages/game/object-menu-select-message.js';
+  type DraftSchematicsData,
+  DraftSchematicsKind,
+  type ManufactureSchematicData,
+  ManufactureSchematicKind,
+} from '../../messages/game/crafting/index.js';
+import { LogoutMessage } from '../../messages/game/logout-message.js';
 import {
   type MissionAbortData,
   MissionAbortDecoder,
@@ -49,8 +52,13 @@ import {
   MissionListRequestDecoder,
   MissionRemoveRequestDecoder,
 } from '../../messages/game/missions/index.js';
+import {
+  type NpcConversationMessageData,
+  NpcConversationMessageKind,
+  type NpcConversationResponsesData,
+  NpcConversationResponsesKind,
+} from '../../messages/game/npc/index.js';
 import { ObjControllerMessage } from '../../messages/game/obj-controller-message.js';
-import { _encodeObjectMenu } from '../../messages/game/obj-controller/object-menu-request.js';
 import {
   type CraftingExperimentData,
   CraftingExperimentDecoder,
@@ -65,13 +73,12 @@ import {
   type TeleportAckData,
   TeleportAckDecoder,
 } from '../../messages/game/obj-controller/index.js';
+import { _encodeObjectMenu } from '../../messages/game/obj-controller/object-menu-request.js';
 import {
-  type DraftSchematicsData,
-  DraftSchematicsKind,
-  type ManufactureSchematicData,
-  ManufactureSchematicKind,
-} from '../../messages/game/crafting/index.js';
-import { ChatSystemMessage } from '../../messages/game/chat/index.js';
+  ObjectMenuSelectMessage,
+  RadialMenuTypes,
+} from '../../messages/game/object-menu-select-message.js';
+import { SuiCreatePageMessage, SuiEventNotification } from '../../messages/game/sui/index.js';
 import {
   ResourceListForSurveyMessage,
   type ResourceListItem,
@@ -157,6 +164,21 @@ function classifySampleEvent(oob: string): SampleEventKind {
   if (/density_below/.test(t)) return 'density';
   if (/trace_amt/.test(t)) return 'trace';
   return 'other';
+}
+
+/**
+ * Paired NPC dialog state returned from `ctx.waitForNpcDialog()`. The server
+ * sends the prompt text and the option menu as TWO ObjController subtypes
+ * (CM_npcConversationMessage = 223 + CM_npcConversationResponses = 224); the
+ * scripting helper waits for both within a short window and bundles them here.
+ */
+export interface NpcDialogPrompt {
+  /** The player's NetworkId — i.e. the addressee of these conversation messages. */
+  playerId: NetworkId;
+  /** NPC's prompt text (Unicode). */
+  prompt: string;
+  /** Menu option strings (Unicode). Empty when the prompt is auto-advance. */
+  options: readonly string[];
 }
 
 /** Optional overrides for `ctx.say()` — directed chat, shout, mood, etc. */
@@ -723,6 +745,74 @@ export interface ScriptContext {
    * confirmation.
    */
   abortMission(missionId: NetworkId): void;
+
+  // --- SUI primitives ---
+
+  /**
+   * Wait for the next `SuiCreatePageMessage` from the server. SUI pages are
+   * dialogs the server opens on the client (banker / vendor / quest /
+   * list-picker). The page's widget tree is opaque bytes on the
+   * `pageData` field — the leading 4 bytes are the `pageId` (LE i32)
+   * which the client echoes back in `respondToSui`.
+   *
+   * Default timeout 8_000ms.
+   */
+  waitForSui(opts?: {
+    timeoutMs?: number;
+    predicate?: (m: SuiCreatePageMessage) => boolean;
+  }): Promise<SuiCreatePageMessage>;
+
+  /**
+   * Reply to an open SUI page. `pageId` is the integer carried in the
+   * server's `SuiCreatePageMessage.pageId`; `eventType` identifies which
+   * subscribed widget event fired (0 = the default OK / confirm); the
+   * optional `returnList` carries any widget-property values the server
+   * asked us to send back. Sends a `SuiEventNotification`.
+   */
+  respondToSui(pageId: number, eventType: number, returnList?: readonly string[]): void;
+
+  // --- NPC conversation primitives ---
+
+  /**
+   * Open an NPC conversation with `npcId`. Driven through the command queue
+   * (`useAbility('npcConversationStart', npcId, '<starter> <name>')`) because
+   * the underlying `CM_npcConversationStart` ObjController subtype is
+   * `allowFromClient=false` server-side — direct sends are logged as
+   * `HackAttempts` and the player is kicked.
+   *
+   * The server replies with a `CM_npcConversationMessage(223)` prompt + a
+   * `CM_npcConversationResponses(224)` option menu addressed to the player.
+   */
+  talkTo(npcId: NetworkId): void;
+
+  /**
+   * Pick option `index` from the current NPC conversation menu. Driven
+   * through the command queue (`useAbility('npcConversationSelect', 0n,
+   * String(index))`) for the same reason as `talkTo`: the underlying
+   * `CM_npcConversationSelect` subtype is gated `allowFromClient=false`.
+   */
+  selectDialog(index: number): void;
+
+  /**
+   * End the current NPC conversation. Driven through the command queue
+   * (`useAbility('npcConversationStop', 0n, '')`) for the same reason as
+   * `talkTo`. The server will push a `CM_npcConversationStop(222)` back
+   * with the NPC's farewell prose.
+   */
+  endConversation(): void;
+
+  /**
+   * Wait for the next NPC dialog prompt — pairs the server's
+   * `CM_npcConversationMessage(223)` prompt with its companion
+   * `CM_npcConversationResponses(224)` option menu and returns both in one
+   * `NpcDialogPrompt`. If the responses message arrives within `pairWindowMs`
+   * (default 250ms) it's included; otherwise `options` is `[]` (auto-advance
+   * prompt). Default timeout 8_000ms.
+   */
+  waitForNpcDialog(opts?: {
+    timeoutMs?: number;
+    pairWindowMs?: number;
+  }): Promise<NpcDialogPrompt>;
 }
 
 interface InternalContext extends ScriptContext {
@@ -870,16 +960,13 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
       // 3) Subscribe to future signals so subsequent server teleports
       //    (during the script's run) get ACKed automatically.
       if (state.teleportListenerUnsubscribe === null) {
-        state.teleportListenerUnsubscribe = opts.dispatcher.onMessage(
-          ObjControllerMessage,
-          (m) => {
-            if (m.message !== ObjControllerSubtypeIds.CM_netUpdateTransform) return;
-            if (m.networkId !== playerId) return;
-            if (m.decodedSubtype?.kind !== NetUpdateTransformKind) return;
-            const td = m.decodedSubtype.data as NetUpdateTransformData;
-            if (td.sequenceNumber < 0) ackSeq(td.sequenceNumber);
-          },
-        );
+        state.teleportListenerUnsubscribe = opts.dispatcher.onMessage(ObjControllerMessage, (m) => {
+          if (m.message !== ObjControllerSubtypeIds.CM_netUpdateTransform) return;
+          if (m.networkId !== playerId) return;
+          if (m.decodedSubtype?.kind !== NetUpdateTransformKind) return;
+          const td = m.decodedSubtype.data as NetUpdateTransformData;
+          if (td.sequenceNumber < 0) ackSeq(td.sequenceNumber);
+        });
       }
 
       // 4) Brief settle so the server processes the ACK before the next
@@ -1062,9 +1149,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
       return ctx.useAbility('selectDraftSchematic', 0n, String(schematicIndex));
     },
 
-    async waitForDraftSchematics(
-      waitOpts?: { timeoutMs?: number },
-    ): Promise<DraftSchematicsData> {
+    async waitForDraftSchematics(waitOpts?: { timeoutMs?: number }): Promise<DraftSchematicsData> {
       const timeoutMs = waitOpts?.timeoutMs ?? 8_000;
       const msg = await opts.dispatcher.waitFor(ObjControllerMessage, {
         timeoutMs,
@@ -1075,9 +1160,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
       return msg.decodedSubtype!.data as DraftSchematicsData;
     },
 
-    async waitForDraftSlots(
-      waitOpts?: { timeoutMs?: number },
-    ): Promise<ManufactureSchematicData> {
+    async waitForDraftSlots(waitOpts?: { timeoutMs?: number }): Promise<ManufactureSchematicData> {
       const timeoutMs = waitOpts?.timeoutMs ?? 8_000;
       const msg = await opts.dispatcher.waitFor(ObjControllerMessage, {
         timeoutMs,
@@ -1303,19 +1386,13 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
       const cur = ctx.position();
       // Use walkTo with a 2m offset; default tickMs/speed give us a quick send.
       const { walkTo: walkToImplLocal } = await import('./movement.js');
-      await walkToImplLocal(
-        ctx,
-        { x: cur.x + 2.5, z: cur.z + 2.5 },
-        { speed: 4, tickMs: 500 },
-      );
+      await walkToImplLocal(ctx, { x: cur.x + 2.5, z: cur.z + 2.5 }, { speed: 4, tickMs: 500 });
     },
 
-    async waitForSampleEvent(
-      sampleOpts?: {
-        timeoutMs?: number;
-        predicate?: (kind: SampleEventKind, raw: string) => boolean;
-      },
-    ): Promise<{ kind: SampleEventKind; raw: string }> {
+    async waitForSampleEvent(sampleOpts?: {
+      timeoutMs?: number;
+      predicate?: (kind: SampleEventKind, raw: string) => boolean;
+    }): Promise<{ kind: SampleEventKind; raw: string }> {
       const timeoutMs = sampleOpts?.timeoutMs ?? 60_000;
       const pred = sampleOpts?.predicate;
       const msg = await opts.dispatcher.waitFor(ChatSystemMessage, {
@@ -1460,6 +1537,83 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
         { kind: MissionAbortDecoder.kind, data },
       );
       ctx.send(wrapped);
+    },
+
+    // --- SUI primitives ---
+
+    waitForSui(suiOpts?: {
+      timeoutMs?: number;
+      predicate?: (m: SuiCreatePageMessage) => boolean;
+    }): Promise<SuiCreatePageMessage> {
+      const timeoutMs = suiOpts?.timeoutMs ?? 8_000;
+      return opts.dispatcher.waitFor(SuiCreatePageMessage, {
+        timeoutMs,
+        ...(suiOpts?.predicate !== undefined ? { predicate: suiOpts.predicate } : {}),
+      });
+    },
+
+    respondToSui(pageId: number, eventType: number, returnList?: readonly string[]): void {
+      ctx.send(new SuiEventNotification(pageId, eventType, returnList ?? []));
+    },
+
+    // --- NPC conversation primitives ---
+
+    talkTo(npcId: NetworkId): void {
+      // Command-queue path — direct CM_npcConversationStart is allowFromClient=false
+      // server-side (would log a HackAttempts entry and kick the player).
+      // params format from CommandCppFuncs.cpp:6689-6697 is "<starter> <conversationName>".
+      ctx.useAbility('npcConversationStart', npcId, '0 ');
+    },
+
+    selectDialog(index: number): void {
+      ctx.useAbility('npcConversationSelect', 0n, String(index));
+    },
+
+    endConversation(): void {
+      ctx.useAbility('npcConversationStop', 0n, '');
+    },
+
+    async waitForNpcDialog(npcOpts?: {
+      timeoutMs?: number;
+      pairWindowMs?: number;
+    }): Promise<NpcDialogPrompt> {
+      const timeoutMs = npcOpts?.timeoutMs ?? 8_000;
+      const pairWindowMs = npcOpts?.pairWindowMs ?? 250;
+      const playerId = opts.sceneStart.playerNetworkId;
+
+      const promptMsg = await opts.dispatcher.waitFor(ObjControllerMessage, {
+        timeoutMs,
+        predicate: (m) =>
+          m.message === ObjControllerSubtypeIds.CM_npcConversationMessage &&
+          m.networkId === playerId &&
+          m.decodedSubtype?.kind === NpcConversationMessageKind,
+      });
+      // The predicate above guarantees decodedSubtype is set with the right kind.
+      const promptSubtype = promptMsg.decodedSubtype;
+      if (promptSubtype === null) {
+        throw new Error('waitForNpcDialog: prompt has no decodedSubtype');
+      }
+      const promptData = promptSubtype.data as NpcConversationMessageData;
+
+      let options: readonly string[] = [];
+      try {
+        const responsesMsg = await opts.dispatcher.waitFor(ObjControllerMessage, {
+          timeoutMs: pairWindowMs,
+          predicate: (m) =>
+            m.message === ObjControllerSubtypeIds.CM_npcConversationResponses &&
+            m.networkId === playerId &&
+            m.decodedSubtype?.kind === NpcConversationResponsesKind,
+        });
+        const responsesSubtype = responsesMsg.decodedSubtype;
+        if (responsesSubtype !== null) {
+          const respData = responsesSubtype.data as NpcConversationResponsesData;
+          options = respData.responses;
+        }
+      } catch {
+        // No companion responses arrived in the pair window — leave options empty.
+      }
+
+      return { playerId, prompt: promptData.npcMessage, options };
     },
   };
 

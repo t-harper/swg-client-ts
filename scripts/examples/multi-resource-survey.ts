@@ -6,11 +6,17 @@
  * Example:
  *   pnpm exec tsx scripts/examples/multi-resource-survey.ts \
  *     --host=10.254.0.253 --user=ci-test --character=TsTest \
- *     --resources=inorganic_mineral,inorganic_chemical,flora --minutes=3
+ *     --resources=mineral,inorganic_chemical,flora_resources --minutes=3
+ *
+ * Each class is mapped to an in-inventory survey tool. For each class we
+ * fetch the available spawned resource type names ONCE (they don't change
+ * during a session) and then round-robin survey each type until the
+ * duration elapses.
  */
 
-import type { ScenarioFn, SurveyPoint } from '../../src/index.js';
+import type { NetworkId, ScenarioFn, SurveyPoint } from '../../src/index.js';
 import { durationMs, formatJson, makeLogger, parseCommonArgs, runScenario, usage } from './_lib.js';
+import { fetchTypeNamesForClass, findSurveyTools, pickToolForClass } from './_lib-survey.js';
 
 const SCRIPT = 'scripts/examples/multi-resource-survey.ts';
 
@@ -21,7 +27,7 @@ interface ScriptArgs {
 }
 
 function parseScriptArgs(extra: Map<string, string>): ScriptArgs {
-  const raw = extra.get('resources') ?? 'inorganic_mineral,inorganic_chemical,flora';
+  const raw = extra.get('resources') ?? 'mineral,inorganic_chemical,flora_resources';
   const resources = raw
     .split(',')
     .map((s) => s.trim())
@@ -39,35 +45,93 @@ function bestEfficiency(points: SurveyPoint[]): number {
   return best;
 }
 
+interface ClassPlan {
+  cls: string;
+  toolId: NetworkId | undefined;
+  typeNames: string[];
+  nextType: number;
+  status: 'ok' | 'no-tool' | 'no-types';
+}
+
 function buildScenario(
   args: ScriptArgs,
   totalMs: number,
   verbose: boolean,
-  byResource: Map<string, { surveys: number; bestEver: number; totalSamples: number }>,
+  byResource: Map<string, { surveys: number; bestEver: number; totalSamples: number; status: string }>,
 ): ScenarioFn {
   return async (ctx) => {
     const log = makeLogger('multi', verbose);
     log(`multi-resource: ${args.resources.length} classes, every ${args.intervalMs}ms`);
-    for (const r of args.resources) byResource.set(r, { surveys: 0, bestEver: 0, totalSamples: 0 });
+
+    await ctx.wait(2_000);
+    const tools = findSurveyTools(ctx);
+    log(`found ${tools.size} survey tool(s) in inventory`);
+
+    // Resolve tool + resource type list per class up front.
+    const plans: ClassPlan[] = [];
+    for (const cls of args.resources) {
+      const toolId = pickToolForClass(tools, cls);
+      if (toolId === undefined) {
+        byResource.set(cls, { surveys: 0, bestEver: 0, totalSamples: 0, status: 'no-tool' });
+        plans.push({ cls, toolId: undefined, typeNames: [], nextType: 0, status: 'no-tool' });
+        log(`${cls}: no tool`);
+        continue;
+      }
+      const types = await fetchTypeNamesForClass(ctx, tools, cls, { timeoutMs: args.timeoutMs });
+      if (types === null || types.length === 0) {
+        byResource.set(cls, { surveys: 0, bestEver: 0, totalSamples: 0, status: 'no-types' });
+        plans.push({ cls, toolId, typeNames: [], nextType: 0, status: 'no-types' });
+        log(`${cls}: no resources spawned`);
+        continue;
+      }
+      byResource.set(cls, { surveys: 0, bestEver: 0, totalSamples: 0, status: 'ok' });
+      plans.push({
+        cls,
+        toolId,
+        typeNames: types.map((t) => t.resourceName),
+        nextType: 0,
+        status: 'ok',
+      });
+      log(`${cls}: ${types.length} type(s) (${types.slice(0, 3).map((t) => t.resourceName).join(', ')}...)`);
+    }
+
+    // Round-robin classes; within each class, round-robin its types.
+    const eligible = plans.filter((p) => p.status === 'ok' && p.toolId !== undefined);
+    if (eligible.length === 0) {
+      log('no eligible classes to survey — bailing');
+      await ctx.logout();
+      return;
+    }
 
     const deadline = Date.now() + totalMs;
     let n = 0;
     while (Date.now() < deadline) {
-      const resource = args.resources[n % args.resources.length];
-      if (resource === undefined) break;
-      ctx.survey(resource);
+      const plan = eligible[n % eligible.length];
+      if (plan === undefined) break;
+      const type = plan.typeNames[plan.nextType % plan.typeNames.length];
+      plan.nextType++;
+      if (type === undefined) {
+        n++;
+        continue;
+      }
+      const toolId = plan.toolId;
+      if (toolId === undefined) {
+        n++;
+        continue;
+      }
+      ctx.survey(toolId, type);
       try {
         const r = await ctx.waitForSurvey({ timeoutMs: args.timeoutMs });
-        const stat = byResource.get(resource);
+        const stat = byResource.get(plan.cls);
         if (stat !== undefined) {
           stat.surveys++;
           stat.totalSamples += r.points.length;
           const best = bestEfficiency(r.points);
           if (best > stat.bestEver) stat.bestEver = best;
         }
-        log(`${resource} best=${bestEfficiency(r.points).toFixed(3)}`);
+        log(`${plan.cls}/${type} best=${bestEfficiency(r.points).toFixed(3)}`);
       } catch {
-        log(`${resource} timeout`);
+        log(`${plan.cls}/${type} timeout`);
       }
       n++;
       await ctx.wait(args.intervalMs);
@@ -81,7 +145,7 @@ async function main(): Promise<number> {
   const args = parseCommonArgs(process.argv.slice(2));
   if (args.help) {
     usage(SCRIPT, 'Cycle through resource classes, surveying the current spot.', [
-      '  --resources=A,B,C        comma-separated resource classes',
+      '  --resources=A,B,C        comma-separated resource classes (default mineral,inorganic_chemical,flora_resources)',
       '  --interval-ms=N          ms between surveys (default 3000)',
       '  --timeout-ms=N           survey response timeout (default 8000)',
     ]);
@@ -89,7 +153,10 @@ async function main(): Promise<number> {
   }
   const script = parseScriptArgs(args.extra);
   const totalMs = durationMs(args.minutes);
-  const byResource = new Map<string, { surveys: number; bestEver: number; totalSamples: number }>();
+  const byResource = new Map<
+    string,
+    { surveys: number; bestEver: number; totalSamples: number; status: string }
+  >();
   const scenario = buildScenario(script, totalMs, args.verbose, byResource);
   const { summary } = await runScenario(args, scenario);
   summary.extra = {

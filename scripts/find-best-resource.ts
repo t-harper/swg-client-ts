@@ -47,13 +47,112 @@
  */
 
 import {
+  buildContainerIndex,
   Fleet,
   type FleetClientConfig,
+  type NetworkId,
   ResourceListForSurveyMessage,
   type ScenarioFn,
   type ScriptContext,
   type SurveyPoint,
+  type TranscriptEvent,
 } from '../src/index.js';
+
+// ---------------------------------------------------------------------------
+// Inline survey-tool helpers (same logic as scripts/examples/_lib-survey.ts;
+// duplicated here so this script has no cross-directory imports).
+// ---------------------------------------------------------------------------
+
+const TOOL_TEMPLATE_TO_CLASSES: Array<{ pattern: RegExp; classes: string[] }> = [
+  { pattern: /survey_tool_all\b/, classes: ['*'] },
+  { pattern: /survey_tool_mineral/, classes: ['mineral'] },
+  { pattern: /survey_tool_inorganic/, classes: ['inorganic_chemical'] },
+  { pattern: /survey_tool_organic/, classes: ['organic_chemical'] },
+  { pattern: /survey_tool_lumber/, classes: ['flora_resources'] },
+  { pattern: /survey_tool_gas/, classes: ['gas'] },
+  { pattern: /survey_tool_liquid/, classes: ['water'] },
+  { pattern: /survey_tool_moisture/, classes: ['water'] },
+  { pattern: /survey_tool_geo/, classes: ['geothermal_energy'] },
+  { pattern: /survey_tool_solar/, classes: ['solar_energy'] },
+  { pattern: /survey_tool_wind/, classes: ['wind_energy'] },
+];
+
+function findSurveyTools(ctx: ScriptContext): Map<string, NetworkId> {
+  const result = new Map<string, NetworkId>();
+  const transcriptRef = { transcript: ctx.dispatcher.transcript };
+  const index = buildContainerIndex(transcriptRef as { transcript: TranscriptEvent[] });
+  const visited = new Set<string>();
+  const queue: NetworkId[] = [ctx.sceneStart.playerNetworkId];
+  while (queue.length > 0) {
+    const parent = queue.shift();
+    if (parent === undefined) continue;
+    const key = parent.toString();
+    if (visited.has(key)) continue;
+    visited.add(key);
+    const children = index.get(parent) ?? [];
+    for (const child of children) {
+      const candidates = [child.templateName ?? '', child.name ?? ''];
+      for (const text of candidates) {
+        if (text === '') continue;
+        let matched = false;
+        for (const { pattern, classes } of TOOL_TEMPLATE_TO_CLASSES) {
+          if (pattern.test(text)) {
+            for (const cls of classes) {
+              if (!result.has(cls)) result.set(cls, child.networkId);
+            }
+            matched = true;
+            break;
+          }
+        }
+        if (matched) break;
+      }
+      queue.push(child.networkId);
+    }
+  }
+  return result;
+}
+
+function normalizeClass(cls: string): string {
+  switch (cls) {
+    case 'inorganic_mineral':
+    case 'mineral':
+      return 'mineral';
+    case 'inorganic_chemical':
+    case 'chemical':
+      return 'inorganic_chemical';
+    case 'organic_chemical':
+      return 'organic_chemical';
+    case 'flora':
+    case 'flora_resources':
+    case 'lumber':
+      return 'flora_resources';
+    case 'gas':
+      return 'gas';
+    case 'water':
+    case 'liquid':
+    case 'moisture':
+      return 'water';
+    case 'geothermal':
+    case 'geothermal_energy':
+      return 'geothermal_energy';
+    case 'solar':
+    case 'solar_energy':
+      return 'solar_energy';
+    case 'wind':
+    case 'wind_energy':
+      return 'wind_energy';
+    default:
+      return cls;
+  }
+}
+
+function pickToolForClass(
+  tools: Map<string, NetworkId>,
+  resourceClass: string,
+): NetworkId | undefined {
+  const cls = normalizeClass(resourceClass);
+  return tools.get(cls) ?? tools.get('*');
+}
 
 interface Args {
   host: string;
@@ -200,13 +299,18 @@ function generateGridSlices(opts: {
  * Run a survey at the script context's current position. Returns the raw
  * sample points the server emitted, or `null` if the survey response timed
  * out (typically: the character lacks a survey tool of the matching type).
+ *
+ * `toolId` is the survey-tool NetworkId discovered via `findSurveyTools()`,
+ * and `resourceTypeName` is a SPECIFIC spawned resource name (e.g.
+ * "Resotine") from `ctx.fetchSurveyResources(toolId)`.
  */
 async function surveyHere(
   ctx: ScriptContext,
-  resourceClass: string,
+  toolId: NetworkId,
+  resourceTypeName: string,
   timeoutMs: number,
 ): Promise<SurveyPoint[] | null> {
-  ctx.survey(resourceClass);
+  ctx.survey(toolId, resourceTypeName);
   try {
     const res = await ctx.waitForSurvey({ timeoutMs });
     return res.points;
@@ -244,6 +348,33 @@ function makeProspectScenario(opts: {
     // Small stagger so launches don't all hit the server at the same ms.
     await ctx.wait(500);
     ctx.changePosture('standing');
+
+    // Discover the survey tool for this bot's class. The character must
+    // already hold the appropriate survey tool — we do NOT craft one.
+    const tools = findSurveyTools(ctx);
+    const toolId = pickToolForClass(tools, opts.resourceClass);
+    if (toolId === undefined) {
+      opts.log(`no survey tool for class ${opts.resourceClass} (have: ${[...tools.keys()].join(',')}) — bot ${opts.bot} bailing`);
+      return;
+    }
+    opts.log(`tool ${toolId} for class ${opts.resourceClass}`);
+
+    // Fetch the spawned resource type names ONCE; they don't change in a session.
+    // Round-robin through them per survey so we sample every resource available.
+    let resourceTypeNames: string[];
+    try {
+      const list = await ctx.fetchSurveyResources(toolId, { timeoutMs: 8_000 });
+      resourceTypeNames = list.map((r) => r.resourceName);
+    } catch {
+      opts.log(`fetchSurveyResources timeout (tool may lack VAR_SURVEY_CLASS) — bot ${opts.bot} bailing`);
+      return;
+    }
+    if (resourceTypeNames.length === 0) {
+      opts.log(`no resources spawned for ${opts.resourceClass} — bot ${opts.bot} bailing`);
+      return;
+    }
+    opts.log(`${resourceTypeNames.length} resource type(s): ${resourceTypeNames.slice(0, 3).join(', ')}...`);
+    let typeIdx = 0;
 
     const spawn = ctx.sceneStart.startPosition;
 
@@ -284,9 +415,12 @@ function makeProspectScenario(opts: {
 
       // Brief settle so the server registers our position before survey.
       await ctx.wait(250);
-      opts.log(`survey at (${targetX.toFixed(1)}, ${targetZ.toFixed(1)})`);
+      const resourceTypeName = resourceTypeNames[typeIdx % resourceTypeNames.length] ?? resourceTypeNames[0];
+      typeIdx++;
+      if (resourceTypeName === undefined) continue;
+      opts.log(`survey at (${targetX.toFixed(1)}, ${targetZ.toFixed(1)}) type=${resourceTypeName}`);
 
-      const points = await surveyHere(ctx, opts.resourceClass, 5_000);
+      const points = await surveyHere(ctx, toolId, resourceTypeName, 5_000);
       if (points === null) {
         opts.log(`  no survey response (tool missing?)`);
         // Mark a missed-sample event but don't push a record.

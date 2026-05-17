@@ -12,11 +12,16 @@
  * Example:
  *   pnpm exec tsx scripts/examples/survey-walking-grid.ts \
  *     --host=10.254.0.253 --user=ci-test --character=TsTest \
- *     --grid=5 --step=20 --resource=inorganic_mineral --minutes=5
+ *     --grid=5 --step=20 --resource=mineral --minutes=5
+ *
+ * The character must hold a survey tool for the requested class (or the
+ * universal tool). The resource type names available at the spawn are
+ * fetched ONCE up front — at each cell we round-robin through them.
  */
 
-import type { ScenarioFn, SurveyPoint } from '../../src/index.js';
+import type { NetworkId, ScenarioFn, SurveyPoint } from '../../src/index.js';
 import { durationMs, formatJson, makeLogger, parseCommonArgs, runScenario, usage } from './_lib.js';
+import { fetchTypeNamesForClass, findSurveyTools, pickToolForClass } from './_lib-survey.js';
 
 const SCRIPT = 'scripts/examples/survey-walking-grid.ts';
 
@@ -31,7 +36,7 @@ interface ScriptArgs {
 
 function parseScriptArgs(extra: Map<string, string>): ScriptArgs {
   return {
-    resource: extra.get('resource') ?? 'inorganic_mineral',
+    resource: extra.get('resource') ?? 'mineral',
     grid: Number.parseInt(extra.get('grid') ?? '5', 10),
     step: Number.parseFloat(extra.get('step') ?? '20'),
     timeoutMs: Number.parseInt(extra.get('timeout-ms') ?? '8000', 10),
@@ -50,7 +55,8 @@ function buildScenario(
   args: ScriptArgs,
   totalMs: number,
   verbose: boolean,
-  cells: Array<{ ix: number; iz: number; x: number; z: number; best: number; samples: number }>,
+  cells: Array<{ ix: number; iz: number; x: number; z: number; best: number; samples: number; type: string }>,
+  meta: { toolFound: boolean; typesAvailable: string[]; status: string },
 ): ScenarioFn {
   return async (ctx) => {
     const log = makeLogger('grid', verbose);
@@ -58,7 +64,32 @@ function buildScenario(
     const half = (args.grid - 1) / 2;
     log(`grid ${args.grid}x${args.grid} step=${args.step}m resource=${args.resource}`);
 
+    await ctx.wait(2_000);
+    const tools = findSurveyTools(ctx);
+    log(`found ${tools.size} survey tool(s) in inventory`);
+    const toolId: NetworkId | undefined = pickToolForClass(tools, args.resource);
+    if (toolId === undefined) {
+      meta.status = 'no-tool';
+      log(`no survey tool for ${args.resource} — bailing`);
+      await ctx.logout();
+      return;
+    }
+    meta.toolFound = true;
+    const types = await fetchTypeNamesForClass(ctx, tools, args.resource, {
+      timeoutMs: args.timeoutMs,
+    });
+    if (types === null || types.length === 0) {
+      meta.status = 'no-types';
+      log(`resource list empty — bailing`);
+      await ctx.logout();
+      return;
+    }
+    meta.typesAvailable = types.map((t) => t.resourceName);
+    meta.status = 'ok';
+    log(`types available: ${meta.typesAvailable.slice(0, 3).join(', ')}...`);
+
     const deadline = Date.now() + totalMs;
+    let typeIdx = 0;
     outer: for (let iz = 0; iz < args.grid; iz++) {
       for (let ix = 0; ix < args.grid; ix++) {
         if (Date.now() >= deadline) break outer;
@@ -66,15 +97,18 @@ function buildScenario(
         const z = spawn.z + (iz - half) * args.step;
         await ctx.walkTo({ x, z }, { speed: args.speed });
         await ctx.wait(args.dwellMs);
-        ctx.survey(args.resource);
+        const t = types[typeIdx % types.length];
+        typeIdx++;
+        if (t === undefined) continue;
+        ctx.survey(toolId, t.resourceName);
         try {
           const r = await ctx.waitForSurvey({ timeoutMs: args.timeoutMs });
           const best = bestEfficiency(r.points);
-          cells.push({ ix, iz, x, z, best, samples: r.points.length });
-          log(`cell (${ix},${iz}) best=${best.toFixed(3)} samples=${r.points.length}`);
+          cells.push({ ix, iz, x, z, best, samples: r.points.length, type: t.resourceName });
+          log(`cell (${ix},${iz}) ${t.resourceName} best=${best.toFixed(3)} samples=${r.points.length}`);
         } catch {
-          cells.push({ ix, iz, x, z, best: -1, samples: 0 });
-          log(`cell (${ix},${iz}) timeout`);
+          cells.push({ ix, iz, x, z, best: -1, samples: 0, type: t.resourceName });
+          log(`cell (${ix},${iz}) ${t.resourceName} timeout`);
         }
       }
     }
@@ -87,7 +121,7 @@ async function main(): Promise<number> {
   const args = parseCommonArgs(process.argv.slice(2));
   if (args.help) {
     usage(SCRIPT, 'Walk a grid and survey at each cell.', [
-      '  --resource=NAME          resource class (default inorganic_mineral)',
+      '  --resource=NAME          resource class (default mineral)',
       '  --grid=N                 NxN grid of survey cells (default 5)',
       '  --step=N                 cell spacing in m (default 20)',
       '  --timeout-ms=N           survey response timeout (default 8000)',
@@ -105,8 +139,10 @@ async function main(): Promise<number> {
     z: number;
     best: number;
     samples: number;
+    type: string;
   }> = [];
-  const scenario = buildScenario(script, totalMs, args.verbose, cells);
+  const meta = { toolFound: false, typesAvailable: [] as string[], status: 'starting' };
+  const scenario = buildScenario(script, totalMs, args.verbose, cells, meta);
   const { summary } = await runScenario(args, scenario);
   const bestCell = cells.reduce((acc, c) => (c.best > acc.best ? c : acc), {
     ix: -1,
@@ -115,9 +151,13 @@ async function main(): Promise<number> {
     z: 0,
     best: -1,
     samples: 0,
+    type: '',
   });
   summary.extra = {
     ...script,
+    status: meta.status,
+    toolFound: meta.toolFound,
+    typesAvailable: meta.typesAvailable,
     cellsSurveyed: cells.length,
     bestCell,
     cellsTail: cells.slice(-10),

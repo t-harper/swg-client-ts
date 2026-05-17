@@ -4,8 +4,8 @@
  * sample point with the highest density; repeat. A toy concentration-finder.
  *
  * Each iteration:
- *   1. ctx.survey(resourceClass)
- *   2. waitForSurvey() — collect the radial sample (~25-49 points)
+ *   1. ctx.survey(toolId, resourceTypeName)
+ *   2. waitForSurvey() — collect the radial sample (~9 points)
  *   3. find the brightest sample, walk to its (x, z)
  *   4. dwell `dwell-ms` and repeat
  *
@@ -15,17 +15,23 @@
  * Example:
  *   pnpm exec tsx scripts/examples/gradient-ascent-survey.ts \
  *     --host=10.254.0.253 --user=ci-test --character=TsTest \
- *     --resource=inorganic_mineral --minutes=5 --dwell-ms=2000 --max-step=30
+ *     --resource=mineral --minutes=5 --dwell-ms=2000 --max-step=30
+ *
+ * If `--resource-type` is supplied we lock to that specific spawned name.
+ * Otherwise we use the FIRST resource type the tool advertises (so the
+ * gradient walk is stable across iterations).
  */
 
-import type { ScenarioFn } from '../../src/index.js';
+import type { NetworkId, ScenarioFn } from '../../src/index.js';
 import type { SurveyPoint } from '../../src/index.js';
 import { durationMs, formatJson, makeLogger, parseCommonArgs, runScenario, usage } from './_lib.js';
+import { fetchTypeNamesForClass, findSurveyTools, pickToolForClass } from './_lib-survey.js';
 
 const SCRIPT = 'scripts/examples/gradient-ascent-survey.ts';
 
 interface ScriptArgs {
   resource: string;
+  resourceType: string | undefined;
   dwellMs: number;
   maxStep: number;
   timeoutMs: number;
@@ -34,7 +40,8 @@ interface ScriptArgs {
 
 function parseScriptArgs(extra: Map<string, string>): ScriptArgs {
   return {
-    resource: extra.get('resource') ?? 'inorganic_mineral',
+    resource: extra.get('resource') ?? 'mineral',
+    resourceType: extra.get('resource-type'),
     dwellMs: Number.parseInt(extra.get('dwell-ms') ?? '2000', 10),
     maxStep: Number.parseFloat(extra.get('max-step') ?? '30'),
     timeoutMs: Number.parseInt(extra.get('survey-timeout-ms') ?? '8000', 10),
@@ -55,16 +62,51 @@ function buildScenario(
   totalMs: number,
   verbose: boolean,
   trail: Array<{ iter: number; x: number; z: number; density: number; samples: number }>,
+  meta: { status: string; resourceTypeUsed: string | null },
 ): ScenarioFn {
   return async (ctx) => {
     const log = makeLogger('grad', verbose);
     log(`gradient-ascent resource=${args.resource} max-step=${args.maxStep}`);
 
+    await ctx.wait(2_000);
+    const tools = findSurveyTools(ctx);
+    const toolId: NetworkId | undefined = pickToolForClass(tools, args.resource);
+    if (toolId === undefined) {
+      meta.status = 'no-tool';
+      log(`no survey tool for ${args.resource} — bailing`);
+      await ctx.logout();
+      return;
+    }
+    // Lock to a specific resource type so the gradient is meaningful
+    // (otherwise we'd hill-climb a different resource each iteration).
+    let resourceTypeName = args.resourceType;
+    if (resourceTypeName === undefined || resourceTypeName === '') {
+      const types = await fetchTypeNamesForClass(ctx, tools, args.resource, {
+        timeoutMs: args.timeoutMs,
+      });
+      if (types === null || types.length === 0) {
+        meta.status = 'no-types';
+        log(`resource list empty — bailing`);
+        await ctx.logout();
+        return;
+      }
+      const first = types[0];
+      if (first === undefined) {
+        meta.status = 'no-types';
+        await ctx.logout();
+        return;
+      }
+      resourceTypeName = first.resourceName;
+    }
+    meta.resourceTypeUsed = resourceTypeName;
+    meta.status = 'ok';
+    log(`hill-climbing for resource type "${resourceTypeName}"`);
+
     const deadline = Date.now() + totalMs;
     let iter = 0;
     let failures = 0;
     while (Date.now() < deadline) {
-      ctx.survey(args.resource);
+      ctx.survey(toolId, resourceTypeName);
       let result: { points: SurveyPoint[] };
       try {
         result = await ctx.waitForSurvey({ timeoutMs: args.timeoutMs });
@@ -119,7 +161,8 @@ async function main(): Promise<number> {
   const args = parseCommonArgs(process.argv.slice(2));
   if (args.help) {
     usage(SCRIPT, 'Hill-climb toward the densest sample in each survey radial.', [
-      '  --resource=NAME          resource class (default inorganic_mineral)',
+      '  --resource=NAME          resource class (default mineral)',
+      '  --resource-type=NAME     specific spawned resource (e.g. "Resotine"). Default: pick first available',
       '  --dwell-ms=N             dwell after each walk (default 2000)',
       '  --max-step=N             max walk distance per iteration in m (default 30)',
       '  --survey-timeout-ms=N    survey response timeout (default 8000)',
@@ -130,10 +173,13 @@ async function main(): Promise<number> {
   const script = parseScriptArgs(args.extra);
   const totalMs = durationMs(args.minutes);
   const trail: Array<{ iter: number; x: number; z: number; density: number; samples: number }> = [];
-  const scenario = buildScenario(script, totalMs, args.verbose, trail);
+  const meta = { status: 'starting', resourceTypeUsed: null as string | null };
+  const scenario = buildScenario(script, totalMs, args.verbose, trail, meta);
   const { summary } = await runScenario(args, scenario);
   summary.extra = {
     ...script,
+    status: meta.status,
+    resourceTypeUsed: meta.resourceTypeUsed,
     iterations: trail.length,
     bestDensity: trail.reduce((m, t) => Math.max(m, t.density), 0),
     trailTail: trail.slice(-10),

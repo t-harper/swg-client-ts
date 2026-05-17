@@ -37,6 +37,10 @@ import { ObjControllerMessage } from './game/obj-controller-message.js';
 import { SceneCreateObjectByCrc } from './game/scene-create-object-by-crc.js';
 import { SceneCreateObjectByName } from './game/scene-create-object-by-name.js';
 import { SceneEndBaselines } from './game/scene-end-baselines.js';
+import { SuiCreatePageMessage } from './game/sui/sui-create-page-message.js';
+import { SuiEventNotification } from './game/sui/sui-event-notification.js';
+import { SuiForceClosePage } from './game/sui/sui-force-close-page.js';
+import { SuiUpdatePageMessage } from './game/sui/sui-update-page-message.js';
 import { ResourceListForSurveyMessage } from './game/survey/resource-list-for-survey-message.js';
 import { SurveyMessage } from './game/survey/survey-message.js';
 import { UpdateContainmentMessage } from './game/update-containment-message.js';
@@ -78,11 +82,15 @@ const ALL_DECODERS = [
   SurveyMessage,
   ResourceListForSurveyMessage,
   PopulateMissionBrowserMessage,
+  SuiCreatePageMessage,
+  SuiUpdatePageMessage,
+  SuiForceClosePage,
+  SuiEventNotification,
 ];
 
 describe('message registration', () => {
-  it('exports 33 message classes', () => {
-    expect(ALL_DECODERS.length).toBe(33);
+  it('exports 37 message classes', () => {
+    expect(ALL_DECODERS.length).toBe(37);
   });
 
   it('every class has a non-empty messageName', () => {

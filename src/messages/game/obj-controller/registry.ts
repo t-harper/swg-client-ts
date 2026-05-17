@@ -205,6 +205,55 @@ export const ObjControllerSubtypeIds = {
   /** Client → server. Request a crafting session against a tool / station NetworkId. */
   CM_requestCraftingSession: 271,
   CM_secureTrade: 277,
+  /**
+   * Client → server. Open an NPC conversation with the target NetworkId.
+   * Trailer is `MessageQueueStartNpcConversation`: `[NetworkId npc][u8 starter]
+   * [stdString conversationName][u32 appearanceOverrideTemplateCrc]`. The
+   * server replies with CM_npcConversationMessage(223) for the NPC's first
+   * prompt + CM_npcConversationResponses(224) for the menu of options.
+   *
+   * NOTE: `allowFromClient=false` server-side — direct sends are logged as
+   * HackAttempts and the player is kicked. Use the command-queue path
+   * (`useAbility('npcConversationStart', ...)`) for client→server.
+   */
+  CM_npcConversationStart: 221,
+  /**
+   * Bidirectional. End an NPC conversation. Trailer is
+   * `MessageQueueStopNpcConversation`: `[NetworkId npc][StringId finalMessageId]
+   * [UnicodeString finalMessageProse][UnicodeString finalResponse]`. The
+   * client can send a minimal stop (just the npc id with empty StringId /
+   * empty strings) to end its side; the server pushes a populated version
+   * with the NPC's farewell when the conversation closes.
+   *
+   * NOTE: `allowFromClient=false` server-side; use the command-queue path
+   * (`useAbility('npcConversationStop', ...)`) for client→server.
+   */
+  CM_npcConversationStop: 222,
+  /**
+   * Server → client. The NPC's current prompt line. Trailer is
+   * `MessageQueueNpcConversationMessage`: `[UnicodeString npcMessage]`.
+   * Always paired with a follow-up CM_npcConversationResponses for the
+   * option menu.
+   */
+  CM_npcConversationMessage: 223,
+  /**
+   * Server → client. The list of dialog options the player can pick.
+   * Trailer is `MessageQueueStringList`: `[u8 count][UnicodeString]*count`.
+   * Shared archive — same wire layout reused for other CM ids; here it's
+   * specifically the conversation responses.
+   */
+  CM_npcConversationResponses: 224,
+  /**
+   * Client → server. Pick option N from the current conversation menu.
+   * The response index is carried in the parent ObjControllerMessage's
+   * `value` field (cast int → f32 → int server-side). The trailer is
+   * EMPTY — the C++ registers `packNothing` / `unpackNothing` for this
+   * subtype.
+   *
+   * NOTE: `allowFromClient=false` server-side; use the command-queue path
+   * (`useAbility('npcConversationSelect', 0n, String(index))`) for client→server.
+   */
+  CM_npcConversationSelect: 225,
   CM_setPosture: 305,
   CM_combatSpam: 308,
   CM_sitOnObject: 315,

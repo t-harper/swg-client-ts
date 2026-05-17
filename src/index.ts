@@ -320,3 +320,41 @@ export type {
   EmergencyDismountData,
 } from './messages/game/obj-controller/index.js';
 export { rideVehicle } from './scenarios/index.js';
+
+// =============================================================================
+// SUI + NPC conversation (Feature 1)
+// =============================================================================
+export {
+  SuiCreatePageMessage,
+  SuiCreatePageMessageDecoder,
+  SuiEventNotification,
+  SuiEventNotificationDecoder,
+  SuiForceClosePage,
+  SuiForceClosePageDecoder,
+  SuiUpdatePageMessage,
+  SuiUpdatePageMessageDecoder,
+} from './messages/game/sui/index.js';
+export {
+  EMPTY_NPC_STRING_ID,
+  NpcConversationMessageDecoder,
+  NpcConversationMessageKind,
+  NpcConversationResponsesDecoder,
+  NpcConversationResponsesKind,
+  NpcConversationSelectDecoder,
+  NpcConversationSelectKind,
+  NpcConversationStarter,
+  StartNpcConversationDecoder,
+  StartNpcConversationKind,
+  StopNpcConversationDecoder,
+  StopNpcConversationKind,
+} from './messages/game/npc/index.js';
+export type {
+  NpcConversationMessageData,
+  NpcConversationResponsesData,
+  NpcConversationSelectData,
+  NpcConversationStarterValue,
+  NpcStringId,
+  StartNpcConversationData,
+  StopNpcConversationData,
+} from './messages/game/npc/index.js';
+export type { NpcDialogPrompt } from './client/script/context.js';

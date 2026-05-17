@@ -96,6 +96,14 @@ Declared in `src/client/script/context.ts`.
 | `clearCraftingSlot(slotIndex, targetContainer?)` | `CM_emptySchematicSlotMessage` |
 | `craftExperiment([{ attribute, points }], { coreLevel? })` | `CM_experimentMessage`; server responds via `CM_experimentResult` (275) |
 | `finishCrafting(toolId, { realPrototype? })` | `useAbility('createPrototype', toolId, '<seq> <real>')` |
+| **SUI dialogs** | |
+| `waitForSui({ timeoutMs?, predicate? })` | Resolve to the next server-pushed `SuiCreatePageMessage` (default timeout 8s). Page widget tree is opaque bytes on `pageData`; the leading 4 bytes are the LE i32 `pageId`. |
+| `respondToSui(pageId, eventType, returnList?)` | Send a `SuiEventNotification` echoing the `pageId` + which subscribed widget event fired (`eventType`, 0 = default OK) + any property values the server asked us to send back (`returnList`, default `[]`). |
+| **NPC conversation** | |
+| `talkTo(npcId)` | Open a conversation with the NPC. Driven via `useAbility('npcConversationStart', npcId, '0 ')` — the underlying `CM_npcConversationStart` subtype is `allowFromClient=false` (would HackAttempt-kick the player). Server replies with `CM_npcConversationMessage(223)` + `CM_npcConversationResponses(224)` to the player's NetworkId. |
+| `waitForNpcDialog({ timeoutMs?, pairWindowMs? })` | Resolve to the next `NpcDialogPrompt` ({ playerId, prompt, options[] }). Waits for the prompt message, then waits `pairWindowMs` (default 250ms) for the companion responses menu. If responses don't arrive in window, `options` is `[]` (auto-advance prompt). Default outer timeout 8s. |
+| `selectDialog(index)` | Pick option N via `useAbility('npcConversationSelect', 0n, String(index))`. Same `allowFromClient=false` reason for using the command queue. |
+| `endConversation()` | Close via `useAbility('npcConversationStop', 0n, '')`. Server pushes a `CM_npcConversationStop(222)` back with the NPC's farewell. |
 | **Expectations** | |
 | `expectWithin(ctor, timeoutMs, { predicate?, soft? })` | Wait for inbound message; soft mode records `assertionFailures` instead of throwing |
 | `expectAbsent(ctor, windowMs, { predicate? })` | Assert nothing matching arrives in the window |

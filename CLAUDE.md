@@ -47,7 +47,7 @@ pnpm cli zone --host=10.254.0.253 --user=ci-test --character=TsTest
                                                    combat-attack, posture-cycle, survey,
                                                    group-trade, dwell)
                         ↑
-                src/messages/                  ← 35+ top-level + 25+ ObjController subtypes
+                src/messages/                  ← 37+ top-level + 30+ ObjController subtypes
                   login/         (8)           ← LoginClientId, LoginEnumCluster, ...
                   connection/    (10)          ← ClientIdMsg, EnumerateCharacterId, ...
                   game/          (12)          ← CmdStartScene, LogoutMessage,
@@ -58,9 +58,11 @@ pnpm cli zone --host=10.254.0.253 --user=ci-test --character=TsTest
                   game/survey/   (2)           ← SurveyMessage + ResourceListForSurveyMessage
                   game/missions/ (multi)       ← request list, accept, abort, remove
                   game/crafting/ (multi)       ← session + draft + slots + experimentation
-                  game/obj-controller/ (25+)   ← combat, movement (CM=113/241), teleport-ack,
+                  game/sui/      (4)           ← SuiCreatePageMessage + Update + ForceClose + EventNotification
+                  game/npc/      (5)           ← StartNpcConversation + Stop + Message + Responses + Select (all CM_npcConversation*)
+                  game/obj-controller/ (30+)   ← combat, movement (CM=113/241), teleport-ack,
                                                   posture, mood, chat, crafting, menus,
-                                                  group, trade, dance, tip, ...
+                                                  group, trade, dance, tip, npc-conversation, ...
                   base.ts + registry.ts        ← framing + CRC dispatch
                         ↑
                 src/soe/                       ← UDP transport
@@ -96,6 +98,8 @@ The client started as just `SwgClient.fullLifecycle()` and is now a full program
 | **Group + trade** | `ctx.useAbility('invite'|'join'|...)` + `ctx.tradeWith(otherId, { items?, credits? })` | Two-client coordination via Fleet — full SecureTrade handshake (9 top-level messages: BeginTrade / AddItem / RemoveItem / GiveMoney / AcceptTransaction / UnAcceptTransaction / VerifyTrade / TradeComplete / AbortTrade) wraps the `CM_secureTrade` ObjController. See `scripts/group-trade-demo.ts`. |
 | **Chat** | `ctx.say` / `tell` / `sendMail` / `sendToChannel` / `requestChannelList` | `say` uses the server-side `spatialChatInternal` CommandQueue command (the path the real Windows client uses) |
 | **Combat / posture / dance** | `attackTarget` / `useAbility` / `changePosture` / `startDance` | Posture cycling, dance/perform, combat queueing |
+| **SUI dialogs** | `ctx.waitForSui()` / `ctx.respondToSui(pageId, eventType, returnList?)` | Receive server-pushed SUI pages (`SuiCreatePageMessage` / `SuiUpdatePageMessage` / `SuiForceClosePage`) and reply with `SuiEventNotification`. Page widget tree is opaque bytes — the client can identify and respond without full widget decoding. |
+| **NPC conversation** | `ctx.talkTo(npcId)` / `ctx.waitForNpcDialog()` / `ctx.selectDialog(n)` / `ctx.endConversation()` | Start/respond/stop handshake via command-queue (`npcConversationStart/Select/Stop` — direct subtypes are `allowFromClient=false`). `waitForNpcDialog` pairs the server's `CM_npcConversationMessage(223)` prompt with its `CM_npcConversationResponses(224)` option menu into one `NpcDialogPrompt`. |
 | **Bundled scenarios** | `src/scenarios/` + CLI `--script=<name>` | `walk-line`, `walk-circle`, `open-inventory`, `combat-attack`, `posture-cycle`, `survey`, `group-trade`, `dwell` |
 | **Example scripts** | `scripts/examples/` | ~25 ready-to-run scripts: walking patterns, surveying loops, chat/mail bots, parade/dance, crafting soak, gradient-ascent surveys, etc. |
 | **Fleet (multi-client)** | `Fleet.run([cfgs], opts)` + CLI `swarm` | N independent clients in parallel with staggered launches + concurrency caps + per-message-name summary |
@@ -285,6 +289,7 @@ Individual stage drivers and the `dispatcher` are also exported as types — use
 - Replay compares `recv` shape, not bytes. Live servers emit non-deterministic neighbor updates between runs, so strict order-equality (`--compare=names`) often surfaces "missing"/"unexpected" diffs even on a clean replay. Use `--compare=count` (multiset) for a more permissive check.
 - Only `swg`–`swg5` accounts can create characters (admin allowlist at `dsrc/.../datatables/admin/stella_admin.tab`). Other accounts will see `canCreateRegularCharacter=false` and `ClientCreateCharacterFailed`. Fleet tests using arbitrary `--user-prefix` accounts therefore need the character pool or pre-existing characters.
 - **Crafting + sampling stale-state**: server-side `m_craftingStage` and `surveying.takingSamples` persist on the player/tool across disconnects. If a previous session ended mid-flow, the next `requestCraftingSession` / `requestcoresample` succeeds but the follow-up step (`selectDraftSchematic` → `requestDraftSlots`, or sample-loop tick) silently fails until a fresh tool is used or the cluster is restarted. `craft-a-tool.ts` tries multiple tools as a workaround; ultimately a `podman restart swg-server` is the most reliable reset.
+- **SUI page widget tree is opaque bytes**. `SuiCreatePageMessage.pageData` / `SuiUpdatePageMessage.pageData` carry the full `SuiPageData` blob (`AutoDeltaVariable<SuiPageData>` → packed `[i32 pageId][stdString pageName][SuiCommand[]][NetworkId associatedObjectId][Vector associatedLocation][f32 maxRangeFromObject]`) as a `Uint8Array`. The leading 4 bytes are the `pageId` (LE i32) — sufficient for the client to identify a page and round-trip it back via `SuiEventNotification`. Decoding individual widgets / `SuiCommand` variants is out of scope; add per-command decoders to `src/messages/game/sui/` if/when needed.
 - **NGE profession picker maps to a legacy wire string + skillTemplate**: the Windows client's "Domestics Trader" picker sends `profession="social_entertainer"` + `skillTemplate="trader_0a"` + `workingSkill="class_domestics_phase1_novice"` on the wire. Only 7 legacy profession strings (`crafting_artisan`/`combat_brawler`/`social_entertainer`/`combat_marksman`/`science_medic`/`outdoors_scout`/`jedi`) are accepted by `PlayerCreationManager`. NGE class items come from the NPE roadmap (driven by skillTemplate), not from character creation. `connection-stage.ts` `ClientCreateCharacterOptions` accepts both `profession` and `skillTemplate`/`workingSkill`.
 
 ## When you next sit down

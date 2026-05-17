@@ -8,6 +8,8 @@ import '../crafting/index.js';
 // Side-effect: the mission-folder subtypes register through this registry too
 // (CM_missionListRequest, CM_missionAcceptRequest, etc.).
 import '../missions/index.js';
+// Side-effect: the npc-folder subtypes register here too (CM_npcConversation*).
+import '../npc/index.js';
 import { encodeMessage, parseHeader } from '../../base.js';
 import { messageRegistry } from '../../registry.js';
 import { ObjControllerMessage } from '../obj-controller-message.js';

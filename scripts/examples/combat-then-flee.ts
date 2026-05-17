@@ -39,6 +39,12 @@ interface ScriptArgs {
   fleeDistance: number;
   restMs: number;
   speed: number;
+  /**
+   * Cut the combat burst short if `ctx.character.health.current` drops below
+   * this fraction of `health.max` (default 0.25 = 25% HP). Set to 0 to
+   * disable the early-bail check.
+   */
+  healthBailFraction: number;
 }
 
 function parseScriptArgs(extra: Map<string, string>): ScriptArgs {
@@ -50,6 +56,7 @@ function parseScriptArgs(extra: Map<string, string>): ScriptArgs {
     fleeDistance: Number.parseFloat(extra.get('flee-distance') ?? '15'),
     restMs: Number.parseInt(extra.get('rest-ms') ?? '2000', 10),
     speed: Number.parseFloat(extra.get('speed') ?? '5'),
+    healthBailFraction: Number.parseFloat(extra.get('health-bail') ?? '0.25'),
   };
 }
 
@@ -92,13 +99,28 @@ function buildScenario(args: ScriptArgs, totalMs: number, verbose: boolean): Sce
         log(`cycle ${cycle}: engaging 0x${targetId.toString(16)} — ${tplLabel}`);
       }
 
-      // 2. Attack burst
+      // 2. Attack burst (with optional early-bail when HP drops low)
       const cbtDeadline = Math.min(Date.now() + args.combatMs, deadline);
+      let earlyBailed = false;
       while (Date.now() < cbtDeadline) {
         ctx.attackTarget(targetId);
         attacks++;
         await ctx.wait(args.tickMs);
+        // Live HAM check: bail early if health drops below threshold. The
+        // `ctx.character.health` view stays current via CREO p6 deltas the
+        // server pushes on every damage tick.
+        if (args.healthBailFraction > 0) {
+          const h = ctx.character.health;
+          if (h.max > 0 && h.current / h.max < args.healthBailFraction) {
+            log(
+              `cycle ${cycle}: bailing early — health ${h.current}/${h.max} < ${(args.healthBailFraction * 100).toFixed(0)}%`,
+            );
+            earlyBailed = true;
+            break;
+          }
+        }
       }
+      void earlyBailed;
       if (Date.now() >= deadline) break;
       // 3. Flee
       const angle = Math.random() * 2 * Math.PI;
@@ -129,6 +151,8 @@ async function main(): Promise<number> {
       '  --flee-distance=N        flee distance in m (default 15)',
       '  --rest-ms=N              rest after flee in ms (default 2000)',
       '  --speed=N                walk speed (default 5)',
+      '  --health-bail=F          flee early when health.current / health.max',
+      '                           drops below this fraction (default 0.25)',
     ]);
     return 0;
   }

@@ -19,6 +19,8 @@ import {
   AttributeListMessage,
   type AttributePair,
 } from '../../messages/game/attribute-list-message.js';
+import { BaselinePackageIds, ObjectTypeTags } from '../../messages/game/baselines/registry.js';
+import type { TangibleObjectSharedNpBaseline } from '../../messages/game/baselines/tangible-object-baseline-6.js';
 import {
   type ChatAvatarId,
   ChatInstantMessageToCharacter,
@@ -38,8 +40,8 @@ import {
 } from '../../messages/game/command-queue/index.js';
 import {
   AdvancedSearchMatchAllAny,
-  AuctionLocationSearch,
   type AuctionListing,
+  AuctionLocationSearch,
   AuctionQueryHeadersMessage,
   AuctionQueryHeadersResponseMessage,
   AuctionResult,
@@ -76,16 +78,6 @@ import {
   type NpcConversationResponsesData,
   NpcConversationResponsesKind,
 } from '../../messages/game/npc/index.js';
-import {
-  AbortTradeMessage,
-  AcceptTransactionMessage,
-  AddItemMessage,
-  BeginTradeMessage,
-  BeginVerificationMessage,
-  GiveMoneyMessage,
-  TradeCompleteMessage,
-  VerifyTradeMessage,
-} from '../../messages/game/trade/index.js';
 import { ObjControllerMessage } from '../../messages/game/obj-controller-message.js';
 import {
   type CraftingExperimentData,
@@ -100,8 +92,8 @@ import {
   SpatialChatType,
   type TeleportAckData,
   TeleportAckDecoder,
-  type TradeStartData,
   TradeMessageId,
+  type TradeStartData,
   TradeStartDecoder,
   TradeStartKind,
 } from '../../messages/game/obj-controller/index.js';
@@ -117,15 +109,22 @@ import {
   SurveyMessage,
   type SurveyPoint,
 } from '../../messages/game/survey/index.js';
+import {
+  AbortTradeMessage,
+  AcceptTransactionMessage,
+  AddItemMessage,
+  BeginTradeMessage,
+  BeginVerificationMessage,
+  GiveMoneyMessage,
+  TradeCompleteMessage,
+  VerifyTradeMessage,
+} from '../../messages/game/trade/index.js';
 import type { GameNetworkMessage } from '../../messages/interface.js';
 import type { NetworkId, SceneStart, Vector3 } from '../../types.js';
+import type { CharacterSheet } from '../character-sheet.js';
+import { createCharacterSheet } from '../character-sheet.js';
 import type { MessageDispatcher } from '../dispatcher.js';
 import type { WorldModel, WorldObject } from '../world-model.js';
-import {
-  BaselinePackageIds,
-  ObjectTypeTags,
-} from '../../messages/game/baselines/registry.js';
-import type { TangibleObjectSharedNpBaseline } from '../../messages/game/baselines/tangible-object-baseline-6.js';
 import {
   type ExpectOptions,
   expectAbsent as expectAbsentImpl,
@@ -401,6 +400,26 @@ export interface ScriptContext {
    * reference to a `WorldObject` is safe: it's mutated in place.
    */
   readonly world: WorldModel;
+  /**
+   * Live, always-current view of the player's character state — name,
+   * level, HAM, posture, faction, bank/cash, skills, played time, etc.
+   *
+   * Reads are O(1): the underlying state is updated as CREO + PLAY
+   * baselines and deltas arrive on the dispatcher. Use `ctx.character.ready`
+   * to gate on "first CREO baseline received" before reading fields that
+   * default to 0/null.
+   *
+   * Convenience queries:
+   *   `ctx.character.health.current` / `.health.max` — current HAM bar
+   *   `ctx.character.cashBalance` / `.bankBalance`   — credits on hand vs in the bank
+   *   `ctx.character.posture === 'sitting'`          — posture state
+   *   `ctx.character.skills.includes('combat_brawler_master')` — skill check
+   *   `ctx.character.groupId !== null`               — in a group?
+   *
+   * For the post-hoc, hashable equivalent (used by reconnect tests), see
+   * `snapshot(lifecycleResult)`.
+   */
+  readonly character: CharacterSheet;
   /**
    * Find the nearest `WorldObject` matching `typeId` (one of `ObjectTypeTags`),
    * sorted by 2D distance from the player. Excludes the player itself by
@@ -1200,10 +1219,7 @@ export interface ScriptContext {
    * `AuctionDetails` from the next matching `GetAuctionDetailsResponse`.
    * Default timeout 8_000ms.
    */
-  getAuctionDetails(
-    auctionId: NetworkId,
-    opts?: { timeoutMs?: number },
-  ): Promise<AuctionDetails>;
+  getAuctionDetails(auctionId: NetworkId, opts?: { timeoutMs?: number }): Promise<AuctionDetails>;
 
   /**
    * Place a bid on a live auction. Fire-and-forget — sends
@@ -1245,6 +1261,8 @@ export interface ScriptContext {
 }
 
 interface InternalContext extends ScriptContext {
+  /** Detach handle for the character sheet's dispatcher subscriptions. */
+  readonly _characterSheetDetach: () => void;
   /** Tracking for the orchestrator. */
   readonly _state: {
     sendsCount: number;
@@ -1341,12 +1359,21 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     assertionFailures: [] as string[],
   };
 
+  const characterSheetHandle = createCharacterSheet({
+    dispatcher: opts.dispatcher,
+    playerNetworkId: opts.sceneStart.playerNetworkId,
+    world: opts.world,
+    templateName: opts.sceneStart.templateName,
+  });
+
   const ctx: InternalContext = {
     dispatcher: opts.dispatcher,
     sceneStart: opts.sceneStart,
     signal: opts.signal,
     world: opts.world,
+    character: characterSheetHandle.view,
     _state: state,
+    _characterSheetDetach: characterSheetHandle.detach,
 
     findNearest(
       typeId: number,
@@ -1357,8 +1384,8 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
       const maxR = findOpts?.maxRadiusM;
       const here = { x: state.pose.x, y: state.pose.y, z: state.pose.z };
       let best: WorldObject | undefined;
-      let bestD2 = Infinity;
-      const maxR2 = maxR !== undefined ? maxR * maxR : Infinity;
+      let bestD2 = Number.POSITIVE_INFINITY;
+      const maxR2 = maxR !== undefined ? maxR * maxR : Number.POSITIVE_INFINITY;
       for (const o of opts.world.byType(typeId)) {
         if (excludeSelf && o.id === selfId) continue;
         const dx = o.position.x - here.x;
@@ -1378,8 +1405,8 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
       const maxR = findOpts?.maxRadiusM;
       const here = { x: state.pose.x, y: state.pose.y, z: state.pose.z };
       let best: WorldObject | undefined;
-      let bestD2 = Infinity;
-      const maxR2 = maxR !== undefined ? maxR * maxR : Infinity;
+      let bestD2 = Number.POSITIVE_INFINITY;
+      const maxR2 = maxR !== undefined ? maxR * maxR : Number.POSITIVE_INFINITY;
       for (const o of opts.world.byType(ObjectTypeTags.CREO)) {
         if (o.id === selfId) continue;
         const tanoNp = o.baselines.get(BaselinePackageIds.SHARED_NP) as
@@ -2197,10 +2224,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
 
     // --- SecureTrade handshake ---
 
-    async tradeWith(
-      otherId: NetworkId,
-      tradeOpts?: TradeWithOptions,
-    ): Promise<TradeWithResult> {
+    async tradeWith(otherId: NetworkId, tradeOpts?: TradeWithOptions): Promise<TradeWithResult> {
       const playerId = opts.sceneStart.playerNetworkId;
       const beginTimeoutMs = tradeOpts?.beginTimeoutMs ?? 15_000;
       const acceptTimeoutMs = tradeOpts?.acceptTimeoutMs ?? 15_000;
@@ -2240,7 +2264,8 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
       const beginTimeoutMs = acceptOpts?.beginTimeoutMs ?? 15_000;
       const acceptTimeoutMs = acceptOpts?.acceptTimeoutMs ?? 15_000;
       const verifyTimeoutMs = acceptOpts?.verifyTimeoutMs ?? 15_000;
-      const totalBudget = requestTimeoutMs + beginTimeoutMs + acceptTimeoutMs + verifyTimeoutMs + 5_000;
+      const totalBudget =
+        requestTimeoutMs + beginTimeoutMs + acceptTimeoutMs + verifyTimeoutMs + 5_000;
 
       const abortPromise = opts.dispatcher.waitFor(AbortTradeMessage, { timeoutMs: totalBudget });
       abortPromise.catch(() => {});
@@ -2449,6 +2474,10 @@ export async function runScript(fn: ScenarioFn, ctx: ScriptContext): Promise<Scr
       internal._state.teleportListenerUnsubscribe();
       internal._state.teleportListenerUnsubscribe = null;
     }
+    // Detach the character sheet's dispatcher subscriptions. Safe to call
+    // multiple times — `detach()` empties the unsubscriber list on the
+    // first call.
+    internal._characterSheetDetach();
   }
   return {
     elapsedMs: Date.now() - t0,
@@ -2483,11 +2512,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-function sendTradeSubtype(
-  ctx: ScriptContext,
-  playerId: NetworkId,
-  data: TradeStartData,
-): void {
+function sendTradeSubtype(ctx: ScriptContext, playerId: NetworkId, data: TradeStartData): void {
   const stream = new ByteStream();
   TradeStartDecoder.encode(stream, data);
   ctx.send(

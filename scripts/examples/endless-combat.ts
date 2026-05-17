@@ -100,12 +100,25 @@ function buildScenario(args: ScriptArgs, totalMs: number, verbose: boolean): Sce
         }
         const seq = ctx.useAbility(args.ability, targetId);
         attacks++;
-        if (attacks % 10 === 0) log(`tick ${ticks} attacks=${attacks} seq=${seq}`);
+        if (attacks % 10 === 0) {
+          // Every 10th attack, log our HAM so the operator can see whether
+          // we're winning or losing the exchange. `ctx.character` updates
+          // from CREO p6 (SHARED_NP) totalAttributes deltas; readings are
+          // live with no extra wire traffic.
+          const h = ctx.character.health;
+          const a = ctx.character.action;
+          const m = ctx.character.mind;
+          log(
+            `tick ${ticks} attacks=${attacks} seq=${seq} ham=${h.current}/${h.max} | ${a.current}/${a.max} | ${m.current}/${m.max}`,
+          );
+        }
       }
 
       await ctx.wait(args.tickMs);
     }
-    log(`combat done: ticks=${ticks} attacks=${attacks} idleTicks=${misses}`);
+    log(
+      `combat done: ticks=${ticks} attacks=${attacks} idleTicks=${misses} (final ham: H=${ctx.character.health.current}/${ctx.character.health.max} A=${ctx.character.action.current}/${ctx.character.action.max} M=${ctx.character.mind.current}/${ctx.character.mind.max})`,
+    );
     await ctx.logout();
   };
 }

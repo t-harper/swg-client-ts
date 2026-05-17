@@ -98,6 +98,21 @@ export type {
   SampleEventKind,
 } from './client/script/context.js';
 export { decodeSampleOob } from './client/script/context.js';
+
+// Live character-sheet view (exposed as `ctx.character` during script runs).
+// Always-current view of the player's CREO + PLAY state — name, level, HAM,
+// posture, faction, bank/cash, skills, played time, etc. Updated from
+// baseline + delta wire traffic, no extra polling.
+export { createCharacterSheet, postureName } from './client/character-sheet.js';
+export type {
+  CharacterGroup,
+  CharacterGroupInviter,
+  CharacterSheet,
+  CharacterSheetHandle,
+  CharacterSheetOptions,
+  HamBar,
+  PostureName,
+} from './client/character-sheet.js';
 export type { WalkToOptions, CircleOptions, WalkToCellOptions } from './client/script/movement.js';
 export type { ExpectOptions } from './client/script/expectations.js';
 export { groupTradeScenario, scenarios } from './scenarios/index.js';

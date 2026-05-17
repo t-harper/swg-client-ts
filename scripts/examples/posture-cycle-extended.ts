@@ -36,15 +36,29 @@ function buildScenario(args: ScriptArgs, totalMs: number, verbose: boolean): Sce
 
     const deadline = Date.now() + totalMs;
     let i = 0;
+    let appliedCount = 0;
+    let mismatchCount = 0;
     while (Date.now() < deadline) {
       const pose = POSTURES[i % POSTURES.length];
       if (pose === undefined) break;
       ctx.changePosture(pose);
-      log(`${i}: ${pose}`);
       i++;
       await ctx.wait(args.dwellMs);
+      // After the dwell, the server should have applied the posture change
+      // and pushed a CREO p3 (SHARED) delta with the new m_posture value.
+      // `ctx.character.posture` reflects that delta in real time.
+      const observed = ctx.character.posture;
+      if (observed === pose) {
+        appliedCount++;
+        log(`${i}: requested=${pose} observed=${observed} ✓`);
+      } else {
+        mismatchCount++;
+        log(`${i}: requested=${pose} observed=${observed} (mismatch)`);
+      }
     }
-    log(`posture-cycle done: ${i} transitions`);
+    log(
+      `posture-cycle done: ${i} transitions (${appliedCount} confirmed, ${mismatchCount} mismatched)`,
+    );
     // End in standing for clean logout pose
     ctx.changePosture('standing');
     await ctx.wait(500);

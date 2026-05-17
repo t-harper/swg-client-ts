@@ -202,7 +202,12 @@ function buildScenario(args: ScriptArgs, totalMs: number, verbose: boolean): Sce
         ctx.openPlayerInventory();
       }
 
-      // 3. Dwell
+      // 3. Dwell — and log the current bank/cash balance for the visit. The
+      //    `ctx.character` view stays current via CREO p1 / PLAY p1 baselines
+      //    and deltas; no extra wire traffic required.
+      log(
+        `trip ${trips}: arrived — bank=${ctx.character.bankBalance} cash=${ctx.character.cashBalance} skillTitle=${ctx.character.skillTitle ?? '<unknown>'}`,
+      );
       await ctx.wait(args.dwellMs);
 
       // 4. Walk away
@@ -211,7 +216,9 @@ function buildScenario(args: ScriptArgs, totalMs: number, verbose: boolean): Sce
       }
       trips++;
     }
-    log(`done: ${trips} bank visits${usingOverride ? ' (override)' : ''}`);
+    log(
+      `done: ${trips} bank visits${usingOverride ? ' (override)' : ''} (final: bank=${ctx.character.bankBalance} cash=${ctx.character.cashBalance})`,
+    );
     await ctx.logout();
   };
 }

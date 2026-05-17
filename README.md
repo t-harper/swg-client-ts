@@ -68,6 +68,12 @@ What's available beyond the basic lifecycle:
   (`waitForSui` / `respondToSui`); drive NPC handshake (`talkTo` /
   `waitForNpcDialog` / `selectDialog` / `endConversation`). Pairs the
   server's two-subtype prompt + responses into one `NpcDialogPrompt`.
+  **`SuiCreatePageMessage.pageData` is now fully decoded** as a typed
+  `SuiPageData` struct with 9 `SuiCommand` variants
+  (`createWidget` / `setProperty` / `subscribeToEvent` / etc.) — no more
+  opaque bytes. Unknown command types wrap as
+  `{ type: 'unknown', ... }` for forward-compat; raw bytes still
+  available via `msg.pageDataBytes`.
 - **Vehicle / Mount / Pet** — `callVehicle`, `mount`, `dismount`, `storeVehicle`,
   `callPet`, `storePet`, `petCommand`. Movement primitives auto-clamp to
   the mounted speed cap. Bundled scenario: `ride-vehicle`.
@@ -84,12 +90,46 @@ What's available beyond the basic lifecycle:
   per-outcome error isolation, per-message-name summary stats.
 - **Capture + replay** — record any session as NDJSON, replay against a fresh
   server to detect wire-format drift.
+- **Raw SOE-layer byte capture (release/0.1)** — opt-in tee of pre-decrypt
+  UDP datagrams to NDJSON via `FullLifecycleOptions.rawCapture: { basePath }`.
+  Decode offline with `pnpm cli decode-raw --input=<file>` (replays through
+  the full SOE pipeline + GNM dispatch). For wire-drift debugging when the
+  message-layer transcript hides the issue.
 - **Character pool** — JSON-backed, lockfile-coordinated pool of pre-created
   characters for tests that need many accounts without leaking new chars per
   run.
-- **ObjController subtype decoders** — 28+ in-game message subtypes decoded
+- **ObjController subtype decoders** — 32+ in-game message subtypes decoded
   for assertion (combat, movement, posture, mood, chat, crafting, missions,
-  groups, trade, menus, NPC conversation, mount/dismount, etc.).
+  groups, trade, menus, NPC conversation, mount/dismount, building
+  permissions add/remove allowed/banned 403-406, etc.).
+- **Building + Cell baseline decoders (release/0.1)** —
+  `BuildingObjectSharedNp` + `CellObjectSharedNp` (variant 6) plus a
+  `buildBuildingCellIndex(transcript)` helper that walks the baseline
+  flood and returns `{ buildings: Map<oid, {name?, cells: oid[]}>,
+  cells: Map<oid, {buildingId, cellNumber, cellName?, isPublic?}> }`.
+  Prerequisite for cell-aware navigation scripts.
+- **SOE clock-sync + latency histograms (release/0.1)** — auto-reply to
+  inbound `ClockSync` (opcode 7) with `ClockReflect` (opcode 8), record
+  RTT samples. `SoeConnection.getLatencyStats()` returns
+  `{ samples, count, min, mean, p50, p95, p99, max }`;
+  `LifecycleResult.latency` surfaces the connection-stage socket's
+  distribution. Client also initiates a sync every 45s by default
+  (configurable via `clockSyncIntervalMs`; set to 0 to disable).
+- **City + permission admin bindings (release/0.1, build-city)** —
+  `scripts/build-city/admin-city.ts` (`adminCityInfo` /
+  `adminCityListCitizens` / `adminCityListStructures` /
+  `adminCityGetCityAtLocation`) and `admin-permissions.ts`
+  (`adminStructurePermissionAdd` / `Remove` / `List` for
+  ENTRY/ADMIN/HOPPER/BANNED). Phase 6 verify now uses these for
+  deterministic citizen + structure counts (was: heuristic transcript
+  scan). Resident scenarios use the permission helpers to grant Phase 4
+  guildExtras ENTRY+ADMIN on each host's just-placed house.
+- **StructureRecord tracking (release/0.1, build-city)** — `placeDeed()`
+  now scrapes the new structure's NetworkId from the post-placement
+  baseline flood (deed→building template heuristic) and returns it on
+  `PlaceDeedResult.structureOid`. The orchestrator persists per owner
+  to `state.structures` via an `onStructurePlaced` callback wired into
+  every placement scenario.
 
 See `docs/scripting.md` for the full `ScriptContext` API, `docs/wire-spec.md`
 for the byte-level reference, and `scripts/examples/` for ~25 ready-to-run
@@ -101,9 +141,9 @@ example scenarios.
 # Requires Node 24 (see .nvmrc) and pnpm
 nvm use
 pnpm install
-pnpm test                                              # ~1152 unit tests, no server needed
+pnpm test                                              # ~1395 unit tests, no server needed
 LIVE=1 pnpm test tests/integration/live-login.test.ts  # one live test
-LIVE=1 pnpm test                                       # full suite (~1177 tests)
+LIVE=1 pnpm test                                       # full suite (~1421 tests)
 
 # Plain zone-in
 pnpm cli zone --host=10.254.0.253 --user=ci-test --character=TsTest

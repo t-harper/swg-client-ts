@@ -33,6 +33,7 @@ export {
 export { SwgClient, lifecycleResultToJSON } from './client/swg-client.js';
 export type {
   FullLifecycleOptions,
+  FullLifecycleRawCaptureOptions,
   LifecycleLatency,
   LifecycleResult,
   SwgClientOptions,
@@ -50,6 +51,26 @@ export {
   parseClockSync,
   summarizeLatency,
 } from './soe/clock-sync.js';
+// Raw SOE-byte capture (pre-decrypt). For drift debugging when the
+// GameNetworkMessage transcript hides the issue.
+export type { RawCaptureOptions } from './soe/interface.js';
+export type {
+  RawCaptureFrame,
+  RawCaptureMeta,
+  RawCaptureSession,
+} from './soe/raw-capture-io.js';
+export {
+  parseRawCapture,
+  readRawCapture,
+  serializeRawCapture,
+  writeRawCapture,
+} from './soe/raw-capture-io.js';
+export { OfflineSoeDriver, decodeRawFrames } from './soe/raw-capture-decode.js';
+export type {
+  DecodedAppMessage,
+  DecodedFrame,
+  DecodedPacketDescription,
+} from './soe/raw-capture-decode.js';
 export type { TranscriptEvent } from './client/dispatcher.js';
 export type { LoginStageResult, LoginStageOptions } from './client/login-stage.js';
 export type {

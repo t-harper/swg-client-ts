@@ -27,6 +27,7 @@
  * or fragment headers.
  */
 
+import { type WriteStream, createWriteStream } from 'node:fs';
 import { type Socket, createSocket } from 'node:dgram';
 import { appendCrc, verifyCrc } from '../crc/crc32.js';
 import { EncryptMethod } from '../types.js';
@@ -48,6 +49,7 @@ import type {
   ConnectionEvent,
   ConnectionStateHandler,
   ISoeConnection,
+  RawCaptureOptions,
   SoeConnectionOptions,
 } from './interface.js';
 import { unpackGroup, unpackMulti } from './multipacket.js';
@@ -59,6 +61,11 @@ import {
   isFragment,
   isReliable,
 } from './packet-types.js';
+import {
+  frameToJson,
+  metaToJson,
+  sessionToJson,
+} from './raw-capture-io.js';
 import {
   IncomingSequence,
   OutgoingSequence,
@@ -130,6 +137,11 @@ export class SoeConnection implements ISoeConnection {
    */
   private readonly oneShotListeners: ConnectionStateHandler[] = [];
 
+  /** Raw-capture tee state. See `SoeConnectionOptions.rawCapture`. */
+  private readonly rawCaptureOptions: RawCaptureOptions | undefined;
+  private rawCaptureStream: WriteStream | null = null;
+  private rawCaptureSessionWritten = false;
+
   constructor(options: SoeConnectionOptions) {
     this.endpoint = options.endpoint;
     this.maxRawPacketSize = options.maxRawPacketSize ?? DEFAULT_MAX_RAW;
@@ -139,6 +151,10 @@ export class SoeConnection implements ISoeConnection {
     this.onAppMessage = options.onAppMessage;
     this.onEvent = options.onEvent;
     this.onClockSync = options.onClockSync;
+    this.rawCaptureOptions = options.rawCapture;
+    if (this.rawCaptureOptions !== undefined) {
+      this.openRawCapture(this.rawCaptureOptions);
+    }
   }
 
   get isConnected(): boolean {
@@ -293,6 +309,7 @@ export class SoeConnection implements ISoeConnection {
    * Use `injectSessionResponse()` for the handshake step.
    */
   testInjectDatagram(bytes: Uint8Array): void {
+    this.captureFrame('recv', bytes);
     this.handleDatagram(bytes);
   }
 
@@ -328,6 +345,7 @@ export class SoeConnection implements ISoeConnection {
       maxRawPacketSize: Math.min(fields.maxRawPacketSize, this.maxRawPacketSize),
     };
     this.status = { kind: 'connected', params };
+    this.captureSession(params);
     this.emit({ kind: 'session_negotiated', params });
     return params;
   }
@@ -362,6 +380,7 @@ export class SoeConnection implements ISoeConnection {
   // ────────────────────────────────────────────────────────────────────────
 
   private async rawSend(bytes: Uint8Array): Promise<void> {
+    this.captureFrame('send', bytes);
     if (this.testSendOverride !== null) {
       await this.testSendOverride(bytes);
       return;
@@ -384,8 +403,12 @@ export class SoeConnection implements ISoeConnection {
     const sock = this.socket;
     if (sock === null) return;
     sock.on('message', (msg) => {
+      const datagram = new Uint8Array(msg.buffer, msg.byteOffset, msg.byteLength);
+      // Tee BEFORE any decrypt/CRC strip so the capture preserves the exact
+      // bytes that arrived on the wire.
+      this.captureFrame('recv', datagram);
       try {
-        this.handleDatagram(new Uint8Array(msg.buffer, msg.byteOffset, msg.byteLength));
+        this.handleDatagram(datagram);
       } catch (err) {
         this.emit({ kind: 'error', error: err instanceof Error ? err : new Error(String(err)) });
       }
@@ -421,6 +444,7 @@ export class SoeConnection implements ISoeConnection {
           maxRawPacketSize: Math.min(fields.maxRawPacketSize, this.maxRawPacketSize),
         };
         this.status = { kind: 'connected', params };
+        this.captureSession(params);
         this.emit({ kind: 'session_negotiated', params });
       } catch (err) {
         this.emit({
@@ -783,6 +807,79 @@ export class SoeConnection implements ISoeConnection {
       }
       this.socket = null;
     }
+    this.closeRawCapture();
+  }
+
+  // ────────────────────────────────────────────────────────────────────────
+  // Raw-byte capture tee (see SoeConnectionOptions.rawCapture)
+  //
+  // All capture writes are wrapped in try/catch so a misbehaving filesystem
+  // can never abort a send/recv. We open lazily, write append-only with a
+  // trailing `\n`, and rely on Node's WriteStream buffering — fsync isn't
+  // needed for a debug-only tool.
+  // ────────────────────────────────────────────────────────────────────────
+
+  private openRawCapture(opts: RawCaptureOptions): void {
+    try {
+      this.rawCaptureStream = createWriteStream(opts.writePath, {
+        encoding: 'utf8',
+        flags: 'w', // truncate so re-running tests doesn't append to stale captures
+      });
+      const meta: Record<string, unknown> = metaToJson({
+        ts: Date.now(),
+        // No socket yet (we haven't bind()ed) — fill localEndpoint on
+        // socket-attach if needed. For now report null.
+        localEndpoint: null,
+        remoteEndpoint: `${this.endpoint.host}:${this.endpoint.port}`,
+        connectionCode: this.connectionCode,
+        maxRawPacketSize: this.maxRawPacketSize,
+        ...(opts.stage !== undefined ? { stage: opts.stage } : {}),
+      });
+      this.rawCaptureStream.write(`${JSON.stringify(meta)}\n`);
+    } catch {
+      // Capture failures must never crash the connection. Drop silently.
+      this.rawCaptureStream = null;
+    }
+  }
+
+  private captureSession(params: EncryptionParams): void {
+    if (this.rawCaptureStream === null || this.rawCaptureSessionWritten) return;
+    try {
+      const line = JSON.stringify(
+        sessionToJson({
+          ts: Date.now(),
+          encryptCode: params.encryptCode,
+          connectionCode: params.connectionCode,
+          crcBytes: params.crcBytes,
+          encryptMethods: params.encryptMethods,
+          negotiatedMaxRawPacketSize: params.maxRawPacketSize,
+        }),
+      );
+      this.rawCaptureStream.write(`${line}\n`);
+      this.rawCaptureSessionWritten = true;
+    } catch {
+      // ignore
+    }
+  }
+
+  private captureFrame(direction: 'send' | 'recv', bytes: Uint8Array): void {
+    if (this.rawCaptureStream === null) return;
+    try {
+      const line = JSON.stringify(frameToJson({ direction, ts: Date.now(), bytes }));
+      this.rawCaptureStream.write(`${line}\n`);
+    } catch {
+      // ignore
+    }
+  }
+
+  private closeRawCapture(): void {
+    if (this.rawCaptureStream === null) return;
+    try {
+      this.rawCaptureStream.end();
+    } catch {
+      // ignore
+    }
+    this.rawCaptureStream = null;
   }
 
   private emit(event: ConnectionEvent): void {

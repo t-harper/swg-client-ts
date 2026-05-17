@@ -51,6 +51,31 @@ export interface SoeConnectionOptions {
   onAppMessage: AppMessageHandler;
   /** Optional connection lifecycle callback */
   onEvent?: ConnectionStateHandler;
+  /**
+   * If set, every outgoing/incoming UDP datagram (BEFORE decrypt on recv,
+   * AFTER encrypt+CRC on send) is appended to the named NDJSON file as a
+   * raw-capture frame. Plus a `meta` line on open and a `session` line once
+   * the SessionResponse is processed. Used by `bin/swg-ts-cli decode-raw`.
+   *
+   * The file is created/truncated on first write. Errors writing capture
+   * lines are silently swallowed so they can never abort send/recv.
+   */
+  rawCapture?: RawCaptureOptions;
+}
+
+/**
+ * Configuration for raw-byte capture. The connection writes one NDJSON line
+ * per datagram plus metadata lines describing how to decrypt them.
+ */
+export interface RawCaptureOptions {
+  /** Absolute path to NDJSON file. Will be created/truncated. */
+  writePath: string;
+  /**
+   * Optional free-form `stage` label included in the `meta` line so a
+   * single-file capture spanning multiple SOE sessions can be told apart by
+   * the offline decoder. Convention: `"login"`, `"connection"`, etc.
+   */
+  stage?: string;
 }
 
 /**

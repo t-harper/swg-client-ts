@@ -484,6 +484,26 @@ export type {
   InventoryView,
 } from './client/inventory-view.js';
 
+// Live caches exposed on ScriptContext — survey results, crafting session,
+// active missions. All auto-update from server-pushed wire traffic; no
+// polling needed.
+export { SurveyCacheImpl } from './client/survey-cache.js';
+export type {
+  BestKnownSample,
+  SurveyCacheView,
+  SurveyLastResults,
+} from './client/survey-cache.js';
+export { CraftingSessionCacheImpl } from './client/crafting-session.js';
+export type {
+  CraftingCacheView,
+  CraftingSessionSchematic,
+  CraftingSessionSlot,
+  CraftingSessionState,
+} from './client/crafting-session.js';
+export { missionTypeName, MissionsCacheImpl } from './client/missions-cache.js';
+export type { Mission, MissionsCacheView } from './client/missions-cache.js';
+export type { SurveyCallable } from './client/script/context.js';
+
 // Character snapshot + diff — hashable, deterministic projection of the
 // persisted character state from a LifecycleResult. Used by the reconnect
 // regression test to validate the DB save/load pipeline end-to-end.

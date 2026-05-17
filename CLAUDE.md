@@ -16,12 +16,17 @@ The server side lives at `~/code/swg-main/`. **Read `~/code/swg-main/CLAUDE.md` 
 cd ~/code/swg-ts-client
 nvm use                # Node 24 (LTS as of 2026-05)
 pnpm install
+<<<<<<< HEAD
+pnpm test              # ~1744 unit tests — no server needed
+LIVE=1 pnpm test       # ~1770 total under LIVE (includes ~27 integration tests against 10.254.0.253)
+=======
 pnpm test              # ~1794 unit tests — no server needed
 LIVE=1 pnpm test       # ~1823 total under LIVE (includes ~30 integration tests against 10.254.0.253)
 pnpm test              # ~1737 unit tests — no server needed
 LIVE=1 pnpm test       # ~1442 total under LIVE (includes ~27 integration tests against 10.254.0.253)
 pnpm test              # ~1742 unit tests — no server needed
 LIVE=1 pnpm test       # ~1770 total under LIVE (includes ~28 integration tests against 10.254.0.253)
+>>>>>>> origin/main
 pnpm cli zone --host=10.254.0.253 --user=ci-test --character=TsTest
 ```
 
@@ -107,6 +112,7 @@ The client started as just `SwgClient.fullLifecycle()` and is now a full program
 | **Resource stats** | `ctx.fetchResourceAttributes([ids])` | Batched `getAttributesBatch` → AttributeListMessage per id, chunked at 25 ids/call to stay under wire ceiling. Full OQ/CR/DR/HR/SR/UT/ER/PE/MA/CD stats for any ResourceTypeObject; no physical core-sampling needed. |
 | **Crafting session** | `ctx.beginCrafting` → `ctx.waitForDraftSchematics` → `selectCraftingSchematic` → `ctx.waitForDraftSlots` → `assignCraftingSlot` × N → optional `craftExperiment` → `finishCrafting` | Full discovery-driven flow with decoded `DraftSchematicsMessage` (server's schematic list) and `ManufactureSchematicMessage` (slot requirements). End-to-end demo in `scripts/craft-a-tool.ts`. |
 | **Missions** | `ctx.requestMissionList` / `acceptMission` / `removeMission` / `abortMission` | Driven through `MissionObject` baselines + the four `CM_mission*` subtypes |
+| **Live caches (survey/crafting/missions)** | `ctx.survey.lastResults` + `ctx.survey.bestKnown(name)` / `ctx.crafting.session` / `ctx.missions.active` + `findByCategory(re)` + `bestPayout()` | Always-on derived state for the three flows. `ctx.survey` is a callable AND a property bag — `ctx.survey(toolId, name)` still issues the wire request, and `lastResults` / `bestKnown` carry the cache. Crafting session reads `{active}` or `{active, schematic, slots, canFinish, ...}` reconstructed from `DraftSchematics` + `DraftSlots` + `CraftingResult` traffic with local mirror of outbound `assignCraftingSlot` / `clearCraftingSlot`. Missions cache derives from MISO SHARED baselines — `m.type` is the lowercase string CRC-mapped from `MissionObject.cpp:280-307` (`destroy`/`recon`/`deliver`/`bounty`/...). See `src/client/{survey-cache,crafting-session,missions-cache}.ts`. |
 | **Group + trade** | `ctx.useAbility('invite'|'join'|...)` + `ctx.tradeWith(otherId, { items?, credits? })` | Two-client coordination via Fleet — full SecureTrade handshake (9 top-level messages: BeginTrade / AddItem / RemoveItem / GiveMoney / AcceptTransaction / UnAcceptTransaction / VerifyTrade / TradeComplete / AbortTrade) wraps the `CM_secureTrade` ObjController. See `scripts/group-trade-demo.ts`. |
 | **Commodities / bazaar** | `ctx.browseBazaar` / `getAuctionDetails` / `bidOn` / `listForSale` / `retrieveBazaarItem` / `cancelMyListing` | Full `Auction*` / `Bid*` top-level message family — palettized headers response decoder, advanced-search conditions, and `bazaar-snipe` bundled scenario. |
 | **Chat** | `ctx.say` / `tell` / `sendMail` / `sendToChannel` / `requestChannelList` | `say` uses the server-side `spatialChatInternal` CommandQueue command (the path the real Windows client uses) |
@@ -309,6 +315,7 @@ Individual stage drivers and the `dispatcher` are also exported as types — use
 | Read/write SWG `.tre` archives | `src/tre/` — `TreReader.fromFile(path).read('terrain/naboo.trn')`; `TreWriter` to build a fresh archive. |
 | Sample terrain / find buildable spots | `src/terrain/` — `loadPlanetTrn('naboo')` reads metadata; `probeBuildable(ctx, inv, x, z)` checks coords via the live server; `findFlatPatch(ctx, inv, {count, centerX, centerZ, maxRadius})` does a grid search. |
 | Build a player city autonomously (Naboo or any other planet) | `scripts/build-city/orchestrator.ts` + `bin/build-city.ts` — Fleet-coordinated 30-character build. See README "Asset setup" section for the `.trn` requirement. |
+| Read live survey/crafting/mission state from a script | `ctx.survey.lastResults` / `ctx.survey.bestKnown(name)` / `ctx.crafting.session` / `ctx.missions.active`. Caches at `src/client/{survey-cache,crafting-session,missions-cache}.ts` — auto-attached by `createScriptContext`, detached at `runScript` teardown. |
 
 ## Known limitations
 
@@ -327,8 +334,12 @@ Individual stage drivers and the `dispatcher` are also exported as types — use
 
 ## When you next sit down
 
+<<<<<<< HEAD
+1. `cd ~/code/swg-ts-client && nvm use && pnpm test` — confirm baseline (should be ~1744 unit green; ~1770 total under `LIVE=1`).
+=======
 1. `cd ~/code/swg-ts-client && nvm use && pnpm test` — confirm baseline (should be ~1794 unit green; ~1823 total under `LIVE=1`).
 1. `cd ~/code/swg-ts-client && nvm use && pnpm test` — confirm baseline (should be ~1737 unit green; ~1764 total under `LIVE=1`).
+>>>>>>> origin/main
 2. If anything's red, check `git log --oneline` — most recent change is probably the culprit; revert it locally and retry.
 3. If you bumped `~/code/swg-main` submodules, the wire-format may have drifted. Run `LIVE=1 pnpm test tests/integration/live-login.test.ts` — if it fails with a `LoginIncorrectClientId` or `Archive::ReadException`-style error, the message struct shape changed server-side. Find the C++ commit that added/removed fields, update `varCount` + encode/decode here. For broader drift, replay a baseline NDJSON capture (`pnpm cli capture` once on green, then `pnpm cli replay --compare=count` after the bump).
 4. To do "more SWG protocol work" — read `docs/adding-a-message.md` and pick a message from `~/code/swg-main/src/engine/shared/library/sharedNetworkMessages/src/shared/`. The mechanical pattern handles itself. For ObjController subtypes (combat/movement/etc.) the recipe is the same but the file lives in `src/messages/game/obj-controller/` and registers via the subtype CRC instead of the top-level `messageRegistry`.

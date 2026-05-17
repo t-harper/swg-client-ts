@@ -38,6 +38,7 @@ import { ClientPermissionsMessage } from '../messages/connection/client-permissi
 import { ErrorMessage } from '../messages/connection/error-message.js';
 import { SelectCharacter } from '../messages/connection/select-character.js';
 import { SoeConnection } from '../soe/connection.js';
+import type { RawCaptureOptions } from '../soe/interface.js';
 import { type CharacterInfo, CharacterType, type ServerEndpoint } from '../types.js';
 import { MessageDispatcher, type TranscriptEvent } from './dispatcher.js';
 
@@ -61,6 +62,11 @@ export interface ConnectionStageOptions {
   timeoutMs?: number;
   /** Hook for streaming transcript events. */
   onTranscript?: (event: TranscriptEvent) => void;
+  /**
+   * Optional raw-byte SOE capture. The ConnectionServer socket is also the
+   * socket used for Stage 3 (GameServer), so this captures both stages.
+   */
+  rawCapture?: RawCaptureOptions;
 }
 
 /** Options for `ClientCreateCharacter` (sent if the avatar list is empty). */
@@ -113,6 +119,7 @@ export async function runConnectionStage(
     onAppMessage: (payload) => {
       dispatcher?.handleAppMessage(payload);
     },
+    ...(opts.rawCapture !== undefined ? { rawCapture: opts.rawCapture } : {}),
   });
   dispatcher = new MessageDispatcher({ connection, stageLabel: 'connection' });
   if (opts.onTranscript !== undefined) {

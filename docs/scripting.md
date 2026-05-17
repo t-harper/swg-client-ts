@@ -207,6 +207,56 @@ Exit code 1 if `missing.length > 0`. This is a **drift detector**, not a strict 
 
 ---
 
+## 4. Reconnect verification
+
+The reconnect harness exists to answer one question: **after my character mutates some state, logs out, and logs back in, did the server persist what I expected it to?**
+
+It wraps `snapshot()` + `diffSnapshots()` around two back-to-back `SwgClient.fullLifecycle` calls, runs your `mutate` scenario between zone-in and logout on the first pass, optionally runs an `observe` scenario after the reconnect, then diffs the two snapshots. Anything matching `expectedDrift` (default: `['playedTime']`) is filtered out; everything else is a persistence regression.
+
+```ts
+import { reconnectVerify } from '@swg/ts-client';
+
+const result = await reconnectVerify({
+  loginServer: { host: '10.254.0.253', port: 44453 },
+  account: 'ci-test',
+  characterName: 'TsTest',
+  mutate: async (ctx) => {
+    await ctx.ackPendingTeleports();
+    await ctx.walkTo({ x: -100, z: 200 }, { speed: 3 });
+    await ctx.changePosture('crouched');
+    await ctx.wait(500);
+  },
+  // Optional: passive observe pass — leave undefined for "just snapshot".
+  observe: async (ctx) => { await ctx.wait(500); },
+  // Default 2_000 — live clusters sometimes need 10_000+ for the
+  // GameConnection to release before allowing the same character to
+  // re-attach.
+  postSettleMs: 12_000,
+  // Default ['playedTime']; merge in your own ephemera as needed.
+  expectedDrift: [/^states$/, 'spawnYaw'],
+});
+
+if (!result.succeeded) {
+  console.error('persistence regression:', result.unexpectedDrift.differences);
+  process.exit(1);
+}
+```
+
+Returns:
+
+- `firstSnapshot` / `secondSnapshot` — full `CharacterSnapshot`s.
+- `diff` — raw `diffSnapshots()` output (before filtering).
+- `unexpectedDrift` — `diff` minus anything matching `expectedDrift`. Driving the `succeeded` boolean.
+- `succeeded` — `unexpectedDrift.identical`.
+- `firstLifecycle` / `reconnectLifecycle` — full `LifecycleResult`s for transcript inspection.
+- `timings: { first, reconnect, total }` — wall-clock ms.
+
+The harness intentionally does NOT default-allow `spawnPosition` or `spawnYaw` — if your script walked the character somewhere, those SHOULD match on the second login (that's the whole point of testing persistence). Pass them via `expectedDrift` if you want them ignored.
+
+For a working example see `tests/integration/live-persistence-soak.test.ts`. For the lower-level alternative that doesn't run a scenario between snapshots, see `tests/integration/live-persistence.test.ts`.
+
+---
+
 ## How the pieces fit together
 
 ```

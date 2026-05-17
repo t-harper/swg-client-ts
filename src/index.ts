@@ -358,3 +358,34 @@ export type {
   StopNpcConversationData,
 } from './messages/game/npc/index.js';
 export type { NpcDialogPrompt } from './client/script/context.js';
+
+// =============================================================================
+// SecureTrade handshake (Feature 2)
+// =============================================================================
+export {
+  AbortTradeMessage,
+  AbortTradeMessageDecoder,
+  AcceptTransactionMessage,
+  AcceptTransactionMessageDecoder,
+  AddItemMessage,
+  AddItemMessageDecoder,
+  BeginTradeMessage,
+  BeginTradeMessageDecoder,
+  GiveMoneyMessage,
+  GiveMoneyMessageDecoder,
+  RemoveItemMessage,
+  RemoveItemMessageDecoder,
+  TradeCompleteMessage,
+  TradeCompleteMessageDecoder,
+  UnAcceptTransactionMessage,
+  UnAcceptTransactionMessageDecoder,
+  VerifyTradeMessage,
+  VerifyTradeMessageDecoder,
+} from './messages/game/trade/index.js';
+export type { TradeWithOptions, TradeWithResult } from './client/script/context.js';
+export {
+  TradeMessageId,
+  TradeStartDecoder,
+  TradeStartKind,
+} from './messages/game/obj-controller/index.js';
+export type { TradeStartData } from './messages/game/obj-controller/index.js';

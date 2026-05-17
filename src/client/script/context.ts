@@ -58,6 +58,15 @@ import {
   type NpcConversationResponsesData,
   NpcConversationResponsesKind,
 } from '../../messages/game/npc/index.js';
+import {
+  AbortTradeMessage,
+  AcceptTransactionMessage,
+  AddItemMessage,
+  BeginTradeMessage,
+  GiveMoneyMessage,
+  TradeCompleteMessage,
+  VerifyTradeMessage,
+} from '../../messages/game/trade/index.js';
 import { ObjControllerMessage } from '../../messages/game/obj-controller-message.js';
 import {
   type CraftingExperimentData,
@@ -72,6 +81,8 @@ import {
   SpatialChatType,
   type TeleportAckData,
   TeleportAckDecoder,
+  TradeMessageId,
+  TradeStartDecoder,
 } from '../../messages/game/obj-controller/index.js';
 import { _encodeObjectMenu } from '../../messages/game/obj-controller/object-menu-request.js';
 import {
@@ -179,6 +190,22 @@ export interface NpcDialogPrompt {
   prompt: string;
   /** Menu option strings (Unicode). Empty when the prompt is auto-advance. */
   options: readonly string[];
+}
+
+/** Options for `ctx.tradeWith()`. */
+export interface TradeWithOptions {
+  items?: readonly NetworkId[];
+  credits?: number;
+  beginTimeoutMs?: number;
+  acceptTimeoutMs?: number;
+  verifyTimeoutMs?: number;
+}
+
+/** Outcome of a `ctx.tradeWith()` call. */
+export interface TradeWithResult {
+  completed: boolean;
+  /** Populated on any failure — `no-begin`, `aborted`, `no-verify`, `no-complete`. */
+  abortReason?: string;
 }
 
 /** Optional overrides for `ctx.say()` — directed chat, shout, mood, etc. */
@@ -921,6 +948,33 @@ export interface ScriptContext {
     timeoutMs?: number;
     pairWindowMs?: number;
   }): Promise<NpcDialogPrompt>;
+
+  // --- SecureTrade handshake ---
+
+  /**
+   * Open and drive a full SecureTrade window with `otherId` end-to-end.
+   *
+   * State machine:
+   *   1. Send `CM_secureTrade(RequestTrade)` ObjController to `otherId`.
+   *   2. Wait for `BeginTradeMessage` (server confirms the other party
+   *      accepted). On timeout → `{ completed: false, abortReason: 'no-begin' }`.
+   *   3. For each item in `opts.items`: send `AddItemMessage(item)`.
+   *   4. If `opts.credits` > 0: send `GiveMoneyMessage(credits)`.
+   *   5. Send `AcceptTransactionMessage`.
+   *   6. Wait for `VerifyTradeMessage` (or `AbortTradeMessage`). On timeout
+   *      → `{ completed: false, abortReason: 'no-verify' }`. On abort →
+   *      `{ completed: false, abortReason: 'aborted' }`.
+   *   7. Echo `VerifyTradeMessage` back, then wait for
+   *      `TradeCompleteMessage`. On timeout → `{ completed: false,
+   *      abortReason: 'no-complete' }`. On success → `{ completed: true }`.
+   *
+   * If the OTHER party drives the trade (i.e. they sent `RequestTrade` to
+   * us) the same primitive can still be used by the recipient — step 1 is
+   * idempotent server-side. In practice the recipient typically waits for
+   * `BeginTradeMessage` to arrive first, then calls `tradeWith` — the
+   * RequestTrade we send is consumed as a redundant accept.
+   */
+  tradeWith(otherId: NetworkId, opts?: TradeWithOptions): Promise<TradeWithResult>;
 }
 
 interface InternalContext extends ScriptContext {
@@ -1795,6 +1849,116 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
       }
 
       return { playerId, prompt: promptData.npcMessage, options };
+    },
+
+    // --- SecureTrade handshake ---
+
+    async tradeWith(
+      otherId: NetworkId,
+      tradeOpts?: TradeWithOptions,
+    ): Promise<TradeWithResult> {
+      const playerId = opts.sceneStart.playerNetworkId;
+      const beginTimeoutMs = tradeOpts?.beginTimeoutMs ?? 15_000;
+      const acceptTimeoutMs = tradeOpts?.acceptTimeoutMs ?? 15_000;
+      const verifyTimeoutMs = tradeOpts?.verifyTimeoutMs ?? 15_000;
+      const items = tradeOpts?.items ?? [];
+      const credits = tradeOpts?.credits ?? 0;
+
+      const abortPromise = opts.dispatcher.waitFor(AbortTradeMessage, {
+        timeoutMs: beginTimeoutMs + acceptTimeoutMs + verifyTimeoutMs + 5_000,
+      });
+      abortPromise.catch(() => {
+        // intentionally swallowed — abort never arrived in the budget window.
+      });
+
+      const reqStream = new ByteStream();
+      const reqData = {
+        tradeMessageId: TradeMessageId.RequestTrade,
+        initiatorId: playerId,
+        recipientId: otherId,
+      };
+      TradeStartDecoder.encode(reqStream, reqData);
+      ctx.send(
+        new ObjControllerMessage(
+          CLIENT_TO_AUTH_SERVER_FLAGS,
+          ObjControllerSubtypeIds.CM_secureTrade,
+          playerId,
+          0,
+          reqStream.toBytes(),
+          { kind: TradeStartDecoder.kind, data: reqData },
+        ),
+      );
+
+      const beginPromise = opts.dispatcher.waitFor(BeginTradeMessage, {
+        timeoutMs: beginTimeoutMs,
+      });
+      try {
+        const winner = await Promise.race([
+          beginPromise.then((m) => ({ kind: 'begin' as const, msg: m })),
+          abortPromise.then(() => ({ kind: 'abort' as const })),
+        ]);
+        if (winner.kind === 'abort') {
+          return { completed: false, abortReason: 'aborted' };
+        }
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        if (/Timed out/.test(reason)) {
+          return { completed: false, abortReason: 'no-begin' };
+        }
+        throw err;
+      }
+
+      for (const itemId of items) {
+        ctx.send(new AddItemMessage(itemId));
+      }
+
+      if (credits > 0) {
+        ctx.send(new GiveMoneyMessage(credits));
+      }
+
+      ctx.send(new AcceptTransactionMessage());
+
+      const verifyPromise = opts.dispatcher.waitFor(VerifyTradeMessage, {
+        timeoutMs: acceptTimeoutMs,
+      });
+      try {
+        const winner = await Promise.race([
+          verifyPromise.then((m) => ({ kind: 'verify' as const, msg: m })),
+          abortPromise.then(() => ({ kind: 'abort' as const })),
+        ]);
+        if (winner.kind === 'abort') {
+          return { completed: false, abortReason: 'aborted' };
+        }
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        if (/Timed out/.test(reason)) {
+          return { completed: false, abortReason: 'no-verify' };
+        }
+        throw err;
+      }
+
+      const completePromise = opts.dispatcher.waitFor(TradeCompleteMessage, {
+        timeoutMs: verifyTimeoutMs,
+      });
+      ctx.send(new VerifyTradeMessage());
+
+      try {
+        const winner = await Promise.race([
+          completePromise.then((m) => ({ kind: 'complete' as const, msg: m })),
+          abortPromise.then(() => ({ kind: 'abort' as const })),
+        ]);
+        if (winner.kind === 'abort') {
+          return { completed: false, abortReason: 'aborted' };
+        }
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        if (/Timed out/.test(reason)) {
+          return { completed: false, abortReason: 'no-complete' };
+        }
+        throw err;
+      }
+
+      return { completed: true };
     },
   };
 

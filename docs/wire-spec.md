@@ -439,10 +439,19 @@ Reference: `GenericValueTypeMessage.h`. Our impl: `src/messages/base.ts:defineGe
 | `SurveyMessage` | 0x877f79ac | varies | Server → client survey response with sample points |
 | `ResourceListForSurveyMessage` | 0x8a64b1d5 | 4 | Server → client list of resource types currently spawned for a tool's class |
 | `ChatSystemMessage` | 0x6d2a6413 | 4 | Server → client system-message prose. Trailer: `[u8 flags][UnicodeString message][UnicodeString outOfBand]`. The `outOfBand` field is a packed-bytes binary (each `u16` codepoint holds 2 wire bytes in LE order) carrying STF references like `survey/sample_located` — see `decodeSampleOob()` for unpacking. |
-| `SuiCreatePageMessage` | 0xd44b7259 | 2 | Server → client. Opens a SUI dialog page (banker / vendor / quest / list picker). Payload is `AutoDeltaVariable<SuiPageData>` — modeled as opaque `Uint8Array` bytes on `pageData`. Leading 4 bytes are the LE i32 `pageId`. |
-| `SuiUpdatePageMessage` | 0x5f3342f6 | 2 | Server → client. Same wire shape as `SuiCreatePageMessage`; in-place widget updates to an already-open page. |
-| `SuiForceClosePage` | 0x990b5de0 | 2 | Server → client. Tells the client to close a SUI page. Payload is just `[i32 clientPageId]` (from the SUIMessage base ctor). |
-| `SuiEventNotification` | 0x092d3564 | 4 | Client → server. Reply to a SUI page: `[i32 pageId][i32 subscribedEventIndex][u32 returnList.length][u32 baselineCommandCount=0][UnicodeString]*length`. The baselineCommandCount comes from `AutoDeltaVector::pack` (always 0 for fresh client messages). |
+| `SuiCreatePageMessage` | 0xd44b7259 | 2 | Server → client. Opens a SUI dialog page. Payload is `AutoDeltaVariable<SuiPageData>` — modeled as opaque `Uint8Array` on `pageData`. Leading 4 bytes are the LE i32 `pageId`. |
+| `SuiUpdatePageMessage` | 0x5f3342f6 | 2 | Server → client. Same wire shape as `SuiCreatePageMessage`; in-place widget updates. |
+| `SuiForceClosePage` | 0x990b5de0 | 2 | Server → client. Close a SUI page. Payload: `[i32 clientPageId]`. |
+| `SuiEventNotification` | 0x092d3564 | 4 | Client → server. Reply to a SUI page: `[i32 pageId][i32 subscribedEventIndex][u32 returnList.length][u32 baselineCommandCount=0][UnicodeString]*length`. |
+| `BeginTradeMessage` | 0x325932d8 | 2 | Server → client. Server confirms both parties accepted the initial `CM_secureTrade(RequestTrade)`. Trailer: `[NetworkId player]` (the OTHER party). |
+| `AddItemMessage` | 0x1e8d1356 | 2 | Bidirectional. Adds a tangible item. Trailer: `[NetworkId object]`. |
+| `RemoveItemMessage` | 0x4417af8b | 2 | Bidirectional. Retracts an item. Trailer: `[NetworkId object]`. |
+| `GiveMoneyMessage` | 0xd1527ee8 | 2 | Bidirectional. Sets credits offered. Trailer: `[i32 amount]`. |
+| `AcceptTransactionMessage` | 0xb131ca17 | 1 | Bidirectional, empty body. "I accept". |
+| `UnAcceptTransactionMessage` | 0xe81e4382 | 1 | Bidirectional, empty body. Un-checks acceptance. |
+| `VerifyTradeMessage` | 0x9ae247ee | 1 | Bidirectional, empty body. Final commit confirmation. |
+| `TradeCompleteMessage` | 0xc542038b | 1 | Server → client, empty body. Items + credits moved; trade window can close. |
+| `AbortTradeMessage` | 0x9ca80f98 | 1 | Bidirectional, empty body. Either party cancels. |
 
 ### ObjController subtypes
 

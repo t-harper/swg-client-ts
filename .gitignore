@@ -6,3 +6,8 @@ dist
 coverage
 .DS_Store
 .claude/
+scripts/build-city/state.json
+scripts/build-city/state.json.tmp
+# SWG asset binaries staged for terrain lookup — never commit (large + license unclear)
+assets/*.tre
+assets/terrain/*.trn

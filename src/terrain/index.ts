@@ -13,6 +13,20 @@
 export type { TrnMetadata } from './trn-reader.js';
 export { PTAT_TAG, PTAT_DATA_TAG, parseTrnMetadata, readTrnMetadata } from './trn-reader.js';
 
+// Planet-general asset loader — resolves any planet's .trn from a TRE archive
+// or from on-disk extracted files. Recommended entry point: `loadPlanetTrn`.
+export {
+  clearTreCache,
+  extractedTrnSearchPaths,
+  getTreReader,
+  listPlanets,
+  loadPlanetTrn,
+  loadTrnFromTre,
+  readTrnMetadataForPlanet,
+  resolveDefaultTrePath,
+  trnPathForPlanet,
+} from './asset-loader.js';
+
 export type { BuildableProbeResult, ProbeOptions } from './probe.js';
 export { DEFAULT_PROBE_DEED, probeBuildable } from './probe.js';
 

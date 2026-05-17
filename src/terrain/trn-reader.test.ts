@@ -10,7 +10,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { MinimalIff, packTag, unpackTag } from './_iff-minimal.js';
+import { tag as iffTag, tagToString as iffTagToString } from '../iff/iff-tag.js';
 import { PTAT_DATA_TAG, PTAT_TAG, parseTrnMetadata, readTrnMetadata } from './trn-reader.js';
 
 const NABOO_TRN_PATH = '/home/tharper/code/swg-main/serverdata/terrain/naboo.trn';
@@ -61,7 +61,7 @@ function buildMinimalPtat(args: {
 function wrapChunk(tagName: string, payload: Uint8Array): Uint8Array {
   const out = new Uint8Array(8 + payload.byteLength);
   const view = new DataView(out.buffer);
-  view.setUint32(0, packTag(tagName), false); // BE tag
+  view.setUint32(0, iffTag(tagName), false); // BE tag
   view.setUint32(4, payload.byteLength, false); // BE length
   out.set(payload, 8);
   return out;
@@ -70,52 +70,34 @@ function wrapChunk(tagName: string, payload: Uint8Array): Uint8Array {
 function wrapForm(subTagName: string, innerBlock: Uint8Array): Uint8Array {
   // FORM payload = [4 BE sub-tag][inner block bytes]
   const payload = new Uint8Array(4 + innerBlock.byteLength);
-  new DataView(payload.buffer).setUint32(0, packTag(subTagName), false);
+  new DataView(payload.buffer).setUint32(0, iffTag(subTagName), false);
   payload.set(innerBlock, 4);
   return wrapChunk('FORM', payload);
 }
 
-describe('packTag / unpackTag', () => {
+describe('iffTag round-trip', () => {
   it('round-trips standard tags', () => {
-    expect(packTag('FORM')).toBe(0x464f524d);
-    expect(packTag('PTAT')).toBe(0x50544154);
-    expect(packTag('DATA')).toBe(0x44415441);
-    expect(packTag('0015')).toBe(0x30303135);
-    expect(unpackTag(0x464f524d)).toBe('FORM');
-    expect(unpackTag(0x50544154)).toBe('PTAT');
-    expect(unpackTag(0x30303135)).toBe('0015');
+    expect(iffTag('FORM')).toBe(0x464f524d);
+    expect(iffTag('PTAT')).toBe(0x50544154);
+    expect(iffTag('DATA')).toBe(0x44415441);
+    expect(iffTag('0015')).toBe(0x30303135);
+    expect(iffTagToString(0x464f524d)).toBe('FORM');
+    expect(iffTagToString(0x50544154)).toBe('PTAT');
+    expect(iffTagToString(0x30303135)).toBe('0015');
   });
 
   it('right-pads with space for short strings', () => {
-    expect(packTag('ABC')).toBe(0x41424320);
-    expect(packTag('A')).toBe(0x41202020);
+    expect(iffTag('ABC')).toBe(0x41424320);
+    expect(iffTag('A')).toBe(0x41202020);
   });
 
   it('exposes top-level PTAT and DATA constants', () => {
-    expect(PTAT_TAG).toBe(packTag('PTAT'));
-    expect(PTAT_DATA_TAG).toBe(packTag('DATA'));
+    expect(PTAT_TAG).toBe(iffTag('PTAT'));
+    expect(PTAT_DATA_TAG).toBe(iffTag('DATA'));
   });
 });
 
-describe('MinimalIff', () => {
-  it('detects an IFF FORM header', () => {
-    const buf = buildMinimalPtat({
-      name: 'x',
-      mapWidth: 1024,
-      chunkWidth: 32,
-      numberOfTilesPerChunk: 16,
-      useGlobalWater: 0,
-      globalWaterHeight: 0,
-    });
-    const iff = new MinimalIff(buf);
-    expect(iff.hasFormHeader()).toBe(true);
-  });
-
-  it('rejects non-IFF buffers', () => {
-    const iff = new MinimalIff(new Uint8Array([0xde, 0xad, 0xbe, 0xef]));
-    expect(iff.hasFormHeader()).toBe(false);
-  });
-});
+// (MinimalIff tests removed — replaced by canonical src/iff/ module + tests there.)
 
 describe('parseTrnMetadata (synthetic)', () => {
   it('decodes a hand-built minimal PTAT', () => {
@@ -195,7 +177,8 @@ describe('parseTrnMetadata (synthetic)', () => {
   });
 
   it('throws on a non-IFF buffer', () => {
-    expect(() => parseTrnMetadata(new Uint8Array([1, 2, 3, 4]))).toThrow(/not an IFF file/);
+    // The canonical Iff parser throws its own message; we just assert it throws.
+    expect(() => parseTrnMetadata(new Uint8Array([1, 2, 3, 4]))).toThrow();
   });
 
   it('throws on bad mapWidth / chunkWidth ratios', () => {

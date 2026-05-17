@@ -101,9 +101,9 @@ example scenarios.
 # Requires Node 24 (see .nvmrc) and pnpm
 nvm use
 pnpm install
-pnpm test                                              # ~1152 unit tests, no server needed
+pnpm test                                              # ~1287 unit tests, no server needed
 LIVE=1 pnpm test tests/integration/live-login.test.ts  # one live test
-LIVE=1 pnpm test                                       # full suite (~1177 tests)
+LIVE=1 pnpm test                                       # full suite (~1312 tests)
 
 # Plain zone-in
 pnpm cli zone --host=10.254.0.253 --user=ci-test --character=TsTest
@@ -126,6 +126,24 @@ To avoid leaking timestamp-suffixed accounts/characters on the test DB,
 set `CI_REUSE_ACCOUNT` and `CI_REUSE_CHARACTER` to a pinned pair (live
 tests then run sequentially because the server allows one session per
 account — see `vitest.config.ts`).
+
+### Asset setup (optional, required for terrain-aware features)
+
+Some features — terrain sampling, player-city builder (`bin/build-city.ts`),
+buildable-coordinate search — need access to SWG `.trn` terrain files.
+You can either drop the files in `assets/` or set `SWG_TRE_PATH`.
+
+```bash
+# Minimum (single planet — Naboo)
+mkdir -p assets/terrain
+cp /home/tharper/code/swg-main/serverdata/terrain/naboo.trn assets/terrain/
+
+# Or, point at the full TRE archive
+export SWG_TRE_PATH=/home/tharper/code/swg-main/dist/prebuilt/swgsource_3.0.tre
+```
+
+See [`assets/README.md`](assets/README.md) for the full asset-staging guide.
+All `.tre` and `.trn` files are gitignored — never committed.
 
 ## CLI
 
@@ -324,7 +342,16 @@ ObjController subtype dispatch.
 - `docs/lifecycle.md` — 4-stage state diagram (with script hook)
 - `docs/adding-a-message.md` — recipe for new top-level messages + ObjController subtypes
 - `docs/scripting.md` — `ScriptContext` API, bundled scenarios, Fleet, capture/replay
+- `assets/README.md` — TRE/TRN asset staging (for terrain features + city builder)
 - `../swg-main/CLAUDE.md` — the server side (read this first if you're new)
+
+### Asset / format parsers (`src/iff/`, `src/tre/`, `src/terrain/`)
+
+For tooling that reads SWG's binary asset files:
+
+- **`src/iff/`** — IFF (Interchange File Format) read + write. Use `Iff.fromFile(path)` to navigate FORM/chunk trees; `IffWriter` to build new IFFs.
+- **`src/tre/`** — SOE `.tre` archive read + write. Use `TreReader.fromFile('foo.tre').read('terrain/naboo.trn')` to pull a file out; `TreWriter` to build a fresh archive.
+- **`src/terrain/`** — TRN metadata reader + planet-general asset loader + empirical buildability probe + flat-patch grid search. Recommended entry: `loadPlanetTrn('naboo')` (transparently checks extracted-on-disk first, then `.tre` archive).
 
 Ground truth is the C++ source at `~/code/swg-main/src/` — never modified,
 always referenced.

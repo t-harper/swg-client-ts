@@ -82,7 +82,7 @@ pnpm cli zone --host=10.254.0.253 --user=ci-test --character=TsTest
                   constcrc.ts                  ← CrcConstexpr.hpp custom CRC, NOT standard CRC32
 ```
 
-229+ test files, **~1177 tests (~1152 unit + ~25 LIVE)**, all currently green. (Counts grow as features land — `pnpm test` to confirm.)
+238+ test files, **~1312 tests (~1287 unit + ~25 LIVE)**, all currently green. (Counts grow as features land — `pnpm test` to confirm.) Recent additions: IFF read/write (22 tests in `src/iff/`), TRE archive read/write (21 tests in `src/tre/`), terrain helpers + planet-general asset loader (31 tests in `src/terrain/`), build-city orchestration (63 tests in `scripts/build-city/`).
 
 ## High-level features
 
@@ -280,6 +280,10 @@ Individual stage drivers and the `dispatcher` are also exported as types — use
 | Inspect captured wire | `tests/fixtures/{session-response-17b,login-enum-cluster-223b}.hex` |
 | Wire decryption sanity check | `src/soe/connection.test.ts` — feeds captured bytes through full pipeline |
 | Verify a constcrc value | `src/crc/constcrc.test.ts` — golden values from the C++ table |
+| Read/write SWG IFF files | `src/iff/` — `Iff.fromFile(path)` to navigate; `IffWriter` to build. See `assets/README.md` for asset staging. |
+| Read/write SWG `.tre` archives | `src/tre/` — `TreReader.fromFile(path).read('terrain/naboo.trn')`; `TreWriter` to build a fresh archive. |
+| Sample terrain / find buildable spots | `src/terrain/` — `loadPlanetTrn('naboo')` reads metadata; `probeBuildable(ctx, inv, x, z)` checks coords via the live server; `findFlatPatch(ctx, inv, {count, centerX, centerZ, maxRadius})` does a grid search. |
+| Build a player city autonomously (Naboo or any other planet) | `scripts/build-city/orchestrator.ts` + `bin/build-city.ts` — Fleet-coordinated 30-character build. See README "Asset setup" section for the `.trn` requirement. |
 
 ## Known limitations
 

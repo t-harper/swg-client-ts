@@ -34,7 +34,8 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { MinimalIff, packTag, unpackTag } from './_iff-minimal.js';
+import { Iff } from '../iff/iff.js';
+import { tag as iffTag } from '../iff/iff-tag.js';
 
 /** Top-level terrain parameters needed by the buildability search. */
 export interface TrnMetadata {
@@ -53,9 +54,9 @@ export interface TrnMetadata {
 }
 
 /** Tag of the top-level FORM in a `.trn` file: 'PTAT'. */
-export const PTAT_TAG = packTag('PTAT');
+export const PTAT_TAG = iffTag('PTAT');
 /** Tag of the inner DATA chunk that carries the top-level params. */
-export const PTAT_DATA_TAG = packTag('DATA');
+export const PTAT_DATA_TAG = iffTag('DATA');
 
 /** Versions of the PTAT sub-form the C++ loader accepts. */
 const SUPPORTED_VERSIONS = new Set<string>(['0013', '0014', '0015']);
@@ -81,17 +82,14 @@ export function readTrnMetadata(path: string): TrnMetadata {
  * when the file is already loaded (tests, network streams, etc.).
  */
 export function parseTrnMetadata(buf: Uint8Array): TrnMetadata {
-  const iff = new MinimalIff(buf);
-  if (!iff.hasFormHeader()) {
-    throw new Error('parseTrnMetadata: file does not start with "FORM" — not an IFF file');
-  }
+  const iff = Iff.fromBytes(buf);
 
   // FORM 'PTAT'
   iff.enterForm('PTAT');
 
   // FORM '0015' (or 0013/0014 — we just check it's one of the accepted tags).
-  const versionTag = iff.enterForm();
-  const version = unpackTag(versionTag);
+  // enterAnyForm returns the tag of the form entered.
+  const version = iff.enterAnyForm();
   if (!SUPPORTED_VERSIONS.has(version)) {
     throw new Error(
       `parseTrnMetadata: unsupported PTAT version '${version}' (supported: ${[...SUPPORTED_VERSIONS].join(', ')})`,
@@ -100,19 +98,19 @@ export function parseTrnMetadata(buf: Uint8Array): TrnMetadata {
 
   // DATA chunk: name + mapWidth + chunkWidth + ...
   iff.enterChunk('DATA');
-  const sourceName = iff.readCString();
-  const mapWidth = iff.readFloat32();
-  const chunkWidth = iff.readFloat32();
+  const sourceName = iff.readString();
+  const mapWidth = iff.readF32();
+  const chunkWidth = iff.readF32();
   // We don't need any further fields, but read the next few for the water
   // table — useful for "is this point underwater?" gating. Wrapped in
   // try/catch so a truncated DATA chunk (unlikely but possible for some
   // pre-release maps) doesn't take out the whole metadata read.
   let globalWaterHeight: number | null = null;
   try {
-    const _numberOfTilesPerChunk = iff.readInt32();
+    const _numberOfTilesPerChunk = iff.readI32();
     void _numberOfTilesPerChunk;
-    const useGlobalWaterTable = iff.readInt32() !== 0;
-    const waterHeight = iff.readFloat32();
+    const useGlobalWaterTable = iff.readI32() !== 0;
+    const waterHeight = iff.readF32();
     globalWaterHeight = useGlobalWaterTable ? waterHeight : null;
   } catch {
     globalWaterHeight = null;

@@ -234,6 +234,11 @@ export type {
 // once decoded, `decodedBaseline.data` is one of the per-type interfaces below.
 export {
   BaselinesMessage,
+  CreoSharedNpIndices,
+  DeltasMessage,
+  decodeGroupDelta,
+  decodeGroupInviterDelta,
+  readFirstDirtyIndex,
   BaselinePackageIds,
   ObjectTypeTags,
   baselineRegistry,

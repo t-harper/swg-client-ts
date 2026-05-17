@@ -7,10 +7,18 @@
  *
  * Asserts:
  *   - Both clients reach the zoned-in state cleanly
- *   - The invitee's transcript contains a `CM_setGroupInviter` ObjController
- *     (subtype 351) — proving the invite reached them
- *   - The leader's transcript contains a `CM_setGroup` ObjController
- *     (subtype 421) with a non-zero groupId — proving the group formed
+ *   - The invitee's transcript contains a `DeltasMessage(target=inviteeId,
+ *     CREO, SHARED_NP, idx=14)` whose payload decodes to a non-zero
+ *     `inviterId` — proving the invite reached them at the wire level.
+ *     (On a single-server cluster the server is authoritative for the
+ *     invitee, so `setGroupInviter` writes the `m_groupInviter`
+ *     AutoDeltaVariable directly — see CreatureObject.cpp:5655-5676. The
+ *     `CM_setGroupInviter(351)` ObjController is cross-auth-server only and
+ *     is NEVER emitted on a single-server cluster.)
+ *   - Both sides' transcripts contain a `DeltasMessage(target=self, CREO,
+ *     SHARED_NP, idx=13)` whose payload decodes to a non-zero `groupId` —
+ *     proving the group formed. (Same authority story for `m_group` — see
+ *     CreatureObject.cpp:5557.)
  *   - Neither side received an ErrorMessage
  *
  * The trade-window step is best-effort; we do NOT assert it succeeds.
@@ -22,6 +30,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { Fleet } from '../../src/client/fleet.js';
+import { DeltasMessage, decodeGroupDelta, decodeGroupInviterDelta } from '../../src/messages/game/baselines/deltas-message.js';
 import { groupTradeScenario } from '../../src/scenarios/index.js';
 import { liveCredentials } from './helpers.js';
 
@@ -124,37 +133,40 @@ describe.skipIf(!LIVE)('live group-trade (2 clients, invite → accept → disba
     expect(inviteeLr).toBeDefined();
     if (leaderLr === undefined || inviteeLr === undefined) return;
 
-    // The invitee must have received a CM_setGroupInviter (351) with a
-    // non-empty inviter — that's the wire signature of "you got an invite".
+    // The invitee must have received a CREO SHARED_NP DeltasMessage on
+    // their own NetworkId carrying the m_groupInviter (index 14) with a
+    // non-zero inviterId. That's the wire signature of "you got an invite"
+    // on a single-server cluster — the invite never travels as the
+    // cross-server `CM_setGroupInviter(351)` ObjController. See the file
+    // header for the C++ source pointer.
     const inviteeSawInvite = inviteeLr.transcript.some((e) => {
       if (e.direction !== 'recv') return false;
-      if (e.messageName !== 'ObjControllerMessage') return false;
-      const dec = e.decoded as {
-        message?: number;
-        decodedSubtype?: { data?: { inviterId?: bigint } };
-      } | null;
-      return dec?.message === 351 && (dec.decodedSubtype?.data?.inviterId ?? 0n) !== 0n;
+      if (!(e.decoded instanceof DeltasMessage)) return false;
+      if (e.decoded.target !== inviteeId) return false;
+      const decoded = decodeGroupInviterDelta(e.decoded);
+      return decoded !== null && decoded.inviterId !== 0n;
     });
-    expect(inviteeSawInvite, 'invitee received CM_setGroupInviter with non-empty inviterId').toBe(
+    expect(inviteeSawInvite, 'invitee received m_groupInviter delta with non-empty inviterId').toBe(
       true,
     );
 
-    // Both sides must have received CM_setGroup (421) with non-zero groupId
-    // — that's the wire signature of "group formed".
-    const sawGroupAccept = (lr: typeof leaderLr): boolean =>
+    // Both sides must have received their own m_group delta (CREO
+    // SHARED_NP, index 13) with a non-zero groupId — that's the wire
+    // signature of "group formed". Same authority story as above:
+    // `CM_setGroup(421)` is cross-server-only and never reaches us on a
+    // single-server cluster.
+    const sawGroupAccept = (lr: typeof leaderLr, selfId: bigint): boolean =>
       lr.transcript.some((e) => {
         if (e.direction !== 'recv') return false;
-        if (e.messageName !== 'ObjControllerMessage') return false;
-        const dec = e.decoded as {
-          message?: number;
-          decodedSubtype?: { data?: { groupId?: bigint } };
-        } | null;
-        return dec?.message === 421 && (dec.decodedSubtype?.data?.groupId ?? 0n) !== 0n;
+        if (!(e.decoded instanceof DeltasMessage)) return false;
+        if (e.decoded.target !== selfId) return false;
+        const decoded = decodeGroupDelta(e.decoded);
+        return decoded !== null && decoded.groupId !== 0n;
       });
-    expect(sawGroupAccept(leaderLr), 'leader received CM_setGroup with non-zero groupId').toBe(
+    expect(sawGroupAccept(leaderLr, leaderId), 'leader received m_group delta with non-zero groupId').toBe(
       true,
     );
-    expect(sawGroupAccept(inviteeLr), 'invitee received CM_setGroup with non-zero groupId').toBe(
+    expect(sawGroupAccept(inviteeLr, inviteeId), 'invitee received m_group delta with non-zero groupId').toBe(
       true,
     );
 

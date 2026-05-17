@@ -6,6 +6,11 @@
  * verify each role's wire output with a fake context, and use
  * `simulateRecv` to feed simulated server responses so the `expectWithin`
  * waiters resolve.
+ *
+ * The scenario uses `DeltasMessage` on the CREO SHARED_NP package to
+ * detect both the invite (m_groupInviter at idx 14) and the group-formed
+ * (m_group at idx 13) wire events — see scenarios/index.ts for the
+ * single-vs-cross-server-authority rationale.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -14,6 +19,11 @@ import { ReadIterator } from '../archive/read-iterator.js';
 import { runScript } from '../client/script/context.js';
 import { createFakeContext } from '../client/script/test-helpers.js';
 import {
+  CreoSharedNpIndices,
+  DeltasMessage,
+} from '../messages/game/baselines/deltas-message.js';
+import { BaselinePackageIds, ObjectTypeTags } from '../messages/game/baselines/registry.js';
+import {
   CLIENT_TO_AUTH_SERVER_FLAGS,
   CM_COMMAND_QUEUE_ENQUEUE,
   CommandQueueEnqueue,
@@ -21,8 +31,6 @@ import {
 } from '../messages/game/command-queue/index.js';
 import { ObjControllerMessage } from '../messages/game/obj-controller-message.js';
 import {
-  GroupAcceptDecoder,
-  GroupInviteDecoder,
   ObjControllerSubtypeIds,
   TradeMessageId,
   TradeStartDecoder,
@@ -31,47 +39,55 @@ import {
   BeginTradeMessage,
   TradeCompleteMessage,
   BeginVerificationMessage,
-  VerifyTradeMessage,
 } from '../messages/game/trade/index.js';
+import { writeStdString } from '../archive/string.js';
 import { scenarios } from './index.js';
 
 const LEADER_ID = 0xaa11n;
 const INVITEE_ID = 0xbb22n;
 const GROUP_ID = 0xcc33n;
 
-/** Helper — build a fake inbound `ObjControllerMessage` with a known subtype trailer. */
-function buildInboundGroupInvite(inviterId: bigint, inviterName = 'Han'): ObjControllerMessage {
-  const stream = new ByteStream();
-  GroupInviteDecoder.encode(stream, { inviterName, inviterId, inviterShipId: 0n });
-  return new ObjControllerMessage(
-    0,
-    ObjControllerSubtypeIds.CM_setGroupInviter,
-    inviterId,
-    0,
-    stream.toBytes(),
-    {
-      kind: GroupInviteDecoder.kind,
-      data: { inviterName, inviterId, inviterShipId: 0n },
-    },
+/**
+ * Helper — build a fake `DeltasMessage` carrying an `m_groupInviter`
+ * change (CREO SHARED_NP, idx 14). The `target` is the invitee whose
+ * inviter slot changed; on the wire this is what arrives when the leader's
+ * `useAbility('invite', invitee)` lands on a single-server cluster.
+ */
+function buildInboundGroupInvite(
+  target: bigint,
+  inviterId: bigint,
+  inviterName = 'Han',
+): DeltasMessage {
+  const pkg = new ByteStream();
+  pkg.writeU16(1); // dirtyCount
+  pkg.writeU16(CreoSharedNpIndices.M_GROUP_INVITER); // index = 14
+  pkg.writeI64(inviterId);
+  writeStdString(pkg, inviterName);
+  pkg.writeI64(0n); // inviterShipId
+  return new DeltasMessage(
+    target,
+    ObjectTypeTags.CREO,
+    BaselinePackageIds.SHARED_NP,
+    pkg.toBytes(),
   );
 }
 
-function buildInboundGroupAccept(
-  groupId: bigint,
-  disbandingCurrentGroup = false,
-): ObjControllerMessage {
-  const stream = new ByteStream();
-  GroupAcceptDecoder.encode(stream, { disbandingCurrentGroup, groupId });
-  return new ObjControllerMessage(
-    0,
-    ObjControllerSubtypeIds.CM_setGroup,
-    groupId,
-    0,
-    stream.toBytes(),
-    {
-      kind: GroupAcceptDecoder.kind,
-      data: { disbandingCurrentGroup, groupId },
-    },
+/**
+ * Helper — build a fake `DeltasMessage` carrying an `m_group` change
+ * (CREO SHARED_NP, idx 13). The `target` is the creature whose group
+ * pointer changed; on the wire this is what arrives when `setGroup`
+ * runs on the auth server.
+ */
+function buildInboundGroupAccept(target: bigint, groupId: bigint): DeltasMessage {
+  const pkg = new ByteStream();
+  pkg.writeU16(1); // dirtyCount
+  pkg.writeU16(CreoSharedNpIndices.M_GROUP); // index = 13
+  pkg.writeI64(groupId);
+  return new DeltasMessage(
+    target,
+    ObjectTypeTags.CREO,
+    BaselinePackageIds.SHARED_NP,
+    pkg.toBytes(),
   );
 }
 
@@ -113,9 +129,10 @@ describe('group-trade scenario — factory validation', () => {
 });
 
 describe('group-trade scenario — leader role', () => {
-  // The leader sleeps 1000ms before sending the invite — schedule recvs
-  // AFTER that so the waiter is already registered.
-  const POST_INITIAL_DELAY_MS = 1_100;
+  // The leader sends a `disband` preflight (250ms wait), then sleeps 1000ms
+  // before sending the invite — schedule recvs AFTER ~1300ms so the waiter
+  // is registered.
+  const POST_INITIAL_DELAY_MS = 1_400;
 
   it('queues `invite` against otherId, then `disband` after group forms', async () => {
     const factory = scenarios['group-trade'];
@@ -128,31 +145,34 @@ describe('group-trade scenario — leader role', () => {
     });
     const { ctx, sent, simulateRecv } = createFakeContext({ playerNetworkId: LEADER_ID });
 
-    // Run scenario in background; feed it a fake CM_setGroup so the
-    // `expectWithin` waiter resolves before its timeout.
+    // Run scenario in background; feed it a fake m_group delta on the
+    // LEADER's own NetworkId so the `expectWithin` waiter resolves.
     const runPromise = runScript(fn, ctx);
-    setTimeout(() => simulateRecv(buildInboundGroupAccept(GROUP_ID)), POST_INITIAL_DELAY_MS);
+    setTimeout(() => simulateRecv(buildInboundGroupAccept(LEADER_ID, GROUP_ID)), POST_INITIAL_DELAY_MS);
     const result = await runPromise;
 
     expect(result.error).toBeUndefined();
-    // Should have sent at least 2 ObjControllerMessages: invite + disband.
-    expect(sent.length).toBeGreaterThanOrEqual(2);
+    // Expected wire output: stale-clear disband, then invite, then final disband.
+    expect(sent.length).toBeGreaterThanOrEqual(3);
     const commands = sent.map((m) => {
       const obj = m as ObjControllerMessage;
       expect(obj.message).toBe(CM_COMMAND_QUEUE_ENQUEUE);
       return CommandQueueEnqueue.unpack(new ReadIterator(obj.data));
     });
-    // First send is the invite (with INVITEE_ID as the target).
-    expect(commands[0]?.commandHash).toBe(hashCommand('invite'));
-    expect(commands[0]?.targetId).toBe(INVITEE_ID);
-    // Last send is disband (no target).
+    // First send is the stale-clear disband.
+    expect(commands[0]?.commandHash).toBe(hashCommand('disband'));
+    // The invite (targeting INVITEE_ID) must appear in the queue.
+    const invite = commands.find((c) => c.commandHash === hashCommand('invite'));
+    expect(invite).toBeDefined();
+    expect(invite?.targetId).toBe(INVITEE_ID);
+    // Last send is the post-trade disband (no target).
     const last = commands[commands.length - 1];
     expect(last?.commandHash).toBe(hashCommand('disband'));
     // No soft-assertion failures since the group formed in time.
     expect(result.assertionFailures).toEqual([]);
   });
 
-  it('records a soft failure when CM_setGroup never arrives', async () => {
+  it('records a soft failure when the m_group delta never arrives', async () => {
     const factory = scenarios['group-trade'];
     if (!factory) throw new Error('group-trade not registered');
     const fn = factory({
@@ -167,7 +187,7 @@ describe('group-trade scenario — leader role', () => {
     expect(result.error).toBeUndefined();
     // expectWithin({soft:true}) auto-records one timeout message.
     expect(result.assertionFailures).toHaveLength(1);
-    expect(result.assertionFailures[0]).toMatch(/Timed out.*ObjControllerMessage/);
+    expect(result.assertionFailures[0]).toMatch(/Timed out.*DeltasMessage/);
   });
 
   it('drives the full SecureTrade handshake when tradeAmount > 0', async () => {
@@ -183,7 +203,7 @@ describe('group-trade scenario — leader role', () => {
     const { ctx, sent, simulateRecv } = createFakeContext({ playerNetworkId: LEADER_ID });
 
     const runPromise = runScript(fn, ctx);
-    setTimeout(() => simulateRecv(buildInboundGroupAccept(GROUP_ID)), POST_INITIAL_DELAY_MS);
+    setTimeout(() => simulateRecv(buildInboundGroupAccept(LEADER_ID, GROUP_ID)), POST_INITIAL_DELAY_MS);
     // After the trade starts, feed each handshake step so it completes.
     setTimeout(() => simulateRecv(new BeginTradeMessage(INVITEE_ID)), POST_INITIAL_DELAY_MS + 100);
     setTimeout(() => simulateRecv(new BeginVerificationMessage()), POST_INITIAL_DELAY_MS + 200);
@@ -221,7 +241,7 @@ describe('group-trade scenario — leader role', () => {
     const { ctx, sent, simulateRecv } = createFakeContext({ playerNetworkId: LEADER_ID });
 
     const runPromise = runScript(fn, ctx);
-    setTimeout(() => simulateRecv(buildInboundGroupAccept(GROUP_ID)), POST_INITIAL_DELAY_MS);
+    setTimeout(() => simulateRecv(buildInboundGroupAccept(LEADER_ID, GROUP_ID)), POST_INITIAL_DELAY_MS);
     await runPromise;
 
     const trade = sent.find(
@@ -246,15 +266,40 @@ describe('group-trade scenario — leader role', () => {
 
     const runPromise = runScript(fn, ctx);
     // Send a clear-group (groupId=0); the predicate should ignore this and time out.
-    setTimeout(() => simulateRecv(buildInboundGroupAccept(0n)), POST_INITIAL_DELAY_MS);
+    setTimeout(() => simulateRecv(buildInboundGroupAccept(LEADER_ID, 0n)), POST_INITIAL_DELAY_MS);
     const result = await runPromise;
 
     expect(result.assertionFailures).toHaveLength(1);
-    expect(result.assertionFailures[0]).toMatch(/Timed out.*ObjControllerMessage/);
+    expect(result.assertionFailures[0]).toMatch(/Timed out.*DeltasMessage/);
+  });
+
+  it('ignores a m_group delta targeted at a different creature', async () => {
+    // The predicate must filter by `target == selfId` so a neighbor's
+    // group change can't spuriously satisfy our wait.
+    const factory = scenarios['group-trade'];
+    if (!factory) throw new Error('group-trade not registered');
+    const fn = factory({
+      role: 'leader',
+      otherId: `0x${INVITEE_ID.toString(16)}`,
+      waitForOtherMs: '300',
+      dwellMs: '10',
+    });
+    const { ctx, simulateRecv } = createFakeContext({ playerNetworkId: LEADER_ID });
+
+    const runPromise = runScript(fn, ctx);
+    setTimeout(() => simulateRecv(buildInboundGroupAccept(0xdeadn, GROUP_ID)), POST_INITIAL_DELAY_MS);
+    const result = await runPromise;
+
+    expect(result.assertionFailures).toHaveLength(1);
+    expect(result.assertionFailures[0]).toMatch(/Timed out.*DeltasMessage/);
   });
 });
 
 describe('group-trade scenario — invitee role', () => {
+  // The invitee sends `decline` then `disband` (300ms total stale-clear)
+  // before starting to wait for the invite. Schedule recvs after ~350ms.
+  const POST_PREFLIGHT_MS = 400;
+
   it('waits for invite, then queues `join` and `leaveGroup`', async () => {
     const factory = scenarios['group-trade'];
     if (!factory) throw new Error('group-trade not registered');
@@ -267,30 +312,34 @@ describe('group-trade scenario — invitee role', () => {
     const { ctx, sent, simulateRecv } = createFakeContext({ playerNetworkId: INVITEE_ID });
 
     const runPromise = runScript(fn, ctx);
-    // Step 1: the inbound invite. The invitee accepts immediately.
-    setTimeout(() => simulateRecv(buildInboundGroupInvite(LEADER_ID)), 30);
-    // Step 2: the inbound group-accept; needs to land after the `join` ability fires.
-    setTimeout(() => simulateRecv(buildInboundGroupAccept(GROUP_ID)), 100);
+    // Step 1: the inbound invite (target == invitee, idx=14, inviterId != 0).
+    setTimeout(() => simulateRecv(buildInboundGroupInvite(INVITEE_ID, LEADER_ID)), POST_PREFLIGHT_MS);
+    // Step 2: the inbound group-accept (target == invitee, idx=13, groupId != 0).
+    setTimeout(() => simulateRecv(buildInboundGroupAccept(INVITEE_ID, GROUP_ID)), POST_PREFLIGHT_MS + 100);
     const result = await runPromise;
 
     expect(result.error).toBeUndefined();
     expect(result.assertionFailures).toEqual([]);
-    expect(sent.length).toBeGreaterThanOrEqual(2);
+    // Sends: decline (preflight), disband (preflight), join, leaveGroup.
+    expect(sent.length).toBeGreaterThanOrEqual(4);
     const commands = sent.map((m) => {
       const obj = m as ObjControllerMessage;
       expect(obj.message).toBe(CM_COMMAND_QUEUE_ENQUEUE);
       return CommandQueueEnqueue.unpack(new ReadIterator(obj.data));
     });
-    // First send is the `join` ability (no target).
-    expect(commands[0]?.commandHash).toBe(hashCommand('join'));
+    // Preflight: decline + disband (in either order, both must be present).
+    expect(commands.find((c) => c.commandHash === hashCommand('decline'))).toBeDefined();
+    expect(commands.find((c) => c.commandHash === hashCommand('disband'))).toBeDefined();
+    // `join` ability fires after the invite arrives.
+    expect(commands.find((c) => c.commandHash === hashCommand('join'))).toBeDefined();
     // Last send is `leaveGroup`.
     const last = commands[commands.length - 1];
     expect(last?.commandHash).toBe(hashCommand('leaveGroup'));
   });
 
   it('ignores a clear-inviter (inviterId=0) and times out cleanly', async () => {
-    // A clear-inviter is CM_setGroupInviter with inviterId=0; the invitee
-    // should NOT accept this and should time out the wait.
+    // A clear-inviter is the m_groupInviter delta with inviterId=0; the
+    // invitee should NOT accept this and should time out the wait.
     const factory = scenarios['group-trade'];
     if (!factory) throw new Error('group-trade not registered');
     const fn = factory({
@@ -303,15 +352,15 @@ describe('group-trade scenario — invitee role', () => {
 
     const runPromise = runScript(fn, ctx);
     // Inject a clear-inviter (a "decline / timeout" message).
-    setTimeout(() => simulateRecv(buildInboundGroupInvite(0n, '')), 30);
+    setTimeout(() => simulateRecv(buildInboundGroupInvite(INVITEE_ID, 0n, '')), POST_PREFLIGHT_MS);
     const result = await runPromise;
 
     expect(result.error).toBeUndefined();
     // Single failure from the soft expectWithin auto-timeout.
     expect(result.assertionFailures).toHaveLength(1);
-    expect(result.assertionFailures[0]).toMatch(/Timed out.*ObjControllerMessage/);
+    expect(result.assertionFailures[0]).toMatch(/Timed out.*DeltasMessage/);
 
-    // Only the leaveGroup send (no `join` since no real invite arrived).
+    // No `join` since no real invite arrived.
     const commands = sent.map((m) => {
       const obj = m as ObjControllerMessage;
       return CommandQueueEnqueue.unpack(new ReadIterator(obj.data));
@@ -320,7 +369,9 @@ describe('group-trade scenario — invitee role', () => {
     expect(commands.find((c) => c.commandHash === hashCommand('leaveGroup'))).toBeDefined();
   });
 
-  it('records a separate soft failure if CM_setGroup never arrives after the invite was accepted', async () => {
+  it('ignores an m_groupInviter delta targeted at a different creature', async () => {
+    // Predicate must filter by `target == selfId` — a neighbor's invite
+    // (e.g. someone else in the cell got invited) must not satisfy our wait.
     const factory = scenarios['group-trade'];
     if (!factory) throw new Error('group-trade not registered');
     const fn = factory({
@@ -332,12 +383,32 @@ describe('group-trade scenario — invitee role', () => {
     const { ctx, simulateRecv } = createFakeContext({ playerNetworkId: INVITEE_ID });
 
     const runPromise = runScript(fn, ctx);
-    setTimeout(() => simulateRecv(buildInboundGroupInvite(LEADER_ID)), 20);
-    // Never send CM_setGroup; expectWithin({soft:true}) auto-records its timeout.
+    // A bystander (not us) received an invite; we must ignore it.
+    setTimeout(() => simulateRecv(buildInboundGroupInvite(0xbeefn, LEADER_ID)), POST_PREFLIGHT_MS);
     const result = await runPromise;
 
-    // One failure from the inner CM_setGroup wait.
     expect(result.assertionFailures).toHaveLength(1);
-    expect(result.assertionFailures[0]).toMatch(/Timed out.*ObjControllerMessage/);
+    expect(result.assertionFailures[0]).toMatch(/Timed out.*DeltasMessage/);
+  });
+
+  it('records a separate soft failure if the m_group delta never arrives after the invite was accepted', async () => {
+    const factory = scenarios['group-trade'];
+    if (!factory) throw new Error('group-trade not registered');
+    const fn = factory({
+      role: 'invitee',
+      otherId: `0x${LEADER_ID.toString(16)}`,
+      waitForOtherMs: '100',
+      dwellMs: '10',
+    });
+    const { ctx, simulateRecv } = createFakeContext({ playerNetworkId: INVITEE_ID });
+
+    const runPromise = runScript(fn, ctx);
+    setTimeout(() => simulateRecv(buildInboundGroupInvite(INVITEE_ID, LEADER_ID)), POST_PREFLIGHT_MS);
+    // Never send the m_group delta; expectWithin({soft:true}) auto-records its timeout.
+    const result = await runPromise;
+
+    // One failure from the inner m_group wait.
+    expect(result.assertionFailures).toHaveLength(1);
+    expect(result.assertionFailures[0]).toMatch(/Timed out.*DeltasMessage/);
   });
 });

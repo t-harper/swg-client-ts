@@ -45,12 +45,46 @@ import {
   type CharacterRecord,
   type CityState,
   type PhaseName,
+  type StructureRecord,
   isPhaseComplete,
   loadState,
   markPhaseFinished,
   markPhaseStarted,
   saveState,
 } from './state.js';
+
+/**
+ * Build a callback that persists a `StructureRecord` into `state.structures`.
+ *
+ * Keying strategy:
+ *   - One structure per owner (cityhall, house, guildhall, civic) →
+ *     key = `${ownerAccount}` (overwrites prior placement record).
+ *   - Multi-structure per owner (mayor's gardens) → key =
+ *     `${ownerAccount}:${subKind}` so each garden is recorded separately.
+ *
+ * Each invocation mutates the in-memory state and writes it back to disk so
+ * partial-success scenarios still leave behind a paper trail even if a later
+ * step crashes. Scenarios run in parallel inside a Fleet but JS is
+ * single-threaded, so concurrent callback invocations interleave at await
+ * points only — the keyed assignment + `saveState` pair is atomic from the
+ * orchestrator's point of view.
+ */
+function makeStructurePersistCallback(
+  state: CityState,
+): (rec: StructureRecord) => void {
+  return (rec) => {
+    const key =
+      rec.kind === 'garden' && rec.subKind !== undefined
+        ? `${rec.ownerAccount}:${rec.subKind}`
+        : rec.ownerAccount;
+    state.structures[key] = rec;
+    try {
+      saveState(state);
+    } catch {
+      // Disk write failure shouldn't abort the in-flight scenario.
+    }
+  };
+}
 
 export type Mode = 'mvp' | 'full' | 'verify' | 'phase0pre';
 
@@ -383,10 +417,13 @@ async function phase2_mayor(
   }
 
   const client = new SwgClient({ loginServer: opts.loginServer });
+  const onStructurePlaced = makeStructurePersistCallback(state);
   const scenario = mayorScenario({
     cityCenter: { x: mayor.x, z: mayor.z },
     cityName: state.cityName,
     rotation: mayor.rotation,
+    ownerAccount: mayor.account,
+    onStructurePlaced,
   });
 
   const result = await client.fullLifecycle({
@@ -424,13 +461,14 @@ async function phase3_housing(
     return { ok: true, notes: 'dry-run' };
   }
 
+  const onStructurePlaced = makeStructurePersistCallback(state);
   const configs: FleetClientConfig[] = residents.map((slot) => ({
     account: slot.account,
     characterName: slot.characterName,
     planet: 'mos_eisley',
     profession: 'combat_brawler',
     holdZonedInMs: 60_000, // walk + place + walk-in + declare-residence
-    script: residentScenario({ slot }),
+    script: residentScenario({ slot, onStructurePlaced }),
   }));
 
   const fleet = new Fleet({ loginServer: opts.loginServer });
@@ -460,6 +498,7 @@ async function phase4_civic(
     return { ok: true, notes: 'dry-run' };
   }
 
+  const onStructurePlaced = makeStructurePersistCallback(state);
   const configs: FleetClientConfig[] = [
     ...civic.map((slot) => ({
       account: slot.account,
@@ -467,7 +506,7 @@ async function phase4_civic(
       planet: 'mos_eisley',
       profession: 'combat_brawler',
       holdZonedInMs: 45_000,
-      script: civicScenario({ slot }),
+      script: civicScenario({ slot, onStructurePlaced }),
     })),
     ...guildLeaders.map((slot) => ({
       account: slot.account,
@@ -475,7 +514,7 @@ async function phase4_civic(
       planet: 'mos_eisley',
       profession: 'combat_brawler',
       holdZonedInMs: 45_000,
-      script: guildScenario({ slot }),
+      script: guildScenario({ slot, onStructurePlaced }),
     })),
     ...guildExtras.map((slot) => ({
       account: slot.account,
@@ -483,7 +522,7 @@ async function phase4_civic(
       planet: 'mos_eisley',
       profession: 'combat_brawler',
       holdZonedInMs: 45_000,
-      script: guildScenario({ slot }),
+      script: guildScenario({ slot, onStructurePlaced }),
     })),
   ];
 
@@ -513,13 +552,18 @@ async function phase5_decor(
   }
 
   const client = new SwgClient({ loginServer: opts.loginServer });
+  const onStructurePlaced = makeStructurePersistCallback(state);
   const result = await client.fullLifecycle({
     account: mayor.account,
     characterName: mayor.characterName,
     planet: 'mos_eisley',
     profession: 'combat_brawler',
     holdZonedInMs: 90_000,
-    script: decorationScenario({ decorations: gardenAnchors() }),
+    script: decorationScenario({
+      decorations: gardenAnchors(),
+      ownerAccount: mayor.account,
+      onStructurePlaced,
+    }),
   });
   const failures = result.scriptResult?.assertionFailures ?? [];
   return {
@@ -564,9 +608,8 @@ async function phase6_verify(
   const expectedCitizens = opts.mode === 'mvp' ? 5 : 30;
   const expectedStructures = opts.mode === 'mvp' ? 5 : 22;
 
-  // Suppress unused — Phase 6 doesn't actually need the slot list now that
-  // we query the server directly, but keep the parameter for symmetry with
-  // other phase signatures.
+  // Phase 6 doesn't need the slot list now that it queries the server
+  // directly; keep the param for symmetry with the other phase signatures.
   void slots;
 
   const client = new SwgClient({ loginServer: opts.loginServer });

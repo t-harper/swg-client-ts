@@ -6,3 +6,5 @@ dist
 coverage
 .DS_Store
 .claude/
+scripts/build-city/state.json
+scripts/build-city/state.json.tmp

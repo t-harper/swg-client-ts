@@ -123,7 +123,13 @@ import type { GameNetworkMessage } from '../../messages/interface.js';
 import type { NetworkId, SceneStart, Vector3 } from '../../types.js';
 import type { CharacterSheet } from '../character-sheet.js';
 import { createCharacterSheet } from '../character-sheet.js';
+import type { ChatHandlers } from '../chat-handlers.js';
+import { createChatHandlers } from '../chat-handlers.js';
 import type { MessageDispatcher } from '../dispatcher.js';
+import type { GroupView } from '../group-view.js';
+import { createGroupView } from '../group-view.js';
+import type { GuildView } from '../guild-view.js';
+import { createGuildView } from '../guild-view.js';
 import { SceneCreateObjectByCrc } from '../../messages/game/scene-create-object-by-crc.js';
 import { SceneCreateObjectByName } from '../../messages/game/scene-create-object-by-name.js';
 import {
@@ -442,6 +448,42 @@ export interface ScriptContext {
    *   ctx.inventory.ready                          // true once populated
    */
   readonly inventory: InventoryView;
+
+  /**
+   * Live, always-fresh view of the player's group. Joins `m_group` on the
+   * local CREO with the GroupObject's roster baseline:
+   *
+   *   ctx.group.id                  // GroupObject NetworkId or null
+   *   ctx.group.size                // member count
+   *   ctx.group.leader?.name        // leader display name
+   *   ctx.group.members             // [{id, name, position, health, posture, distance}, ...]
+   *
+   * `follow(leaderId)` mirrors the leader's transform broadcasts as our
+   * own `CM_netUpdateTransform` until the returned unsubscribe is called.
+   */
+  readonly group: GroupView;
+
+  /**
+   * Live view of the player's guild. `guildId` is from CREO; other fields
+   * are populated only if the GuildObject baselines are visible (typically
+   * SERVER-package only — surface what we can, leave the rest null).
+   *
+   *   ctx.guild.id                  // numeric guild id; 0 if no guild
+   *   ctx.guild.name                // null unless GuildObject SHARED baseline lands
+   *   ctx.guild.abbrev              // best-effort from m_abbrevs
+   */
+  readonly guild: GuildView;
+
+  /**
+   * Predicate-driven chat-handler subscriptions. Each `on*` returns an
+   * unsubscribe function; subscriptions are also auto-detached during
+   * `runScript` cleanup so they don't leak across runs.
+   *
+   *   ctx.chat.onSay(/follow me/i, (text, sender) => ...)
+   *   ctx.chat.onTell(/help/, (text, sender) => ...)
+   *   ctx.chat.onSystemMessage(/level up/, (text) => ...)
+   */
+  readonly chat: ChatHandlers;
   /**
    * Find the nearest `WorldObject` matching `typeId` (one of `ObjectTypeTags`),
    * sorted by 2D distance from the player. Excludes the player itself by
@@ -1285,6 +1327,12 @@ export interface ScriptContext {
 interface InternalContext extends ScriptContext {
   /** Detach handle for the character sheet's dispatcher subscriptions. */
   readonly _characterSheetDetach: () => void;
+  /** Detach handle for the group view's `follow()` subscriptions. */
+  readonly _groupViewDetach: () => void;
+  /** Detach handle for the guild view (currently a no-op; here for symmetry). */
+  readonly _guildViewDetach: () => void;
+  /** Detach handle for every ctx.chat.* subscription registered during the run. */
+  readonly _chatHandlersDetach: () => void;
   /** Tracking for the orchestrator. */
   readonly _state: {
     sendsCount: number;
@@ -1445,6 +1493,22 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     templateName: opts.sceneStart.templateName,
   });
 
+  const groupViewHandle = createGroupView({
+    world: opts.world,
+    character: characterSheetHandle.view,
+    dispatcher: opts.dispatcher,
+    playerNetworkId: opts.sceneStart.playerNetworkId,
+  });
+
+  const guildViewHandle = createGuildView({
+    world: opts.world,
+    character: characterSheetHandle.view,
+  });
+
+  const chatHandlersHandle = createChatHandlers({
+    dispatcher: opts.dispatcher,
+  });
+
   const ctx: InternalContext = {
     dispatcher: opts.dispatcher,
     sceneStart: opts.sceneStart,
@@ -1453,8 +1517,14 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     character: characterSheetHandle.view,
     datapad: datapadView,
     inventory: inventoryView,
+    group: groupViewHandle.view,
+    guild: guildViewHandle.view,
+    chat: chatHandlersHandle.handlers,
     _state: state,
     _characterSheetDetach: characterSheetHandle.detach,
+    _groupViewDetach: groupViewHandle.detach,
+    _guildViewDetach: guildViewHandle.detach,
+    _chatHandlersDetach: chatHandlersHandle.detach,
 
     findNearest(
       typeId: number,
@@ -2559,6 +2629,10 @@ export async function runScript(fn: ScenarioFn, ctx: ScriptContext): Promise<Scr
     // multiple times — `detach()` empties the unsubscriber list on the
     // first call.
     internal._characterSheetDetach();
+    // Detach group / guild / chat helpers — all idempotent.
+    internal._groupViewDetach();
+    internal._guildViewDetach();
+    internal._chatHandlersDetach();
     if (internal._state.datapadCreateUnsubscribe !== null) {
       internal._state.datapadCreateUnsubscribe();
       internal._state.datapadCreateUnsubscribe = null;

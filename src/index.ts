@@ -113,6 +113,32 @@ export type {
   HamBar,
   PostureName,
 } from './client/character-sheet.js';
+// Live group / guild / chat-handler views (exposed as `ctx.group`,
+// `ctx.guild`, `ctx.chat` during script runs). All three are derived from
+// the WorldModel + dispatcher subscriptions — no extra wire round-trips.
+export { createGroupView } from './client/group-view.js';
+export type {
+  CreateGroupViewOptions,
+  GroupMember,
+  GroupView,
+  GroupViewHandle,
+} from './client/group-view.js';
+export { createGuildView } from './client/guild-view.js';
+export type {
+  CreateGuildViewOptions,
+  GuildMemberInfo,
+  GuildView,
+  GuildViewHandle,
+} from './client/guild-view.js';
+export { createChatHandlers } from './client/chat-handlers.js';
+export type {
+  ChatHandler,
+  ChatHandlers,
+  ChatHandlersHandle,
+  ChatPredicate,
+  ChatSender,
+  CreateChatHandlersOptions,
+} from './client/chat-handlers.js';
 export type { WalkToOptions, CircleOptions, WalkToCellOptions } from './client/script/movement.js';
 export type { ExpectOptions } from './client/script/expectations.js';
 export { groupTradeScenario, scenarios } from './scenarios/index.js';

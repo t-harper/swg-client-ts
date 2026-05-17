@@ -137,6 +137,19 @@ import {
 } from '../baseline-helpers.js';
 import { type DatapadView, DatapadViewImpl } from './datapad-view.js';
 import {
+  type CraftingCacheView,
+  CraftingSessionCacheImpl,
+} from '../crafting-session.js';
+import {
+  type MissionsCacheView,
+  MissionsCacheImpl,
+} from '../missions-cache.js';
+import {
+  type BestKnownSample,
+  type SurveyLastResults,
+  SurveyCacheImpl,
+} from '../survey-cache.js';
+import {
   type ExpectOptions,
   expectAbsent as expectAbsentImpl,
   expectAfter as expectAfterImpl,
@@ -347,6 +360,23 @@ export interface ListForSaleResult {
   resultCode: number;
   /** Server-supplied human-readable rejection text (ITEM_RESTRICTED only). */
   errorReason?: string;
+}
+
+/**
+ * Hybrid callable+propertied surface for `ctx.survey`.
+ *
+ * `ctx.survey(toolId, name)` still issues the wire-level `requestsurvey`
+ * command (the existing behavior); the function carries `lastResults`
+ * + `bestKnown` properties auto-populated from inbound `SurveyMessage`
+ * events. This lets scripts ask `ctx.survey.bestKnown('Resotine')` after
+ * one or more `ctx.survey(...)` calls without juggling a separate cache.
+ */
+export interface SurveyCallable {
+  (toolId: NetworkId, resourceTypeName: string): number;
+  /** Most recent `SurveyMessage` parsed into `{ resourceType, points }`, or `null`. */
+  readonly lastResults: SurveyLastResults | null;
+  /** Best-concentration sample seen this session for the named resource type. */
+  bestKnown(resourceType: string): BestKnownSample | null;
 }
 
 /** Optional overrides for `ctx.say()` — directed chat, shout, mood, etc. */
@@ -809,8 +839,16 @@ export interface ScriptContext {
    * `ResourceListForSurveyMessage.data` array of currently-spawned types.
    *
    * Returns the command-queue sequence id used.
+   *
+   * Also exposes:
+   *   - `ctx.survey.lastResults` — `{ resourceType, points }` from the most
+   *     recent inbound `SurveyMessage`, paired with the resource type from
+   *     the corresponding outbound `ctx.survey()` call. `null` until the
+   *     first survey reply arrives.
+   *   - `ctx.survey.bestKnown(resourceType)` — best-concentration sample
+   *     observed this session for the named type, or `null`.
    */
-  survey(toolId: NetworkId, resourceTypeName: string): number;
+  survey: SurveyCallable;
 
   /**
    * Fetch the list of currently-spawned resource types this `toolId` can
@@ -1000,6 +1038,35 @@ export interface ScriptContext {
    * confirmation.
    */
   abortMission(missionId: NetworkId): void;
+
+  /**
+   * Live cache of active `MissionObject` instances. Populated automatically
+   * from MISO baselines that arrive via the WorldModel (typically after
+   * `requestMissionList`, or already in the world after zone-in if the
+   * player has accepted missions). Reads through to WorldModel on each
+   * access, so the snapshot is always current.
+   *
+   *   ctx.missions.active                       // every active mission now
+   *   ctx.missions.findByCategory(/destroy/i)   // filter by type regex
+   *   ctx.missions.bestPayout()                 // highest-credits mission
+   */
+  readonly missions: MissionsCacheView;
+
+  /**
+   * Live cache of the in-flight crafting session. `{ active: false }` when
+   * no session is open; `{ active: true, schematic, slots, ... }` once the
+   * server has pushed a `DraftSlots` message (i.e. a schematic has been
+   * picked and the ManufactureSchematicObject is live).
+   *
+   *   if (ctx.crafting.session.active) {
+   *     for (const slot of ctx.crafting.session.slots) { ... }
+   *   }
+   *
+   * Slot assignment state (`slot.assignedId`) is tracked locally from
+   * outbound `assignCraftingSlot` / `clearCraftingSlot` calls so it
+   * reflects the client's intent even before the server confirms.
+   */
+  readonly crafting: CraftingCacheView;
 
   // --- Vehicle / Mount / Pet primitives ---
 
@@ -1285,6 +1352,12 @@ export interface ScriptContext {
 interface InternalContext extends ScriptContext {
   /** Detach handle for the character sheet's dispatcher subscriptions. */
   readonly _characterSheetDetach: () => void;
+  /** Crafting-session cache; detached at script teardown. */
+  readonly _craftingCache: CraftingSessionCacheImpl;
+  /** Survey results cache; detached at script teardown. */
+  readonly _surveyCache: SurveyCacheImpl;
+  /** Missions cache; detached at script teardown. */
+  readonly _missionsCache: MissionsCacheImpl;
   /** Tracking for the orchestrator. */
   readonly _state: {
     sendsCount: number;
@@ -1445,6 +1518,33 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     templateName: opts.sceneStart.templateName,
   });
 
+  // Live caches — all detached in `runScript`'s finally block.
+  const surveyCache = new SurveyCacheImpl(opts.dispatcher);
+  surveyCache.attach();
+  const craftingCache = new CraftingSessionCacheImpl(opts.dispatcher);
+  craftingCache.attach();
+  // Missions are pure derived state over the WorldModel — attach is a no-op.
+  const missionsCache = new MissionsCacheImpl(opts.world);
+  missionsCache.attach();
+
+  // Build the callable+propertied `ctx.survey` surface. The callable
+  // closes over `ctx` (declared below) — JS hoists the binding even though
+  // `ctx` is `const`, and the call only happens after `ctx` is fully built.
+  const surveyFn = (toolId: NetworkId, resourceTypeName: string): number => {
+    // Tag the cache BEFORE sending so a fast server reply can't race the
+    // assignment. The cache pairs the next SurveyMessage with this name.
+    surveyCache.recordSurveyRequest(resourceTypeName);
+    return ctx.useAbility('requestsurvey', toolId, resourceTypeName);
+  };
+  const surveyCallable = Object.defineProperties(surveyFn, {
+    lastResults: { get: () => surveyCache.lastResults, enumerable: true },
+    bestKnown: {
+      value: (resourceType: string): BestKnownSample | null =>
+        surveyCache.bestKnown(resourceType),
+      enumerable: true,
+    },
+  }) as SurveyCallable;
+
   const ctx: InternalContext = {
     dispatcher: opts.dispatcher,
     sceneStart: opts.sceneStart,
@@ -1453,8 +1553,14 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     character: characterSheetHandle.view,
     datapad: datapadView,
     inventory: inventoryView,
+    missions: missionsCache,
+    crafting: craftingCache,
     _state: state,
     _characterSheetDetach: characterSheetHandle.detach,
+    _craftingCache: craftingCache,
+    _surveyCache: surveyCache,
+    _missionsCache: missionsCache,
+    survey: surveyCallable,
 
     findNearest(
       typeId: number,
@@ -1816,6 +1922,10 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
         { kind: CraftingSlotAssignDecoder.kind, data },
       );
       ctx.send(wrapped);
+      // Mirror the assignment into the local crafting-session cache so
+      // `ctx.crafting.session.slots[i].assignedId` reflects the client's
+      // intent immediately (the server doesn't echo per-slot state back).
+      craftingCache.recordSlotAssign(slotIndex, ingredientId);
       return seq;
     },
 
@@ -1837,6 +1947,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
         { kind: CraftingSlotEmptyDecoder.kind, data },
       );
       ctx.send(wrapped);
+      craftingCache.recordSlotEmpty(slotIndex);
       return seq;
     },
 
@@ -1930,15 +2041,9 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     },
 
     // --- Survey primitives ---
-
-    survey(toolId: NetworkId, resourceTypeName: string): number {
-      // Server-side commandFuncRequestSurvey (CommandCppFuncs.cpp:2761) takes
-      // the survey tool's NetworkId as `target` and the resource TYPE NAME
-      // (not class) as `params`. The script trigger
-      // `survey_tool_script.OnRequestSurvey` then calls `requestSurvey` JNI
-      // → SurveySystem::TaskSurvey which looks the type up by exact name.
-      return ctx.useAbility('requestsurvey', toolId, resourceTypeName);
-    },
+    // `survey` is the callable+propertied surface built above; the other
+    // helpers (fetchSurveyResources, waitForSurvey, sample, ...) are
+    // regular methods on the literal.
 
     async fetchSurveyResources(
       toolId: NetworkId,
@@ -2567,6 +2672,10 @@ export async function runScript(fn: ScenarioFn, ctx: ScriptContext): Promise<Scr
       internal._state.ownedInventoryView.detach();
       internal._state.ownedInventoryView = null;
     }
+    // Live caches — survey / crafting / missions all detach idempotently.
+    internal._surveyCache.detach();
+    internal._craftingCache.detach();
+    internal._missionsCache.detach();
   }
   return {
     elapsedMs: Date.now() - t0,

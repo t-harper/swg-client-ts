@@ -47,7 +47,6 @@
  */
 
 import {
-  buildContainerIndex,
   Fleet,
   type FleetClientConfig,
   type NetworkId,
@@ -55,7 +54,7 @@ import {
   type ScenarioFn,
   type ScriptContext,
   type SurveyPoint,
-  type TranscriptEvent,
+  type WorldObject,
 } from '../src/index.js';
 
 // ---------------------------------------------------------------------------
@@ -79,37 +78,60 @@ const TOOL_TEMPLATE_TO_CLASSES: Array<{ pattern: RegExp; classes: string[] }> = 
 
 function findSurveyTools(ctx: ScriptContext): Map<string, NetworkId> {
   const result = new Map<string, NetworkId>();
-  const transcriptRef = { transcript: ctx.dispatcher.transcript };
-  const index = buildContainerIndex(transcriptRef as { transcript: TranscriptEvent[] });
   const visited = new Set<string>();
-  const queue: NetworkId[] = [ctx.sceneStart.playerNetworkId];
+  // Seed from the auto-synced inventory + anything else contained by the
+  // player (datapad, appearance inventory, ...).
+  const queue: Array<{ id: NetworkId; templateName: string; name: string }> = [];
+  for (const it of ctx.inventory.items) {
+    queue.push({ id: it.networkId, templateName: it.templateName ?? '', name: it.name ?? '' });
+  }
+  for (const obj of ctx.findInContainer(ctx.sceneStart.playerNetworkId)) {
+    queue.push({ id: obj.id, templateName: obj.templateName ?? '', name: deriveBaselineName(obj) });
+  }
+
   while (queue.length > 0) {
-    const parent = queue.shift();
-    if (parent === undefined) continue;
-    const key = parent.toString();
+    const cur = queue.shift();
+    if (cur === undefined) continue;
+    const key = cur.id.toString();
     if (visited.has(key)) continue;
     visited.add(key);
-    const children = index.get(parent) ?? [];
-    for (const child of children) {
-      const candidates = [child.templateName ?? '', child.name ?? ''];
-      for (const text of candidates) {
-        if (text === '') continue;
-        let matched = false;
-        for (const { pattern, classes } of TOOL_TEMPLATE_TO_CLASSES) {
-          if (pattern.test(text)) {
-            for (const cls of classes) {
-              if (!result.has(cls)) result.set(cls, child.networkId);
-            }
-            matched = true;
-            break;
+
+    const candidates = [cur.templateName, cur.name];
+    for (const text of candidates) {
+      if (text === '') continue;
+      let matched = false;
+      for (const { pattern, classes } of TOOL_TEMPLATE_TO_CLASSES) {
+        if (pattern.test(text)) {
+          for (const cls of classes) {
+            if (!result.has(cls)) result.set(cls, cur.id);
           }
+          matched = true;
+          break;
         }
-        if (matched) break;
       }
-      queue.push(child.networkId);
+      if (matched) break;
+    }
+    // Recurse into nested containers (e.g. backpacks).
+    for (const child of ctx.findInContainer(cur.id)) {
+      queue.push({
+        id: child.id,
+        templateName: child.templateName ?? '',
+        name: deriveBaselineName(child),
+      });
     }
   }
   return result;
+}
+
+function deriveBaselineName(obj: WorldObject): string {
+  // BaselinePackageIds.SHARED = 3
+  const shared = obj.baselines.get(3) as
+    | { objectName?: string; nameStringId?: { text?: string } }
+    | undefined;
+  if (shared === undefined) return '';
+  if (typeof shared.objectName === 'string' && shared.objectName !== '') return shared.objectName;
+  if (typeof shared.nameStringId?.text === 'string') return shared.nameStringId.text;
+  return '';
 }
 
 function normalizeClass(cls: string): string {

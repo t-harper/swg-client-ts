@@ -11,7 +11,6 @@
  *   4. Server queues placeStructure command which fires OnPlaceStructure → structure created
  */
 
-import { extractInventoryContainerId } from '../../src/client/baseline-helpers.js';
 import { ChatSystemMessage } from '../../src/messages/game/chat/index.js';
 import { ObjectMenuSelectMessage, RadialMenuTypes } from '../../src/messages/game/object-menu-select-message.js';
 import { SceneCreateObjectByName } from '../../src/messages/game/scene-create-object-by-name.js';
@@ -23,7 +22,8 @@ import type { StructureRecord } from './state.js';
 
 /**
  * Resolve the player's inventory NetworkId for spawning deeds.
- * Tries admin lookup first (always works for admin chars), falls back to baselines.
+ * Tries admin lookup first (always works for admin chars), falls back to
+ * the auto-synced `ctx.inventory.containerId`.
  */
 export async function resolveInventoryOid(ctx: ScriptContext): Promise<NetworkId> {
   try {
@@ -32,8 +32,8 @@ export async function resolveInventoryOid(ctx: ScriptContext): Promise<NetworkId
   } catch {
     // fall through
   }
-  const fromBaselines = extractInventoryContainerId(ctx.dispatcher.transcript);
-  if (fromBaselines !== null) return fromBaselines;
+  const fromInventory = ctx.inventory.containerId;
+  if (fromInventory !== null) return fromInventory;
   // Last resort: use player NetworkId (won't work for createIn but at least returns something)
   return ctx.sceneStart.playerNetworkId;
 }

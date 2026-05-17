@@ -126,6 +126,10 @@ import { createCharacterSheet } from '../character-sheet.js';
 import type { MessageDispatcher } from '../dispatcher.js';
 import { SceneCreateObjectByCrc } from '../../messages/game/scene-create-object-by-crc.js';
 import { SceneCreateObjectByName } from '../../messages/game/scene-create-object-by-name.js';
+import {
+  InventoryViewImpl,
+  type InventoryView,
+} from '../inventory-view.js';
 import type { WorldModel, WorldObject } from '../world-model.js';
 import {
   PLAYER_DATAPAD_TEMPLATE_CRC,
@@ -415,35 +419,29 @@ export interface ScriptContext {
    * baselines and deltas arrive on the dispatcher. Use `ctx.character.ready`
    * to gate on "first CREO baseline received" before reading fields that
    * default to 0/null.
-   *
-   * Convenience queries:
-   *   `ctx.character.health.current` / `.health.max` — current HAM bar
-   *   `ctx.character.cashBalance` / `.bankBalance`   — credits on hand vs in the bank
-   *   `ctx.character.posture === 'sitting'`          — posture state
-   *   `ctx.character.skills.includes('combat_brawler_master')` — skill check
-   *   `ctx.character.groupId !== null`               — in a group?
-   *
-   * For the post-hoc, hashable equivalent (used by reconnect tests), see
-   * `snapshot(lifecycleResult)`.
    */
   readonly character: CharacterSheet;
 
   /**
    * Always-fresh view of the player's datapad — vehicle/pet PCDs,
-   * waypoints, missions, ship items, manufacturing schematics. Auto-opened
-   * by the game stage right after zone-in completes; entries are derived
-   * from `ctx.world` (no duplicate state) so they update as the server
-   * pushes baselines/deltas/containment changes.
+   * waypoints, missions, ship items, manufacturing schematics.
    *
    *   ctx.datapad.vehicles()[0]?.networkId    // first vehicle PCD
    *   ctx.datapad.waypoints()                 // every waypoint
    *   ctx.datapad.findByTemplate(/swoop/)     // text-match by template
-   *
-   * `containerId` is `null` until the datapad's `SceneCreateObjectByName`
-   * arrives; `ready` flips to `true` once it does. For deterministic test
-   * code use `await ctx.wait(small)` after zone-in if `ready === false`.
    */
   readonly datapad: DatapadView;
+
+  /**
+   * Always-accessible, auto-synced view of the player's inventory.
+   * Updated live from baselines/deltas/scene-destroy.
+   *
+   *   ctx.inventory.items                          // every item now
+   *   ctx.inventory.findByTemplate(/survey_tool/i) // pattern-match
+   *   ctx.inventory.findById(0xabcdn)              // by NetworkId
+   *   ctx.inventory.ready                          // true once populated
+   */
+  readonly inventory: InventoryView;
   /**
    * Find the nearest `WorldObject` matching `typeId` (one of `ObjectTypeTags`),
    * sorted by 2D distance from the player. Excludes the player itself by
@@ -1327,6 +1325,13 @@ interface InternalContext extends ScriptContext {
     assertionFailures: string[];
     /** Unsubscribe handle for the live datapad SceneCreateObjectByName listener. */
     datapadCreateUnsubscribe: (() => void) | null;
+    /**
+     * `InventoryViewImpl` constructed by `createScriptContext` (vs. passed
+     * in via opts). Detached during `runScript` teardown. Null when the
+     * caller supplied their own InventoryView (assumed to be managed
+     * externally).
+     */
+    ownedInventoryView: InventoryViewImpl | null;
   };
 }
 
@@ -1340,6 +1345,13 @@ export interface CreateScriptContextOptions {
    * scripts can query `ctx.world.nearby(20)` etc.
    */
   world: WorldModel;
+  /**
+   * Optional pre-built {@link InventoryView}. If omitted, a fresh one is
+   * constructed over `world` here and attached for the lifetime of the
+   * context. Pass an externally-managed instance (e.g. one that was
+   * primed before the script started) if you need precise control.
+   */
+  inventory?: InventoryView;
   /** Initial sequence number for UpdateTransformMessage. Default 1. */
   initialSequenceNumber?: number;
   /** Initial sequence number for command-queue messages. Default 1. */
@@ -1355,6 +1367,19 @@ export interface CreateScriptContextOptions {
 }
 
 export function createScriptContext(opts: CreateScriptContextOptions): ScriptContext {
+  // Construct (and attach) an InventoryView if the caller didn't provide
+  // one. Either way, the script context just exposes it via `ctx.inventory`.
+  let ownedInventoryView: InventoryViewImpl | null = null;
+  let inventoryView: InventoryView;
+  if (opts.inventory !== undefined) {
+    inventoryView = opts.inventory;
+  } else {
+    const impl = new InventoryViewImpl(opts.world, opts.sceneStart.playerNetworkId);
+    impl.attach();
+    ownedInventoryView = impl;
+    inventoryView = impl;
+  }
+
   const state = {
     sendsCount: 0,
     didLogout: false,
@@ -1384,6 +1409,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     bazaarRequestId: opts.initialBazaarRequestId ?? 1,
     assertionFailures: [] as string[],
     datapadCreateUnsubscribe: null as (() => void) | null,
+    ownedInventoryView,
   };
 
   // DatapadView — seeded from any datapad create event already in the
@@ -1426,6 +1452,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     world: opts.world,
     character: characterSheetHandle.view,
     datapad: datapadView,
+    inventory: inventoryView,
     _state: state,
     _characterSheetDetach: characterSheetHandle.detach,
 
@@ -2535,6 +2562,10 @@ export async function runScript(fn: ScenarioFn, ctx: ScriptContext): Promise<Scr
     if (internal._state.datapadCreateUnsubscribe !== null) {
       internal._state.datapadCreateUnsubscribe();
       internal._state.datapadCreateUnsubscribe = null;
+    }
+    if (internal._state.ownedInventoryView !== null) {
+      internal._state.ownedInventoryView.detach();
+      internal._state.ownedInventoryView = null;
     }
   }
   return {

@@ -28,11 +28,11 @@
 
 import {
   SwgClient,
-  buildContainerIndex,
   type LifecycleResult,
   type NetworkId,
   type ScenarioFn,
   type ScriptContext,
+  type WorldObject,
 } from '../src/index.js';
 import {
   CraftingIngredientType,
@@ -135,25 +135,53 @@ interface InvItem {
 }
 
 function walkAllInventory(ctx: ScriptContext): InvItem[] {
-  const index = buildContainerIndex(ctx.dispatcher.transcript);
+  // Read from the auto-synced inventory view + walk nested containers via
+  // the live WorldModel. Bypasses the post-mortem transcript walk so this
+  // works mid-script (each call returns the latest state).
   const playerId = ctx.sceneStart.playerNetworkId;
   const visited = new Set<string>();
-  const queue: bigint[] = [playerId];
   const items: InvItem[] = [];
+
+  const push = (id: NetworkId, templateName: string, name: string): void => {
+    items.push({ id, templateName, name });
+  };
+
+  const queue: NetworkId[] = [];
+  // Seed: every item directly in the inventory.
+  for (const it of ctx.inventory.items) {
+    push(it.networkId, it.templateName ?? '', it.name ?? '');
+    queue.push(it.networkId);
+  }
+  // Seed: anything else directly contained by the player (datapad,
+  // appearance inventory, etc.) — those don't go through `ctx.inventory`.
+  for (const obj of ctx.findInContainer(playerId)) {
+    push(obj.id, obj.templateName ?? '', deriveBaselineName(obj));
+    queue.push(obj.id);
+  }
+
   while (queue.length > 0) {
-    const p = queue.shift()!;
-    if (visited.has(p.toString())) continue;
-    visited.add(p.toString());
-    for (const c of index.get(p) ?? []) {
-      items.push({
-        id: c.networkId,
-        templateName: (c as { templateName?: string }).templateName ?? '',
-        name: (c as { name?: string }).name ?? '',
-      });
-      queue.push(c.networkId);
+    const parent = queue.shift();
+    if (parent === undefined) continue;
+    const key = parent.toString();
+    if (visited.has(key)) continue;
+    visited.add(key);
+    for (const child of ctx.findInContainer(parent)) {
+      push(child.id, child.templateName ?? '', deriveBaselineName(child));
+      queue.push(child.id);
     }
   }
   return items;
+}
+
+function deriveBaselineName(obj: WorldObject): string {
+  // BaselinePackageIds.SHARED = 3
+  const shared = obj.baselines.get(3) as
+    | { objectName?: string; nameStringId?: { text?: string } }
+    | undefined;
+  if (shared === undefined) return '';
+  if (typeof shared.objectName === 'string' && shared.objectName !== '') return shared.objectName;
+  if (typeof shared.nameStringId?.text === 'string') return shared.nameStringId.text;
+  return '';
 }
 
 function findCraftingTools(ctx: ScriptContext): NetworkId[] {

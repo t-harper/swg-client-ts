@@ -30,6 +30,7 @@ import { SceneCreateObjectByName } from '../messages/game/scene-create-object-by
 import { SceneEndBaselines } from '../messages/game/scene-end-baselines.js';
 import { type NetworkId, type SceneStart, ZoneState } from '../types.js';
 import type { MessageDispatcher, TranscriptEvent } from './dispatcher.js';
+import { InventoryViewImpl } from './inventory-view.js';
 import {
   type ScenarioFn,
   type ScriptResult,
@@ -132,6 +133,7 @@ export async function runGameStage(opts: GameStageOptions): Promise<GameStageRes
   });
 
   let heartbeatTimer: NodeJS.Timeout | null = null;
+  let inventoryView: InventoryViewImpl | null = null;
   try {
     opts.onStateChange?.(ZoneState.GameHandshake);
 
@@ -157,12 +159,22 @@ export async function runGameStage(opts: GameStageOptions): Promise<GameStageRes
     dispatcher.send(new CmdSceneReady());
     opts.onStateChange?.(ZoneState.ZonedIn);
 
-    // 4a. Open the datapad container so the server pushes baselines for
-    // every vehicle/pet PCD, waypoint, mission, ship, and manufacturing
-    // schematic inside it. This populates `ctx.datapad.items` for the
-    // script's dwell. Same wire pattern as `openPlayerInventory()`. Fired
-    // once per zone-in; the dispatcher's transcript carries the response
-    // baselines once they arrive.
+    // 4a. Auto-open the player's inventory + datapad so the server pushes
+    // baselines for everything inside them. This populates ctx.inventory
+    // and ctx.datapad for the script's dwell — no manual openContainer
+    // needed. The InventoryView reads from the WorldModel, with discovery
+    // via template-name / SHARED-baseline nameStringId / player-child
+    // heuristic (the live server sends scene-creates as ByCrc, not ByName).
+    inventoryView = new InventoryViewImpl(world, startScene.playerNetworkId);
+    inventoryView.attach();
+    try {
+      dispatcher.send(
+        new ClientOpenContainerMessage(startScene.playerNetworkId, 'inventory'),
+      );
+    } catch {
+      // socket may already be closed (unexpected this early but possible if
+      // an external observer aborted) — log via the transcript catch-all.
+    }
     try {
       dispatcher.send(
         new ClientOpenContainerMessage(startScene.playerNetworkId, 'datapad'),
@@ -195,6 +207,9 @@ export async function runGameStage(opts: GameStageOptions): Promise<GameStageRes
         sceneStart: startScene,
         signal: abortController.signal,
         world,
+        // Hand the already-attached view into the context so it gets shared
+        // (vs. having the context construct & attach its own).
+        inventory: inventoryView,
       });
       scriptResult = await runScript(opts.script, scriptCtx);
       scriptLoggedOut = didScriptLogout(scriptCtx);
@@ -245,6 +260,7 @@ export async function runGameStage(opts: GameStageOptions): Promise<GameStageRes
     };
   } finally {
     if (heartbeatTimer !== null) clearInterval(heartbeatTimer);
+    if (inventoryView !== null) inventoryView.detach();
     unsubByCrc();
     unsubByName();
     world.detach();

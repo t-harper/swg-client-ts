@@ -1,21 +1,19 @@
 #!/usr/bin/env node --import tsx
 /**
- * container-spelunker.ts — open the player inventory (or any container by id),
- * then walk the live WorldModel to enumerate every item inside it down to
- * `--max-depth` levels of nested containers.
+ * container-spelunker.ts — enumerate the player's inventory (or any container
+ * by id) and recursively walk nested containers up to `--max-depth` levels.
  *
- * Unlike the original (which scanned the post-mortem transcript), this version
- * queries `ctx.findInContainer(id)` against the live WorldModel — the same
- * source of truth `ctx.world` exposes during the dwell. The model already
- * absorbs every baseline + containment update from the server, so we just need
- * to wait briefly for the baseline flood to settle after `openContainer` and
- * then read the tree.
+ * The script reads `ctx.inventory` (auto-synced from zone-in) when no
+ * `--container=...` override is supplied — no manual `openPlayerInventory()`
+ * and no transcript walking. For an arbitrary container id, the script
+ * issues a single `openContainer(id)` (so the server pushes the container's
+ * baselines), waits `--scan-ms` for them to settle, then walks the live
+ * WorldModel via `ctx.findInContainer`.
  *
  * We deliberately do NOT call `openContainer` recursively on every child:
  * issuing an Open per-container floods the server with redundant baseline
  * requests. The WorldModel already has the baselines for everything in view
- * (including nested-in-container items the server pushed during zone-in or
- * during the first open).
+ * (including nested items the server pushed during zone-in / the initial open).
  *
  * Example:
  *   pnpm exec tsx scripts/examples/container-spelunker.ts \
@@ -34,7 +32,6 @@ import {
   ObjectTypeTags,
   type ScenarioFn,
   type WorldObject,
-  extractInventoryContainerId,
 } from '../../src/index.js';
 import { durationMs, formatJson, makeLogger, parseCommonArgs, runScenario, usage } from './_lib.js';
 
@@ -89,27 +86,26 @@ function buildScenario(
       rootSource = 'cli';
       log(`opening user-supplied container 0x${rootId.toString(16)}`);
       ctx.openContainer(rootId);
+      // Let the container's baselines land before reading the WorldModel.
+      await ctx.wait(args.scanMs);
     } else {
       rootSource = 'inventory';
-      log('opening player inventory');
-      ctx.openPlayerInventory();
-      // The inventory id appears in the baseline flood; let it land before
-      // asking for it.
+      log('reading auto-synced ctx.inventory');
+      // Wait briefly for the auto-open baseline flood to land — the game-stage
+      // orchestrator fired `ClientOpenContainerMessage` at zone-in but the
+      // server's response is async, so the InventoryView may not be `ready`
+      // yet for very-fresh contexts.
       await ctx.wait(args.scanMs);
-      rootId = extractInventoryContainerId(ctx.dispatcher.transcript);
+      rootId = ctx.inventory.containerId;
       if (rootId === null) {
-        log('failed to resolve inventory container id from baselines');
+        log('inventory containerId was not discovered within the scan window');
         await ctx.logout();
         return;
       }
-      log(`resolved inventory container 0x${rootId.toString(16)}`);
+      log(`resolved inventory container 0x${rootId.toString(16)} (${ctx.inventory.items.length} top-level items)`);
     }
     results.rootId = rootId;
     results.rootSource = rootSource;
-
-    // If we were given a --container=... explicitly, still let the baselines
-    // for its first level settle before we snapshot the world model.
-    if (rootSource === 'cli') await ctx.wait(args.scanMs);
 
     // 2) Recursive walk via the live world model. Depth-limited; cycle-safe
     // (a Set of already-visited ids prevents pathological self-loops in
@@ -148,7 +144,7 @@ async function main(): Promise<number> {
   if (args.help) {
     usage(
       SCRIPT,
-      'Open a container and recursively enumerate its contents via the live WorldModel.',
+      'Enumerate the auto-synced player inventory (or a given container) via the live WorldModel.',
       [
         '  --scan-ms=N              wait this many ms after open for baselines (default 3000)',
         '  --max-depth=N            recursion depth limit (default 4)',

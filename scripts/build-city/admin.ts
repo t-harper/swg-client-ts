@@ -116,7 +116,8 @@ export async function adminConsole(
  *
  * `sharedTemplate` is the SERVER template path (e.g. `object/tangible/deed/.../shared_*_deed.iff`).
  * `containerOid` is the destination — typically the player's inventory NetworkId
- * (use `extractInventoryContainerId(transcript)` from baseline-helpers to find it).
+ * (read `ctx.inventory.containerId` from the auto-synced inventory view; falls
+ * back to `extractInventoryContainerId(transcript)` for transcript-walking code).
  */
 export async function adminSpawnInto(
   ctx: ScriptContext,

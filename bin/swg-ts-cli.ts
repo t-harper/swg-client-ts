@@ -17,19 +17,26 @@ import {
   CharacterPool,
   Fleet,
   type FleetClientConfig,
+  OfflineSoeDriver,
   type PooledCharacter,
   SwgClient,
   captureLifecycle,
   lifecycleResultToJSON,
+  readRawCapture,
   readTranscript,
   replay,
   writeTranscript,
 } from '../src/index.js';
-import type { CapturedEvent, TranscriptEvent } from '../src/index.js';
+import type {
+  CapturedEvent,
+  DecodedFrame,
+  DecodedPacketDescription,
+  TranscriptEvent,
+} from '../src/index.js';
 import { scenarios } from '../src/scenarios/index.js';
 
 interface CliArgs {
-  command: 'zone' | 'swarm' | 'capture' | 'replay' | 'pool' | 'help';
+  command: 'zone' | 'swarm' | 'capture' | 'replay' | 'pool' | 'decode-raw' | 'help';
   host: string;
   port: number;
   user: string;
@@ -54,6 +61,11 @@ interface CliArgs {
   input?: string;
   pacing: 'asFast' | 'asCaptured';
   compare: 'names' | 'count';
+  // decode-raw subcommand
+  from: number;
+  limit: number;
+  // raw capture (zone subcommand)
+  rawCaptureBase?: string;
   // pool subcommand
   poolAction: 'list' | 'add' | 'remove' | 'stock' | 'checkout' | 'sweep' | 'help';
   poolAccount?: string;
@@ -83,6 +95,8 @@ function parseArgs(argv: string[]): CliArgs {
     maxConcurrent: 0,
     pacing: 'asFast',
     compare: 'names',
+    from: 0,
+    limit: 0,
     poolAction: 'help',
   };
   const positional: string[] = [];
@@ -184,6 +198,15 @@ function parseArgs(argv: string[]): CliArgs {
         case 'lease-ms':
           args.poolLeaseMs = Number.parseInt(val, 10);
           break;
+        case 'from':
+          args.from = Number.parseInt(val, 10);
+          break;
+        case 'limit':
+          args.limit = Number.parseInt(val, 10);
+          break;
+        case 'raw-capture':
+          args.rawCaptureBase = val;
+          break;
         case 'help':
           args.command = 'help';
           break;
@@ -201,6 +224,7 @@ function parseArgs(argv: string[]): CliArgs {
     cmd === 'swarm' ||
     cmd === 'capture' ||
     cmd === 'replay' ||
+    cmd === 'decode-raw' ||
     cmd === 'help'
   ) {
     args.command = cmd;
@@ -258,6 +282,11 @@ function printHelp(): void {
       '      Load a captured NDJSON file, run a fresh lifecycle that replays the',
       '      captured sends, and compare observed inbound messages.',
       '      Exits 1 if any expected recv name is missing from the observed stream.',
+      '  swg-ts-cli decode-raw --input=<path>.ndjson [--from=0] [--limit=100] [--verbose]',
+      '      Decode a raw SOE-byte NDJSON capture (produced by zone --raw-capture=...)',
+      '      offline — runs the captured datagrams back through the SOE pipeline and',
+      '      prints one human-readable line per frame. With --verbose also dumps the',
+      '      cooked app payload hex and any decode errors. Pure offline; no network I/O.',
       '  swg-ts-cli pool <action>',
       '      Manage the persistent character pool at ~/.swg-ts-client/character-pool.json',
       '      (override with --pool-path=<path>). Actions:',
@@ -277,6 +306,9 @@ function printHelp(): void {
       '  swg-ts-cli zone --host=10.254.0.253 --user=ci-test --character=TsTest --hold-ms=10000',
       '  swg-ts-cli zone --host=10.254.0.253 --user=ci-test --character=TsTest \\',
       '                  --script=walk-circle --script-arg=radius=8 --script-arg=durationMs=3000',
+      '  swg-ts-cli zone --host=10.254.0.253 --user=ci-test --raw-capture=/tmp/cap',
+      '      (writes /tmp/cap.login.ndjson + /tmp/cap.game.ndjson)',
+      '  swg-ts-cli decode-raw --input=/tmp/cap.game.ndjson --verbose',
       '  swg-ts-cli swarm --host=10.254.0.253 --count=3 --user-prefix=fleet --stagger-ms=500',
       '  swg-ts-cli pool stock --host=10.254.0.253 --count=5 --user-prefix=pool',
       '  swg-ts-cli pool list',
@@ -370,6 +402,9 @@ async function main(): Promise<number> {
   if (args.command === 'replay') {
     return runReplay(args);
   }
+  if (args.command === 'decode-raw') {
+    return runDecodeRaw(args);
+  }
   if (args.command === 'pool') {
     return runPool(args);
   }
@@ -418,6 +453,9 @@ async function main(): Promise<number> {
       holdZonedInMs: args.holdMs,
       skipGameStage: args.skipGame,
       ...(scenarioFn !== undefined ? { script: scenarioFn } : {}),
+      ...(args.rawCaptureBase !== undefined
+        ? { rawCapture: { basePath: args.rawCaptureBase } }
+        : {}),
       onTranscript: (event) => {
         transcriptStream.push(event);
         if (args.verbose) {
@@ -567,6 +605,140 @@ async function runReplay(args: CliArgs): Promise<number> {
     process.stdout.write(`${JSON.stringify(errReport, null, 2)}\n`);
     return 1;
   }
+}
+
+async function runDecodeRaw(args: CliArgs): Promise<number> {
+  if (args.input === undefined || args.input === '') {
+    process.stderr.write('--input=<path>.ndjson is required for decode-raw\n');
+    return 2;
+  }
+  // Side-effect: register every message decoder so unknown-CRC lookup works
+  // identically to the live receive pipeline. Mirrors src/client/replay.ts.
+  await import('../src/client/swg-client.js');
+
+  let capture: Awaited<ReturnType<typeof readRawCapture>>;
+  try {
+    capture = await readRawCapture(args.input);
+  } catch (err) {
+    process.stderr.write(
+      `failed to load ${args.input}: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    return 1;
+  }
+
+  const driver = new OfflineSoeDriver(capture.session);
+  const from = args.from > 0 ? args.from : 0;
+  const limit = args.limit > 0 ? args.limit : capture.frames.length;
+
+  // Write metadata header to stderr so stdout stays just the per-frame log.
+  process.stderr.write(
+    `decode-raw: ${args.input}\n` +
+      `  meta: remote=${capture.meta.remoteEndpoint} connectionCode=${capture.meta.connectionCode}` +
+      `${capture.meta.stage !== undefined ? ` stage=${capture.meta.stage}` : ''}\n` +
+      `  session: ${
+        capture.session === null
+          ? '<not negotiated>'
+          : `encryptCode=0x${capture.session.encryptCode.toString(16)} ` +
+            `crcBytes=${capture.session.crcBytes} ` +
+            `methods=[${capture.session.encryptMethods.join(',')}]`
+      }\n` +
+      `  frames: ${capture.frames.length} total, decoding [${from}, ${Math.min(from + limit, capture.frames.length)})\n\n`,
+  );
+
+  let totalErrors = 0;
+  let totalApp = 0;
+  const end = Math.min(from + limit, capture.frames.length);
+  for (let i = 0; i < end; i++) {
+    const frame = capture.frames[i];
+    if (frame === undefined) break;
+    const decoded = driver.feed(frame, i);
+    if (i < from) continue; // populate driver state for [0, from) but don't print
+    process.stdout.write(`${formatDecodedLine(decoded)}\n`);
+    if (decoded.error !== null) totalErrors++;
+    totalApp += decoded.appPayloads.length;
+    if (args.verbose) {
+      for (const app of decoded.appPayloads) {
+        process.stdout.write(
+          `         payload: ${shortHex(app.bytes)} (${app.bytes.length}b)` +
+            `${app.unknownCrc === true ? ' [unknown CRC]' : ''}` +
+            `${app.decodeError !== undefined ? ` [decode error: ${app.decodeError}]` : ''}\n`,
+        );
+      }
+      if (decoded.error !== null) {
+        process.stdout.write(`         error:   ${decoded.error}\n`);
+      }
+    }
+  }
+
+  process.stderr.write(
+    `\ndecode-raw: ${end - from} frames processed, ` +
+      `${totalApp} app messages, ${totalErrors} frame errors\n`,
+  );
+  return 0;
+}
+
+function formatDecodedLine(d: DecodedFrame): string {
+  const dirPad = d.frame.direction === 'send' ? 'send' : 'recv';
+  const ts = `[+${d.deltaMs.toString().padEnd(6)}ms]`;
+  const desc = formatDescription(d.description, d.appPayloads);
+  const err = d.error !== null ? ` ERROR(${d.error})` : '';
+  return `${ts} ${dirPad} ${desc}${err}`;
+}
+
+function formatDescription(
+  d: DecodedPacketDescription,
+  apps: readonly { messageName: string }[],
+): string {
+  switch (d.kind) {
+    case 'session_request':
+      return `SessionRequest(connectionCode=0x${d.connectionCode.toString(16)} maxRaw=${d.maxRawPacketSize})`;
+    case 'session_response':
+      return `SessionResponse(encryptCode=0x${d.encryptCode.toString(16)} crcBytes=${d.crcBytes})`;
+    case 'keep_alive':
+      return 'KeepAlive';
+    case 'terminate':
+      return 'Terminate';
+    case 'port_alive':
+      return 'PortAlive';
+    case 'clock_sync':
+      return 'ClockSync';
+    case 'clock_reflect':
+      return 'ClockReflect';
+    case 'ack':
+      return `Ack ch=${d.channel} seq=${d.seq}`;
+    case 'ack_all':
+      return `AckAll ch=${d.channel} seq=${d.seq}`;
+    case 'reliable':
+      return `Reliable ch=${d.channel} seq=${d.seq}${formatAppList(apps)}`;
+    case 'fragment':
+      return `Fragment ch=${d.channel} seq=${d.seq}${formatAppList(apps)}`;
+    case 'multi':
+      return `Multi(${d.subCount})${formatAppList(apps)}`;
+    case 'group':
+      return `Group(${d.subCount})${formatAppList(apps)}`;
+    case 'unknown_opcode':
+      return `<unknown opcode 0x${d.opcode.toString(16)}>`;
+    case 'raw_app':
+      return `RawApp${formatAppList(apps)}`;
+    default: {
+      // exhaustiveness check
+      const _exhaust: never = d;
+      void _exhaust;
+      return '<?>';
+    }
+  }
+}
+
+function formatAppList(apps: readonly { messageName: string }[]): string {
+  if (apps.length === 0) return '';
+  if (apps.length === 1) return ` ${apps[0]?.messageName ?? '<?>'}`;
+  return ` [${apps.map((a) => a.messageName).join(', ')}]`;
+}
+
+function shortHex(bytes: Uint8Array, max = 64): string {
+  const slice = bytes.length > max ? bytes.subarray(0, max) : bytes;
+  const hex = Array.from(slice, (b) => b.toString(16).padStart(2, '0')).join('');
+  return bytes.length > max ? `${hex}…` : hex;
 }
 
 async function runPool(args: CliArgs): Promise<number> {

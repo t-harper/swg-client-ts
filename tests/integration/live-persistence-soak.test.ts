@@ -41,14 +41,30 @@ describe.skipIf(!LIVE)('live persistence soak (reconnectVerify harness)', () => 
     expect(pair, 'pool returned at least one credential').toBeDefined();
     if (pair === undefined) return;
 
-    // Mutation phase: walk somewhere persistent, then dwell so the server
-    // has a chance to flush position before we log out. Wrap in a try so a
-    // server-side anti-cheat reject (rare; happens if the spawn position is
-    // exactly the walk target) doesn't blow up the whole soak.
+    // Mutation phase: walk a short distance from the current spawn, then
+    // dwell so the server has a chance to flush position before we log
+    // out.
+    //
+    // IMPORTANT: use a RELATIVE offset from `ctx.position()`, NOT an
+    // absolute coord. `walkTo` is a tick loop — `Math.ceil(distance/stepLen)`
+    // ticks each separated by `tickMs` (default 500ms), with stepLen
+    // capped at MAX_DISTANCE_PER_TICK_METERS=8. From a mos_eisley spawn
+    // (~3528, -4807) to e.g. (-100, 200) is ~6200m → ~775 ticks × 500ms
+    // = ~6.5 minutes of walking, blowing past the 180s vitest timeout
+    // and producing a confusing "test timed out" failure with no log
+    // pointing at the real cause. ~25m at speed 4 m/s = ~6 ticks × 500ms
+    // ≈ 3s of walking — emits multiple CM_netUpdateTransform packets
+    // (enough to ensure the server's position-save pipeline picks them
+    // up) without dominating the test runtime.
+    //
+    // Wrap in a try so a server-side anti-cheat reject (rare; happens if
+    // the spawn position is exactly the walk target) doesn't blow up the
+    // whole soak.
     const mutate: ScenarioFn = async (ctx) => {
       await ctx.ackPendingTeleports();
       try {
-        await ctx.walkTo({ x: -100, z: 200 }, { speed: 3 });
+        const start = ctx.position();
+        await ctx.walkTo({ x: start.x + 18, z: start.z + 18 }, { speed: 4 });
       } catch {
         // Anti-cheat or zero-distance walk — proceed with whatever
         // position we ended up at; the snapshot diff still validates

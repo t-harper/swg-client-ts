@@ -222,8 +222,12 @@ export {
   TangibleObjectSharedNpKind,
   BuildingObjectSharedDecoder,
   BuildingObjectSharedKind,
+  BuildingObjectSharedNpDecoder,
+  BuildingObjectSharedNpKind,
   CellObjectSharedDecoder,
   CellObjectSharedKind,
+  CellObjectSharedNpDecoder,
+  CellObjectSharedNpKind,
   stringToTag,
   tagToString,
   tryDecodeBaseline,
@@ -245,17 +249,26 @@ export type {
   TangibleObjectEffect,
   TangibleObjectSharedBaseline,
   TangibleObjectSharedNpBaseline,
+  BuildingObjectEffect,
   BuildingObjectSharedBaseline,
+  BuildingObjectSharedNpBaseline,
   CellObjectSharedBaseline,
+  CellObjectSharedNpBaseline,
 } from './messages/game/baselines/index.js';
 
 // Baseline analysis helpers — scan a LifecycleResult's transcript for common
 // findings (e.g. the player's inventory container's NetworkId).
 export {
+  buildBuildingCellIndex,
   extractBaselinesForObject,
   extractInventoryContainerId,
   extractPlayerObjectBaseline,
   findBaselinesByKind,
+} from './client/baseline-helpers.js';
+export type {
+  BuildingCellIndex,
+  BuildingIndexEntry,
+  CellIndexEntry,
 } from './client/baseline-helpers.js';
 
 // Container inspection — walk the transcript and answer "what's inside the

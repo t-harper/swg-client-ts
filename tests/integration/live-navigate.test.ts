@@ -220,18 +220,11 @@ describe.skipIf(!LIVE)('live ctx.location + ctx.navigate', () => {
       lifecycleErr = err instanceof Error ? err.message : String(err);
     }
     if (lifecycleErr !== null) {
-      // Likely a CmdStartScene timeout from a hot admin pool. Per the spec
-      // the interior portion is allowed to be flaky — accept "Timed out
-      // waiting for CmdStartScene" as a soft skip, fail loudly otherwise.
-      const isPoolHot = /Timed out.*CmdStartScene/i.test(lifecycleErr);
-      if (isPoolHot) {
-        console.warn(
-          `[live-navigate] interior test skipped — fullLifecycle never reached zone-in ` +
-            `(admin pool still hot after the prior test). Error: ${lifecycleErr}`,
-        );
-        return;
-      }
-      throw new Error(`interior fullLifecycle failed unexpectedly: ${lifecycleErr}`);
+      // Any lifecycle failure is a hard fail per project policy. If you see
+      // "Timed out waiting for CmdStartScene", the admin-pool LRU/settle in
+      // tests/integration/helpers.ts may need a longer cooldown OR there's
+      // genuine cluster slowness — investigate, don't paper over.
+      throw new Error(`interior fullLifecycle failed: ${lifecycleErr}`);
     }
     if (result === undefined) {
       throw new Error('unreachable — result should be defined if no error was thrown');
@@ -250,37 +243,18 @@ describe.skipIf(!LIVE)('live ctx.location + ctx.navigate', () => {
       `house spawn failed: ${observed.bailReason ?? 'unknown'}`,
     ).not.toBeNull();
 
-    // Interior portion is marked fragile in the spec — assert only that:
-    //   - navigate did not throw, OR
-    //   - if it did throw, the error is a known "cell not found" timing race
-    //     (the building's SCLT baselines may not have arrived in time).
-    if (observed.navigateErr !== null) {
-      console.warn(
-        `[live-navigate] interior navigate threw (allowed per spec): ${observed.navigateErr}`,
-      );
-      // Accept "no cell matching" / "not in the WorldModel" as a known-flaky
-      // failure (the baselines didn't arrive before we tried to plan).
-      const isKnownFlaky =
-        /no cell matching|not in the WorldModel/.test(observed.navigateErr);
-      if (!isKnownFlaky) {
-        throw new Error(`interior navigate threw unexpectedly: ${observed.navigateErr}`);
-      }
-    } else {
-      // Happy path: we should be in a cell now. cellNumberAfter may legitimately
-      // be null if the server's containment-update raced our settle window;
-      // accept either cellNumberAfter === 1 (we walked into cell1) OR a chat
-      // confirmation. Soft-warn but don't fail if neither hit — the wire-flow
-      // was exercised which is the primary signal.
-      if (observed.inCellAfter) {
-        expect(observed.cellNumberAfter, 'walked into cell1 (cellNumber=1)').toBe(1);
-      } else {
-        console.warn(
-          '[live-navigate] navigate completed but player did not report inCell after settle — ' +
-            'likely the server\'s containment broadcast was slow or the cell-relative walk ' +
-            'didn\'t land inside the cell. Wire flow was exercised; flagging as soft for now.',
-        );
-      }
-    }
+    // navigate must succeed OR throw — either way, downstream state is hard-asserted.
+    // If "no cell matching" / "not in the WorldModel" fires, the engine needs to
+    // wait for the building's SCLT baselines before planning. Fix the engine,
+    // don't accept the race.
+    expect(
+      observed.navigateErr,
+      `interior navigate threw: ${observed.navigateErr ?? 'none'}`,
+    ).toBeNull();
+
+    // Once navigate resolves, the player MUST be in cell1.
+    expect(observed.inCellAfter, 'player is inCell after navigate').toBe(true);
+    expect(observed.cellNumberAfter, 'walked into cell1 (cellNumber=1)').toBe(1);
 
     expect(result.receivedErrorMessage, 'no ErrorMessage during run').toBe(false);
   }, 90_000);

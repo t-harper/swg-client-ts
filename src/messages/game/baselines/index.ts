@@ -20,10 +20,21 @@ export {
   BuildingObjectSharedKind,
 } from './building-object-baseline-3.js';
 export {
+  type BuildingObjectEffect,
+  type BuildingObjectSharedNpBaseline,
+  BuildingObjectSharedNpDecoder,
+  BuildingObjectSharedNpKind,
+} from './building-object-baseline-6.js';
+export {
   type CellObjectSharedBaseline,
   CellObjectSharedDecoder,
   CellObjectSharedKind,
 } from './cell-object-baseline-3.js';
+export {
+  type CellObjectSharedNpBaseline,
+  CellObjectSharedNpDecoder,
+  CellObjectSharedNpKind,
+} from './cell-object-baseline-6.js';
 export {
   type BitArrayValue,
   type MapEntry,

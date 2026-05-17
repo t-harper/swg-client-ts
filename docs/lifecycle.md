@@ -203,6 +203,9 @@ the wait for SceneEndBaselines resolves.
 - `logoutAt` — `Date` of LogoutMessage send
 - `scriptResult` — `{ elapsedMs, sendsCount, didLogout, error? }` if a script ran during the dwell
 
+The top-level `LifecycleResult` (returned from `fullLifecycle`) additionally carries:
+- `latency` — `{ samples, count, min, mean, p50, p95, p99, max } | null` — RTT distribution collected from the connection-stage socket's `ClockSync`/`ClockReflect` exchange (see `docs/wire-spec.md` § 1.1). The SOE connection auto-replies to every inbound `ClockSync` and initiates one every 45s by default (configurable via `SoeConnectionOptions.clockSyncIntervalMs`; set to 0 to disable).
+
 #### Scripting hook
 
 If `FullLifecycleOptions.script` is set, the scenario function runs **after** `CmdSceneReady` is sent and **before** any remaining `holdZonedInMs` is awaited. Inside the script, primitives on the `ScriptContext` translate to the appropriate client→server `GameNetworkMessage`s — movement (over `CM_netUpdateTransform=113` with automatic teleport-ack bootstrap), survey + resource stats, crafting sessions, missions, group/trade flows, chat, combat, posture/dance, inventory ops, and an expectation system for assertions tied to inbound messages. If the script calls `ctx.logout()`, the stage suppresses its own implicit `LogoutMessage` send so logout happens exactly once. See `docs/scripting.md`.

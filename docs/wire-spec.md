@@ -31,8 +31,8 @@ explicit numbers) in `UdpLibrary.hpp:1387-1395`:
 | 4 | Big | unused | Logical big-packet escape (not used by SWG) |
 | 5 | Terminate | both | Clean close. Body: `[connectCode BE u32][reason BE u16]` |
 | 6 | KeepAlive | both | 2 bytes — just the opcode pair, encrypted+CRCd |
-| 7 | ClockSync | server | Optional latency probe — we don't implement |
-| 8 | ClockReflect | client | Reply to ClockSync — we don't implement |
+| 7 | ClockSync | server | Latency probe (40B, BE, encrypted+CRC'd). Layout: `[00 07][u16 timeStamp][i32 masterPing][i32 avgPing][i32 lowPing][i32 highPing][i32 lastPing][i64 ourSent][i64 ourReceived]`. See `src/soe/clock-sync.ts`. |
+| 8 | ClockReflect | client | Reply to ClockSync (40B, BE, encrypted+CRC'd). Layout: `[00 08][u16 timeStamp(echoed)][u32 serverSyncStampLong][i64 yourSent(echoed)][i64 yourReceived(echoed)][i64 ourSent][i64 ourReceived]`. SoeConnection auto-replies on every inbound ClockSync; client also initiates periodic ClockSync (default 45s, `clockSyncIntervalMs`). RTT samples accumulate in `getLatencyStats()` and `LifecycleResult.latency`. |
 | 9 | Reliable1 | both | Reliable channel 0, the only channel SWG uses |
 | 10–12 | Reliable2..4 | both | Channels 1, 2, 3 |
 | 13 | Fragment1 | both | First fragment of a multi-datagram message |
@@ -439,8 +439,8 @@ Reference: `GenericValueTypeMessage.h`. Our impl: `src/messages/base.ts:defineGe
 | `SurveyMessage` | 0x877f79ac | varies | Server → client survey response with sample points |
 | `ResourceListForSurveyMessage` | 0x8a64b1d5 | 4 | Server → client list of resource types currently spawned for a tool's class |
 | `ChatSystemMessage` | 0x6d2a6413 | 4 | Server → client system-message prose. Trailer: `[u8 flags][UnicodeString message][UnicodeString outOfBand]`. The `outOfBand` field is a packed-bytes binary (each `u16` codepoint holds 2 wire bytes in LE order) carrying STF references like `survey/sample_located` — see `decodeSampleOob()` for unpacking. |
-| `SuiCreatePageMessage` | 0xd44b7259 | 2 | Server → client. Opens a SUI dialog page. Payload is `AutoDeltaVariable<SuiPageData>` — modeled as opaque `Uint8Array` on `pageData`. Leading 4 bytes are the LE i32 `pageId`. |
-| `SuiUpdatePageMessage` | 0x5f3342f6 | 2 | Server → client. Same wire shape as `SuiCreatePageMessage`; in-place widget updates. |
+| `SuiCreatePageMessage` | 0xd44b7259 | 2 | Server → client. Opens a SUI dialog page. Payload is `AutoDeltaVariable<SuiPageData>` decoded to typed `SuiPageData = { pageId: i32, pageName: stdString, commands: SuiCommand[], associatedObjectId: NetworkId, associatedLocation: Vector3, maxRangeFromObject: f32 }`. Each `SuiCommand` is `[u8 type][AutoArray<UnicodeString> parametersWide][AutoArray<stdString> parametersNarrow]` decoded into one of 9 typed variants (`createWidget` / `setProperty` / `subscribeToEvent` / `addChildWidget` / `clearDataSource` / `addDataItem` / `addDataSourceContainer` / `clearDataSourceContainer` / `addDataSource`) or `{ type: 'unknown', commandType, parametersWide, parametersNarrow }` for forward-compat. Raw bytes still available via `msg.pageDataBytes`. |
+| `SuiUpdatePageMessage` | 0x5f3342f6 | 2 | Server → client. Same wire shape as `SuiCreatePageMessage`; in-place widget updates. Same typed decoder. |
 | `SuiForceClosePage` | 0x990b5de0 | 2 | Server → client. Close a SUI page. Payload: `[i32 clientPageId]`. |
 | `SuiEventNotification` | 0x092d3564 | 4 | Client → server. Reply to a SUI page: `[i32 pageId][i32 subscribedEventIndex][u32 returnList.length][u32 baselineCommandCount=0][UnicodeString]*length`. |
 | `BeginTradeMessage` | 0x325932d8 | 2 | Server → client. Trailer: `[NetworkId player]` (the OTHER party). |
@@ -490,6 +490,8 @@ Reference: `GenericValueTypeMessage.h`. Our impl: `src/messages/base.ts:defineGe
 | 326/327 | `CM_objectMenuRequest` / `Response` | both | Radial menu fetch / populate |
 | 351/421 | `CM_setGroupInviter` / `setGroup` | server | Group formation broadcasts |
 | 422 | `CM_setMood` | server | Mood change |
+| 403/404 | `CM_addAllowed` / `CM_removeAllowed` | server↔server | Building/cell ENTRY-list permission grant/revoke. Trailer: `[stdString playerName]`. Cross-auth signal — not a client→server path; client drives the user-facing change via `useAbility('permissionListModify', ...)`. See `scripts/build-city/admin-permissions.ts`. |
+| 405/406 | `CM_addBanned` / `CM_removeBanned` | server↔server | Building/cell BANNED-list grant/revoke. Same `[stdString playerName]` trailer. |
 | 540 | `CM_emergencyDismountForRider` | server↔server | Rider-emergency-dismount cross-auth signal. Empty trailer. Modeled for transcript inspection — not a client→server path. |
 | 541 | `CM_detachRiderForMount` | server↔server | Detach a specific rider (non-auth → auth). Trailer: `[NetworkId riderId]` (8 bytes). |
 | 1205 | `CM_detachAllRidersForMount` | server↔server | Detach every rider on a mount in one shot (non-auth → auth). Empty trailer. |

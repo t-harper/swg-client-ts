@@ -33,6 +33,7 @@ import {
   ServerNowEpochTime,
 } from '../messages/login/index.js';
 import { SoeConnection } from '../soe/connection.js';
+import type { RawCaptureOptions } from '../soe/interface.js';
 import type { CharacterInfo, ClusterInfo, LoginToken, ServerEndpoint } from '../types.js';
 import type { ClusterStatus, PopulationStatus } from '../types.js';
 import { MessageDispatcher, type TranscriptEvent } from './dispatcher.js';
@@ -53,6 +54,8 @@ export interface LoginStageOptions {
   settleMs?: number;
   /** Optional onAny hook for streaming transcript events. */
   onTranscript?: (event: TranscriptEvent) => void;
+  /** Optional raw-byte SOE capture. Written by the stage's SoeConnection. */
+  rawCapture?: RawCaptureOptions;
 }
 
 export interface LoginStageResult {
@@ -91,6 +94,7 @@ export async function runLoginStage(opts: LoginStageOptions): Promise<LoginStage
     onAppMessage: (payload) => {
       dispatcher?.handleAppMessage(payload);
     },
+    ...(opts.rawCapture !== undefined ? { rawCapture: opts.rawCapture } : {}),
   });
   dispatcher = new MessageDispatcher({ connection, stageLabel: 'login' });
   if (opts.onTranscript !== undefined) {

@@ -14,10 +14,12 @@
 import { extractInventoryContainerId } from '../../src/client/baseline-helpers.js';
 import { ChatSystemMessage } from '../../src/messages/game/chat/index.js';
 import { ObjectMenuSelectMessage, RadialMenuTypes } from '../../src/messages/game/object-menu-select-message.js';
+import { SceneCreateObjectByName } from '../../src/messages/game/scene-create-object-by-name.js';
 import { SuiCreatePageMessage, SuiEventNotification } from '../../src/messages/game/sui/index.js';
 import type { ScriptContext } from '../../src/client/script/context.js';
 import type { NetworkId } from '../../src/types.js';
 import { adminGetInventoryId, adminSpawnInto } from './admin.js';
+import type { StructureRecord } from './state.js';
 
 /**
  * Resolve the player's inventory NetworkId for spawning deeds.
@@ -37,12 +39,12 @@ export async function resolveInventoryOid(ctx: ScriptContext): Promise<NetworkId
 }
 
 /**
- * Read the LE i32 pageId from a `SuiCreatePageMessage.pageData` (first 4 bytes).
+ * Read the pageId from a `SuiCreatePageMessage`. After Feat #3 (SuiPageData
+ * decode), this is just the decoded struct field — no manual byte unpacking
+ * needed.
  */
 function suiPageId(msg: SuiCreatePageMessage): number {
-  const d = msg.pageData;
-  if (d.length < 4) throw new Error(`SuiCreatePageMessage.pageData too short (${d.length} bytes)`);
-  return (d[0]! | (d[1]! << 8) | (d[2]! << 16) | (d[3]! << 24)) | 0;
+  return msg.pageData.pageId;
 }
 
 export interface PlaceDeedOptions {
@@ -61,12 +63,101 @@ export interface PlaceDeedOptions {
 export interface PlaceDeedResult {
   /** The spawned deed's NetworkId (consumed if placement succeeded). */
   deedOid: NetworkId;
+  /**
+   * NetworkId of the newly-placed structure (the building), or null if
+   * placement failed or we didn't observe a matching SceneCreateObjectByName
+   * within the settle window.
+   */
+  structureOid: NetworkId | null;
+  /**
+   * Template name of the placed structure (e.g. `object/building/naboo/cityhall_naboo.iff`),
+   * or null if `structureOid` is null.
+   */
+  structureTemplate: string | null;
   /** True if we observed an "no_room"/"obscene"/"cannot_use" chat — placement rejected. */
   rejected: boolean;
   /** Number of SUI dialogs we actually saw. */
   suiSeen: number;
   /** Any chat error messages observed. */
   chatErrors: string[];
+}
+
+/**
+ * Strip the `_deed` suffix from a deed template's basename, returning the
+ * stripped basename without extension. For example:
+ *
+ *   `object/tangible/deed/city_deed/cityhall_naboo_deed.iff` → `cityhall_naboo`
+ *   `object/tangible/deed/player_house_deed/naboo_house_small_deed.iff` → `naboo_house_small`
+ *   `object/tangible/deed/guild_deed/naboo_guild_deed.iff` → `naboo_guild`
+ *
+ * Returns null if the template doesn't end with `_deed.iff`.
+ *
+ * This is a pure helper so it's testable without a wire context.
+ */
+export function inferStructureBasename(deedTemplate: string): string | null {
+  // Pull the filename portion (everything after the last `/`).
+  const slash = deedTemplate.lastIndexOf('/');
+  const filename = slash < 0 ? deedTemplate : deedTemplate.slice(slash + 1);
+  // Must end with `_deed.iff` (case-insensitive).
+  const m = filename.match(/^(.+)_deed\.iff$/i);
+  if (m === null || m[1] === undefined) return null;
+  return m[1];
+}
+
+/**
+ * Test whether an observed `SceneCreateObjectByName.templateName` corresponds
+ * to the structure produced by a deed with the given basename.
+ *
+ * The mapping is heuristic — most deed→structure templates land under
+ * `object/building/...`, `object/installation/...`, or `object/tangible/...`
+ * with a path whose basename matches the deed's stripped basename. We accept
+ * any of these prefixes and require an exact filename match (sans `.iff`).
+ *
+ * Pure helper, testable in isolation.
+ */
+export function matchesStructureTemplate(observedTemplate: string, deedBasename: string): boolean {
+  if (deedBasename === '') return false;
+  // The observed template must NOT itself be a deed — that's the placeholder
+  // we're trying to skip.
+  if (/_deed\.iff$/i.test(observedTemplate)) return false;
+  // Must start with one of the structure-bearing path prefixes.
+  if (!/^object\/(building|installation|tangible)\//i.test(observedTemplate)) return false;
+  // Filename basename must match.
+  const slash = observedTemplate.lastIndexOf('/');
+  const filename = slash < 0 ? observedTemplate : observedTemplate.slice(slash + 1);
+  const m = filename.match(/^(.+)\.iff$/i);
+  if (m === null || m[1] === undefined) return false;
+  return m[1].toLowerCase() === deedBasename.toLowerCase();
+}
+
+/**
+ * Classify a deed template into one of the `StructureRecord.kind` buckets
+ * based on its path/filename. Pure helper — used by scenarios to populate
+ * `StructureRecord.kind` consistently.
+ *
+ * Heuristics (in priority order):
+ *   - `garden_*`                       → 'garden'
+ *   - `cityhall_*`                     → 'cityhall'
+ *   - `*_guild`/`guildhall`/`guild_*`  → 'guildhall'
+ *   - `bank|cantina|hospital|cloning|shuttleport|garage|theater` → 'civic'
+ *   - everything else under `player_house_deed/` or matching `naboo_house_*`,
+ *     `tatooine_house_*`, `corellia_house_*`, etc. → 'house'
+ *
+ * Defaults to 'house' when nothing matches — caller can override via
+ * `subKind` if it's actually something else.
+ */
+export function classifyDeedKind(deedTemplate: string): StructureRecord['kind'] {
+  const lower = deedTemplate.toLowerCase();
+  const basename = inferStructureBasename(deedTemplate) ?? '';
+  const lowerBase = basename.toLowerCase();
+
+  // Gardens are technically "house-like" reclaim-able structures but tracked
+  // separately for decoration accounting.
+  if (lowerBase.startsWith('garden_') || /\/garden_/.test(lower)) return 'garden';
+  if (lowerBase.startsWith('cityhall')) return 'cityhall';
+  if (/\/guild_deed\//.test(lower) || lowerBase.includes('guild')) return 'guildhall';
+  if (/^(bank|cantina|hospital|cloning|shuttleport|garage|theater)_/.test(lowerBase)) return 'civic';
+  return 'house';
 }
 
 /**
@@ -99,11 +190,29 @@ export async function placeDeed(
 
   // 3. Collect chat errors throughout placement
   const chatErrors: string[] = [];
-  const unsub = ctx.dispatcher.onMessage(ChatSystemMessage, (m) => {
+  const unsubChat = ctx.dispatcher.onMessage(ChatSystemMessage, (m) => {
     const text = m.message + ' ' + m.outOfBand;
     if (/obscene|cannot_use|no_room|not_unique|already_mayor|max_cities|too_close|no_rights|not_permitted/i.test(text)) {
       chatErrors.push(text.slice(0, 120).trim());
     }
+  });
+
+  // 3b. Listen for SceneCreateObjectByName — the server emits this whenever a
+  //     new object is constructed in the player's view. Once placement
+  //     succeeds, the new structure arrives with `templateName` matching the
+  //     deed's stripped basename (cityhall_naboo_deed → cityhall_naboo).
+  //     We register this BEFORE sending ITEM_USE so we don't miss a fast reply,
+  //     and we filter by matching template so the deed's own spawn-event (which
+  //     also came through as a SceneCreateObjectByName) doesn't false-match.
+  const deedBasename = inferStructureBasename(sharedTemplate);
+  const structureCandidates: { oid: NetworkId; template: string }[] = [];
+  const unsubScene = ctx.dispatcher.onMessage(SceneCreateObjectByName, (m) => {
+    if (deedBasename === null) return;
+    // Skip the deed's own scene-create event (its template ends in `_deed.iff`).
+    if (!matchesStructureTemplate(m.templateName, deedBasename)) return;
+    // Skip duplicates (same oid arrives multiple times if multiple players see it).
+    if (structureCandidates.some((c) => c.oid === m.networkId)) return;
+    structureCandidates.push({ oid: m.networkId, template: m.templateName });
   });
 
   let suiSeen = 0;
@@ -148,11 +257,16 @@ export async function placeDeed(
     // 6. Settle while server processes placement
     await ctx.wait(settleMs);
   } finally {
-    unsub();
+    unsubChat();
+    unsubScene();
   }
 
+  // 7. Pick the first matching structure (server emits in placement order).
+  const firstStructure = structureCandidates[0];
   return {
     deedOid,
+    structureOid: firstStructure?.oid ?? null,
+    structureTemplate: firstStructure?.template ?? null,
     rejected: chatErrors.length > 0,
     suiSeen,
     chatErrors,

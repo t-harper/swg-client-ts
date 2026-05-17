@@ -70,6 +70,7 @@ function makeLifecycle(opts: {
     transcript: opts.transcript ?? [],
     stationId: 1,
     receivedErrorMessage: opts.receivedErrorMessage ?? false,
+    latency: null,
   };
 }
 

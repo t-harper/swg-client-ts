@@ -7,6 +7,7 @@
  */
 
 import type { EncryptionParams, ServerEndpoint } from '../types.js';
+import type { LatencyStats } from './clock-sync.js';
 
 /** Callback for an incoming, fully-decrypted, fully-defragmented application payload. */
 export type AppMessageHandler = (payload: Uint8Array) => void;
@@ -32,10 +33,49 @@ export interface SoeConnectionOptions {
    * SOE-level only — doesn't include app-level HeartBeat.
    */
   keepAliveMs?: number;
+  /**
+   * Periodic ClockSync interval in ms. Set to 0 to disable. Default 45000
+   * (matches sharedNetwork's `getDefaultClientSetupData`,
+   * SetupSharedNetwork.cpp:46). When enabled, the connection sends a
+   * UdpPacketClockSync every N ms and accumulates RTT samples from the
+   * server's ClockReflect responses.
+   */
+  clockSyncIntervalMs?: number;
+  /**
+   * Optional callback fired each time we record a new RTT sample (i.e. each
+   * time we receive a ClockReflect that we can match against a sent
+   * ClockSync). Useful for streaming latency to a metric sink.
+   */
+  onClockSync?: (rttMs: number) => void;
   /** Callback when the server sends us an application payload (post-decrypt/defrag) */
   onAppMessage: AppMessageHandler;
   /** Optional connection lifecycle callback */
   onEvent?: ConnectionStateHandler;
+  /**
+   * If set, every outgoing/incoming UDP datagram (BEFORE decrypt on recv,
+   * AFTER encrypt+CRC on send) is appended to the named NDJSON file as a
+   * raw-capture frame. Plus a `meta` line on open and a `session` line once
+   * the SessionResponse is processed. Used by `bin/swg-ts-cli decode-raw`.
+   *
+   * The file is created/truncated on first write. Errors writing capture
+   * lines are silently swallowed so they can never abort send/recv.
+   */
+  rawCapture?: RawCaptureOptions;
+}
+
+/**
+ * Configuration for raw-byte capture. The connection writes one NDJSON line
+ * per datagram plus metadata lines describing how to decrypt them.
+ */
+export interface RawCaptureOptions {
+  /** Absolute path to NDJSON file. Will be created/truncated. */
+  writePath: string;
+  /**
+   * Optional free-form `stage` label included in the `meta` line so a
+   * single-file capture spanning multiple SOE sessions can be told apart by
+   * the offline decoder. Convention: `"login"`, `"connection"`, etc.
+   */
+  stage?: string;
 }
 
 /**
@@ -61,4 +101,12 @@ export interface ISoeConnection {
 
   /** Negotiated params (only valid after connect()) */
   readonly params: EncryptionParams | undefined;
+
+  /**
+   * Accumulated round-trip-time samples from ClockSync/ClockReflect exchanges,
+   * summarized with min/mean/p50/p95/p99/max. Returns `null` if no samples
+   * have been recorded yet (which is the case for short-lived connections
+   * that disconnect before the first ClockSync interval elapses).
+   */
+  getLatencyStats(): LatencyStats | null;
 }

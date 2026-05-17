@@ -1,9 +1,17 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { appendCrc } from '../crc/crc32.js';
 import type { EncryptionParams } from '../types.js';
 import { EncryptMethod } from '../types.js';
+import {
+  buildClockReflect,
+  buildClockSync,
+  parseClockReflect,
+} from './clock-sync.js';
 import { SoeConnection } from './connection.js';
+import { applyEncryption, reverseEncryption } from './encrypt.js';
+import { SoePacketType } from './packet-types.js';
 
 function loadHexFixture(relPath: string): Uint8Array {
   const url = new URL(`../../tests/fixtures/${relPath}`, import.meta.url);
@@ -205,5 +213,228 @@ describe('SoeConnection round-trip (send + receive of self-encoded packet)', () 
     receiver.testInjectDatagram(lastCooked);
     expect(received.length).toBe(1);
     expect(received[0]).toEqual(appPayload);
+  });
+});
+
+describe('SoeConnection ClockSync / ClockReflect', () => {
+  /**
+   * Build the SAME synthetic SessionResponse used by the round-trip test —
+   * encryptCode + crcBytes + methods are constants so cookOutgoing /
+   * uncookIncoming can round-trip with `applyEncryption` + `appendCrc` here.
+   */
+  function buildSynthConfirm(params: EncryptionParams): Uint8Array {
+    const out = new Uint8Array(17);
+    out[0] = 0;
+    out[1] = 2;
+    out[2] = (params.connectionCode >>> 24) & 0xff;
+    out[3] = (params.connectionCode >>> 16) & 0xff;
+    out[4] = (params.connectionCode >>> 8) & 0xff;
+    out[5] = params.connectionCode & 0xff;
+    out[6] = (params.encryptCode >>> 24) & 0xff;
+    out[7] = (params.encryptCode >>> 16) & 0xff;
+    out[8] = (params.encryptCode >>> 8) & 0xff;
+    out[9] = params.encryptCode & 0xff;
+    out[10] = params.crcBytes;
+    out[11] = params.encryptMethods[0];
+    out[12] = params.encryptMethods[1];
+    out[13] = (params.maxRawPacketSize >>> 24) & 0xff;
+    out[14] = (params.maxRawPacketSize >>> 16) & 0xff;
+    out[15] = (params.maxRawPacketSize >>> 8) & 0xff;
+    out[16] = params.maxRawPacketSize & 0xff;
+    return out;
+  }
+
+  const params: EncryptionParams = {
+    encryptCode: 0xdeadbeef,
+    connectionCode: 0x12345678,
+    crcBytes: 2,
+    encryptMethods: [EncryptMethod.UserSupplied, EncryptMethod.Xor],
+    maxRawPacketSize: 496,
+  };
+
+  function cookForWire(cooked: Uint8Array): Uint8Array {
+    const encrypted = applyEncryption(cooked, params.encryptMethods, params.encryptCode);
+    return appendCrc(encrypted, params.encryptCode, params.crcBytes);
+  }
+
+  function uncookFromWire(datagram: Uint8Array): Uint8Array {
+    // Strip CRC then reverse encryption — mirrors uncookIncoming inside connection.
+    const body = datagram.subarray(0, datagram.length - params.crcBytes);
+    return reverseEncryption(body, params.encryptMethods, params.encryptCode);
+  }
+
+  it('auto-replies to an inbound ClockSync with a ClockReflect that echoes timeStamp', () => {
+    const sent: Uint8Array[] = [];
+    let rttCallbackCount = 0;
+    const conn = new SoeConnection({
+      endpoint: { host: '127.0.0.1', port: 1 },
+      connectionCode: params.connectionCode,
+      // Disable periodic ClockSync so we don't accidentally send extras.
+      clockSyncIntervalMs: 0,
+      onAppMessage: () => {
+        // no-op
+      },
+      onClockSync: () => {
+        rttCallbackCount++;
+      },
+    });
+    conn.testSendOverride = (bytes) => {
+      sent.push(new Uint8Array(bytes));
+    };
+    conn.testInjectSessionResponse(buildSynthConfirm(params));
+
+    // Server "sends" us a ClockSync — cook it for the wire then inject.
+    const sync = buildClockSync(0xc0de, {
+      masterPingTime: 12,
+      averagePingTime: 15,
+      lowPingTime: 5,
+      highPingTime: 40,
+      lastPingTime: 10,
+      ourSent: 100n,
+      ourReceived: 99n,
+    });
+    const cookedSync = cookForWire(sync);
+    conn.testInjectDatagram(cookedSync);
+
+    // Connection should have auto-sent a ClockReflect.
+    expect(sent.length).toBe(1);
+    const reflectCooked = uncookFromWire(sent[0] as Uint8Array);
+    expect(reflectCooked[0]).toBe(0);
+    expect(reflectCooked[1]).toBe(SoePacketType.ClockReflect);
+
+    const reflect = parseClockReflect(reflectCooked);
+    expect(reflect.timeStamp).toBe(0xc0de); // echoed
+    expect(reflect.yourSent).toBe(100n); // echoed
+    expect(reflect.yourReceived).toBe(99n); // echoed
+
+    // We didn't initiate, so no RTT sample should be recorded (and no
+    // onClockSync callback fired — that fires on ClockReflect receive).
+    expect(rttCallbackCount).toBe(0);
+    expect(conn.getLatencyStats()).toBeNull();
+  });
+
+  it('records an RTT sample when a ClockReflect arrives', () => {
+    const rttCallbacks: number[] = [];
+    const conn = new SoeConnection({
+      endpoint: { host: '127.0.0.1', port: 1 },
+      connectionCode: params.connectionCode,
+      clockSyncIntervalMs: 0,
+      onAppMessage: () => {
+        // no-op
+      },
+      onClockSync: (rtt) => rttCallbacks.push(rtt),
+    });
+    conn.testSendOverride = () => {
+      /* swallow */
+    };
+    conn.testInjectSessionResponse(buildSynthConfirm(params));
+
+    // We simulate having sent a ClockSync at timestamp t0; the server
+    // reflects with that timeStamp; we receive it and the delta against
+    // current local stamp is the RTT.
+    //
+    // Just use a recent-ish low-16-bits stamp to keep the delta small. The
+    // RTT measured equals (currentStamp - reflectedStamp) & 0xffff (mod
+    // the SyncStampShortDeltaTime branch).
+    const reflectedStamp = (Date.now() - 25) & 0xffff;
+    const fakeSync = {
+      zeroByte: 0,
+      packetType: 7,
+      timeStamp: reflectedStamp,
+      masterPingTime: 0,
+      averagePingTime: 0,
+      lowPingTime: 0,
+      highPingTime: 0,
+      lastPingTime: 0,
+      ourSent: 0n,
+      ourReceived: 0n,
+    };
+    const reflect = buildClockReflect(fakeSync, Date.now() & 0xffffffff);
+    conn.testInjectDatagram(cookForWire(reflect));
+
+    const stats = conn.getLatencyStats();
+    expect(stats).not.toBeNull();
+    if (stats === null) throw new Error('unreachable');
+    expect(stats.count).toBe(1);
+    expect(stats.samples.length).toBe(1);
+    // The sample should be a small positive number — well under a second.
+    expect(stats.samples[0]).toBeGreaterThanOrEqual(0);
+    expect(stats.samples[0]).toBeLessThan(1000);
+    // The onClockSync callback should have fired once with the same value.
+    expect(rttCallbacks.length).toBe(1);
+    expect(rttCallbacks[0]).toBe(stats.samples[0]);
+  });
+
+  it('sendClockSync produces a valid wire packet through the encryption pipeline', () => {
+    const sent: Uint8Array[] = [];
+    const conn = new SoeConnection({
+      endpoint: { host: '127.0.0.1', port: 1 },
+      connectionCode: params.connectionCode,
+      clockSyncIntervalMs: 0,
+      onAppMessage: () => {
+        // no-op
+      },
+    });
+    conn.testSendOverride = (bytes) => {
+      sent.push(new Uint8Array(bytes));
+    };
+    conn.testInjectSessionResponse(buildSynthConfirm(params));
+
+    const stamp = conn.sendClockSync();
+    expect(stamp).toBeGreaterThanOrEqual(0);
+    expect(stamp).toBeLessThanOrEqual(0xffff);
+    expect(sent.length).toBe(1);
+    const cooked = uncookFromWire(sent[0] as Uint8Array);
+    expect(cooked[0]).toBe(0);
+    expect(cooked[1]).toBe(SoePacketType.ClockSync);
+    // timeStamp at off=2..3 should match what sendClockSync reported.
+    expect(((cooked[2] ?? 0) << 8) | (cooked[3] ?? 0)).toBe(stamp);
+  });
+
+  it('getLatencyStats summarizes multiple samples with p50/p95/p99/min/max/mean', () => {
+    const conn = new SoeConnection({
+      endpoint: { host: '127.0.0.1', port: 1 },
+      connectionCode: params.connectionCode,
+      clockSyncIntervalMs: 0,
+      onAppMessage: () => {
+        // no-op
+      },
+    });
+    conn.testInjectSessionResponse(buildSynthConfirm(params));
+    // Inject synthetic samples directly through the test hook
+    for (let i = 1; i <= 100; i++) conn.testPushLatencySample(i);
+    const stats = conn.getLatencyStats();
+    if (stats === null) throw new Error('unreachable');
+    expect(stats.count).toBe(100);
+    expect(stats.p50).toBe(50);
+    expect(stats.p95).toBe(95);
+    expect(stats.p99).toBe(99);
+    expect(stats.min).toBe(1);
+    expect(stats.max).toBe(100);
+    expect(stats.mean).toBe(50.5);
+  });
+
+  it('ignores a malformed ClockSync without throwing (emits corrupt_packet)', () => {
+    const events: Array<{ kind: string }> = [];
+    const conn = new SoeConnection({
+      endpoint: { host: '127.0.0.1', port: 1 },
+      connectionCode: params.connectionCode,
+      clockSyncIntervalMs: 0,
+      onAppMessage: () => {
+        // no-op
+      },
+      onEvent: (e) => events.push(e),
+    });
+    conn.testSendOverride = () => {
+      /* swallow */
+    };
+    conn.testInjectSessionResponse(buildSynthConfirm(params));
+
+    // Build a "ClockSync" that's only 10 bytes — too short to parse.
+    const truncated = new Uint8Array(10);
+    truncated[0] = 0;
+    truncated[1] = SoePacketType.ClockSync;
+    conn.testInjectDatagram(cookForWire(truncated));
+    expect(events.some((e) => e.kind === 'corrupt_packet')).toBe(true);
   });
 });

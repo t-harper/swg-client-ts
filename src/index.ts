@@ -33,9 +33,44 @@ export {
 export { SwgClient, lifecycleResultToJSON } from './client/swg-client.js';
 export type {
   FullLifecycleOptions,
+  FullLifecycleRawCaptureOptions,
+  LifecycleLatency,
   LifecycleResult,
   SwgClientOptions,
 } from './client/swg-client.js';
+// SOE clock-sync / latency stats — surfaced so consumers can hook ClockSync
+// events directly on a custom SoeConnection or interpret LifecycleResult.latency.
+export type { ClockReflectPacket, ClockSyncPacket, LatencyStats } from './soe/clock-sync.js';
+export {
+  buildClockReflect,
+  buildClockSync,
+  clockReflectRttMs,
+  localSyncStampLong,
+  localSyncStampShort,
+  parseClockReflect,
+  parseClockSync,
+  summarizeLatency,
+} from './soe/clock-sync.js';
+// Raw SOE-byte capture (pre-decrypt). For drift debugging when the
+// GameNetworkMessage transcript hides the issue.
+export type { RawCaptureOptions } from './soe/interface.js';
+export type {
+  RawCaptureFrame,
+  RawCaptureMeta,
+  RawCaptureSession,
+} from './soe/raw-capture-io.js';
+export {
+  parseRawCapture,
+  readRawCapture,
+  serializeRawCapture,
+  writeRawCapture,
+} from './soe/raw-capture-io.js';
+export { OfflineSoeDriver, decodeRawFrames } from './soe/raw-capture-decode.js';
+export type {
+  DecodedAppMessage,
+  DecodedFrame,
+  DecodedPacketDescription,
+} from './soe/raw-capture-decode.js';
 export type { TranscriptEvent } from './client/dispatcher.js';
 export type { LoginStageResult, LoginStageOptions } from './client/login-stage.js';
 export type {
@@ -222,8 +257,12 @@ export {
   TangibleObjectSharedNpKind,
   BuildingObjectSharedDecoder,
   BuildingObjectSharedKind,
+  BuildingObjectSharedNpDecoder,
+  BuildingObjectSharedNpKind,
   CellObjectSharedDecoder,
   CellObjectSharedKind,
+  CellObjectSharedNpDecoder,
+  CellObjectSharedNpKind,
   stringToTag,
   tagToString,
   tryDecodeBaseline,
@@ -245,17 +284,26 @@ export type {
   TangibleObjectEffect,
   TangibleObjectSharedBaseline,
   TangibleObjectSharedNpBaseline,
+  BuildingObjectEffect,
   BuildingObjectSharedBaseline,
+  BuildingObjectSharedNpBaseline,
   CellObjectSharedBaseline,
+  CellObjectSharedNpBaseline,
 } from './messages/game/baselines/index.js';
 
 // Baseline analysis helpers — scan a LifecycleResult's transcript for common
 // findings (e.g. the player's inventory container's NetworkId).
 export {
+  buildBuildingCellIndex,
   extractBaselinesForObject,
   extractInventoryContainerId,
   extractPlayerObjectBaseline,
   findBaselinesByKind,
+} from './client/baseline-helpers.js';
+export type {
+  BuildingCellIndex,
+  BuildingIndexEntry,
+  CellIndexEntry,
 } from './client/baseline-helpers.js';
 
 // Container inspection — walk the transcript and answer "what's inside the
@@ -325,6 +373,11 @@ export { rideVehicle } from './scenarios/index.js';
 // SUI + NPC conversation (Feature 1)
 // =============================================================================
 export {
+  type SuiCommand,
+  type SuiCommandTypeValue,
+  type SuiPageData,
+  type SuiWidgetPropertySubscription,
+  SuiCommandType,
   SuiCreatePageMessage,
   SuiCreatePageMessageDecoder,
   SuiEventNotification,
@@ -333,6 +386,13 @@ export {
   SuiForceClosePageDecoder,
   SuiUpdatePageMessage,
   SuiUpdatePageMessageDecoder,
+  decodeSuiPageData,
+  encodeSuiPageData,
+  peekSuiPageId,
+  readSuiCommand,
+  readSuiPageData,
+  writeSuiCommand,
+  writeSuiPageData,
 } from './messages/game/sui/index.js';
 export {
   EMPTY_NPC_STRING_ID,
@@ -449,8 +509,9 @@ export {
 export type { TreAddOptions, TreBuildOptions, TreEntry } from './tre/index.js';
 
 // =============================================================================
-// Terrain helpers — TRN metadata reader, empirical buildability probe, and a
-// concentric-ring grid search for flat patches. See src/terrain/index.ts.
+// Terrain helpers — TRN metadata reader, planet-general asset loader,
+// empirical buildability probe, and a concentric-ring grid search for flat
+// patches. See src/terrain/index.ts.
 // =============================================================================
 export * from './terrain/index.js';
 
@@ -467,3 +528,23 @@ export {
   tagFromString as iffTagFromString,
   tagToString as iffTagToString,
 } from './iff/index.js';
+
+// =============================================================================
+// Building permissions (Feature 0.1)
+// =============================================================================
+// ObjController subtype decoders for the four permission-mutation cross-auth
+// CM ids. The client never receives these directly, but they're useful for
+// transcript inspection of server-to-server traffic in test rigs and for
+// asserting "we did issue an add-allowed for player X to building Y" in
+// integration tests that have a server-side log scraper attached.
+export {
+  AddAllowedDecoder,
+  AddAllowedKind,
+  AddBannedDecoder,
+  AddBannedKind,
+  RemoveAllowedDecoder,
+  RemoveAllowedKind,
+  RemoveBannedDecoder,
+  RemoveBannedKind,
+} from './messages/game/obj-controller/index.js';
+export type { BuildingPermissionData } from './messages/game/obj-controller/index.js';

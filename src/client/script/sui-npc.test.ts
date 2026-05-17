@@ -12,8 +12,20 @@ import { ObjControllerMessage } from '../../messages/game/obj-controller-message
 import { ObjControllerSubtypeIds } from '../../messages/game/obj-controller/registry.js';
 import { SuiCreatePageMessage } from '../../messages/game/sui/sui-create-page-message.js';
 import { SuiEventNotification } from '../../messages/game/sui/sui-event-notification.js';
+import type { SuiPageData } from '../../messages/game/sui/sui-page-data.js';
 import type { NetworkId } from '../../types.js';
 import { createFakeContext } from './test-helpers.js';
+
+function makeFakePageData(pageId: number): SuiPageData {
+  return {
+    pageId,
+    pageName: '',
+    commands: [],
+    associatedObjectId: 0n,
+    associatedLocation: { x: 0, y: 0, z: 0 },
+    maxRangeFromObject: 0,
+  };
+}
 
 function unwrapEnqueue(msg: ObjControllerMessage): CommandQueueEnqueue {
   return CommandQueueEnqueue.unpack(new ReadIterator(msg.data));
@@ -51,20 +63,27 @@ describe('SUI primitives', () => {
   it('waitForSui resolves to the next SuiCreatePageMessage', async () => {
     const { ctx, simulateRecv } = createFakeContext({ playerNetworkId: PLAYER_ID });
     const p = ctx.waitForSui();
-    const payload = new Uint8Array([0x07, 0x00, 0x00, 0x00, 0xde, 0xad]);
-    setTimeout(() => simulateRecv(new SuiCreatePageMessage(payload)), 5);
+    const page: SuiPageData = {
+      ...makeFakePageData(7),
+      pageName: 'banker.main',
+      commands: [
+        { type: 'setProperty', targetWidget: 'cmp.title', propertyName: 'Text', propertyValue: 'Hi' },
+      ],
+    };
+    setTimeout(() => simulateRecv(new SuiCreatePageMessage(page)), 5);
     const got = await p;
     expect(got).toBeInstanceOf(SuiCreatePageMessage);
     expect(got.pageId).toBe(7);
-    expect(Array.from(got.pageData)).toEqual([0x07, 0x00, 0x00, 0x00, 0xde, 0xad]);
+    expect(got.pageData.pageName).toBe('banker.main');
+    expect(got.pageData.commands).toEqual(page.commands);
   });
 
   it('waitForSui respects the optional predicate', async () => {
     const { ctx, simulateRecv } = createFakeContext({ playerNetworkId: PLAYER_ID });
     const p = ctx.waitForSui({ predicate: (m) => m.pageId === 42 });
     setTimeout(() => {
-      simulateRecv(new SuiCreatePageMessage(new Uint8Array([7, 0, 0, 0])));
-      simulateRecv(new SuiCreatePageMessage(new Uint8Array([42, 0, 0, 0])));
+      simulateRecv(new SuiCreatePageMessage(makeFakePageData(7)));
+      simulateRecv(new SuiCreatePageMessage(makeFakePageData(42)));
     }, 5);
     const got = await p;
     expect(got.pageId).toBe(42);

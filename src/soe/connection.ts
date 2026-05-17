@@ -27,10 +27,21 @@
  * or fragment headers.
  */
 
+import { type WriteStream, createWriteStream } from 'node:fs';
 import { type Socket, createSocket } from 'node:dgram';
 import { appendCrc, verifyCrc } from '../crc/crc32.js';
 import { EncryptMethod } from '../types.js';
 import type { EncryptionParams } from '../types.js';
+import {
+  type LatencyStats,
+  buildClockReflect,
+  buildClockSync,
+  clockReflectRttMs,
+  localSyncStampShort,
+  parseClockReflect,
+  parseClockSync,
+  summarizeLatency,
+} from './clock-sync.js';
 import { applyEncryption, reverseEncryption } from './encrypt.js';
 import { FragmentBuffer, buildFragmentPackets } from './fragment.js';
 import type {
@@ -38,6 +49,7 @@ import type {
   ConnectionEvent,
   ConnectionStateHandler,
   ISoeConnection,
+  RawCaptureOptions,
   SoeConnectionOptions,
 } from './interface.js';
 import { unpackGroup, unpackMulti } from './multipacket.js';
@@ -49,6 +61,11 @@ import {
   isFragment,
   isReliable,
 } from './packet-types.js';
+import {
+  frameToJson,
+  metaToJson,
+  sessionToJson,
+} from './raw-capture-io.js';
 import {
   IncomingSequence,
   OutgoingSequence,
@@ -69,6 +86,12 @@ const DEFAULT_MAX_RAW = 496;
 const DEFAULT_KEEPALIVE_MS = 5000;
 const SESSION_RETRIES = 5;
 const SESSION_RETRY_MS = 500;
+/**
+ * Periodic ClockSync interval. Mirrors `SetupSharedNetwork.cpp:46` where the
+ * client's default `clockSyncDelay = 45000`. Set the option to 0 to disable
+ * periodic ClockSync entirely.
+ */
+const DEFAULT_CLOCK_SYNC_MS = 45000;
 
 /**
  * The state of a connection.
@@ -90,8 +113,10 @@ export class SoeConnection implements ISoeConnection {
   private readonly maxRawPacketSize: number;
   private readonly connectionCode: number;
   private readonly keepAliveMs: number;
+  private readonly clockSyncIntervalMs: number;
   private readonly onAppMessage: AppMessageHandler;
   private readonly onEvent: ConnectionStateHandler | undefined;
+  private readonly onClockSync: ((rttMs: number) => void) | undefined;
 
   private socket: Socket | null = null;
   private status: ConnectionStatus = { kind: 'idle' };
@@ -102,17 +127,34 @@ export class SoeConnection implements ISoeConnection {
   private readonly fragmentCh0 = new FragmentBuffer();
 
   private keepAliveTimer: NodeJS.Timeout | null = null;
+  private clockSyncTimer: NodeJS.Timeout | null = null;
 
-  /** Internal one-shot listeners (drained on next emit()). Used by connect(). */
+  /** RTT samples in ms, in the order they were observed. */
+  private readonly latencySamples: number[] = [];
+
+  /**
+   * Internal one-shot listeners (drained on next emit()). Used by connect().
+   */
   private readonly oneShotListeners: ConnectionStateHandler[] = [];
+
+  /** Raw-capture tee state. See `SoeConnectionOptions.rawCapture`. */
+  private readonly rawCaptureOptions: RawCaptureOptions | undefined;
+  private rawCaptureStream: WriteStream | null = null;
+  private rawCaptureSessionWritten = false;
 
   constructor(options: SoeConnectionOptions) {
     this.endpoint = options.endpoint;
     this.maxRawPacketSize = options.maxRawPacketSize ?? DEFAULT_MAX_RAW;
     this.connectionCode = options.connectionCode ?? randomU32();
     this.keepAliveMs = options.keepAliveMs ?? DEFAULT_KEEPALIVE_MS;
+    this.clockSyncIntervalMs = options.clockSyncIntervalMs ?? DEFAULT_CLOCK_SYNC_MS;
     this.onAppMessage = options.onAppMessage;
     this.onEvent = options.onEvent;
+    this.onClockSync = options.onClockSync;
+    this.rawCaptureOptions = options.rawCapture;
+    if (this.rawCaptureOptions !== undefined) {
+      this.openRawCapture(this.rawCaptureOptions);
+    }
   }
 
   get isConnected(): boolean {
@@ -179,6 +221,7 @@ export class SoeConnection implements ISoeConnection {
         if (event.kind === 'session_negotiated') {
           if (timer !== null) clearTimeout(timer);
           this.startKeepAlive();
+          this.startClockSync();
           resolve(event.params);
         } else if (event.kind === 'disconnected' || event.kind === 'error') {
           if (timer !== null) clearTimeout(timer);
@@ -266,6 +309,7 @@ export class SoeConnection implements ISoeConnection {
    * Use `injectSessionResponse()` for the handshake step.
    */
   testInjectDatagram(bytes: Uint8Array): void {
+    this.captureFrame('recv', bytes);
     this.handleDatagram(bytes);
   }
 
@@ -301,6 +345,7 @@ export class SoeConnection implements ISoeConnection {
       maxRawPacketSize: Math.min(fields.maxRawPacketSize, this.maxRawPacketSize),
     };
     this.status = { kind: 'connected', params };
+    this.captureSession(params);
     this.emit({ kind: 'session_negotiated', params });
     return params;
   }
@@ -335,6 +380,7 @@ export class SoeConnection implements ISoeConnection {
   // ────────────────────────────────────────────────────────────────────────
 
   private async rawSend(bytes: Uint8Array): Promise<void> {
+    this.captureFrame('send', bytes);
     if (this.testSendOverride !== null) {
       await this.testSendOverride(bytes);
       return;
@@ -357,8 +403,12 @@ export class SoeConnection implements ISoeConnection {
     const sock = this.socket;
     if (sock === null) return;
     sock.on('message', (msg) => {
+      const datagram = new Uint8Array(msg.buffer, msg.byteOffset, msg.byteLength);
+      // Tee BEFORE any decrypt/CRC strip so the capture preserves the exact
+      // bytes that arrived on the wire.
+      this.captureFrame('recv', datagram);
       try {
-        this.handleDatagram(new Uint8Array(msg.buffer, msg.byteOffset, msg.byteLength));
+        this.handleDatagram(datagram);
       } catch (err) {
         this.emit({ kind: 'error', error: err instanceof Error ? err : new Error(String(err)) });
       }
@@ -394,6 +444,7 @@ export class SoeConnection implements ISoeConnection {
           maxRawPacketSize: Math.min(fields.maxRawPacketSize, this.maxRawPacketSize),
         };
         this.status = { kind: 'connected', params };
+        this.captureSession(params);
         this.emit({ kind: 'session_negotiated', params });
       } catch (err) {
         this.emit({
@@ -462,10 +513,21 @@ export class SoeConnection implements ISoeConnection {
         this.cleanup();
         return;
       case SoePacketType.PortAlive:
+        return;
       case SoePacketType.ClockSync:
+        // Server initiated a ClockSync against us — auto-reflect it so the
+        // server gets its RTT estimate. Mirrors UdpLibrary.cpp:2022-2061.
+        // The SWG server normally has clockSyncDelay=0 and won't initiate,
+        // but the client side of the protocol responds defensively either
+        // way. The reflect goes through the same encryption+CRC pipeline
+        // (PhysicalSend at UdpLibrary.cpp:2050).
+        this.handleClockSync(cooked);
+        return;
       case SoePacketType.ClockReflect:
-        // Not implementing clock-sync in the MVP — these are nice-to-have for
-        // ping stats but the server is local and we don't need them.
+        // Server is responding to a ClockSync WE sent. Extract the echoed
+        // timeStamp and record the RTT into our histogram. Mirrors
+        // UdpLibrary.cpp:2063-2113.
+        this.handleClockReflect(cooked);
         return;
       default:
         if (isReliable(opcode) || isFragment(opcode)) {
@@ -602,10 +664,140 @@ export class SoeConnection implements ISoeConnection {
     this.keepAliveTimer.unref?.();
   }
 
+  /**
+   * Begin sending periodic UdpPacketClockSync packets to the server. Each
+   * ClockSync carries our current `LocalSyncStampShort`; the server's
+   * UdpConnection echoes it back in a ClockReflect, and `handleClockReflect`
+   * computes the RTT.
+   *
+   * Mirrors UdpLibrary.cpp:2244-2274 — the client-side periodic emitter.
+   * We skip the "if (mProcessingInducedLag > 1000) break;" guard from the
+   * server-side recv handler since we don't model that load metric here.
+   */
+  private startClockSync(): void {
+    if (this.clockSyncIntervalMs <= 0) return;
+    this.clockSyncTimer = setInterval(() => {
+      if (this.status.kind !== 'connected') return;
+      this.sendClockSync();
+    }, this.clockSyncIntervalMs);
+    this.clockSyncTimer.unref?.();
+  }
+
+  /**
+   * Send a single UdpPacketClockSync to the server. Public for tests; in
+   * normal use the periodic timer drives this. Returns the local stamp that
+   * was sent so callers can correlate with the reflected response.
+   */
+  sendClockSync(): number {
+    const stamp = localSyncStampShort();
+    const lastSample = this.latencySamples[this.latencySamples.length - 1];
+    let total = 0;
+    let low = Number.POSITIVE_INFINITY;
+    let high = 0;
+    for (const s of this.latencySamples) {
+      total += s;
+      if (s < low) low = s;
+      if (s > high) high = s;
+    }
+    const avg =
+      this.latencySamples.length > 0 ? Math.round(total / this.latencySamples.length) : 0;
+    this.sendCookedSoe(
+      buildClockSync(stamp, {
+        // Approximation of the C++ side's mSyncStat* fields. None of these
+        // values affect the reflection; they're informational stats the
+        // peer copies into its own ConnectionStats.
+        masterPingTime: avg,
+        averagePingTime: avg,
+        lowPingTime: this.latencySamples.length > 0 ? low : 0,
+        highPingTime: high,
+        lastPingTime: lastSample ?? 0,
+        ourSent: 0n,
+        ourReceived: 0n,
+      }),
+    );
+    return stamp;
+  }
+
+  /**
+   * Server sent us a ClockSync. Decode it, build a ClockReflect that echoes
+   * the timeStamp and originator counts, and send it through the same
+   * encryption + CRC pipeline. Bytes are already cooked (CRC-stripped,
+   * decrypted) — sendCookedSoe re-cooks them on the way out.
+   */
+  private handleClockSync(cookedBytes: Uint8Array): void {
+    let sync;
+    try {
+      sync = parseClockSync(cookedBytes);
+    } catch (err) {
+      this.emit({
+        kind: 'corrupt_packet',
+        reason: `parseClockSync: ${err instanceof Error ? err.message : String(err)}`,
+        rawBytes: cookedBytes,
+      });
+      return;
+    }
+    const reflect = buildClockReflect(sync, Date.now() & 0xffffffff);
+    this.sendCookedSoe(reflect);
+  }
+
+  /**
+   * Server reflected back a ClockSync we sent. Decode it and record the
+   * round-trip time into our latency histogram. The echoed `timeStamp` is
+   * our original LocalSyncStampShort; the RTT is the delta against our
+   * current local stamp (modulo 16-bit wraparound — see
+   * `clockReflectRttMs`).
+   */
+  private handleClockReflect(cookedBytes: Uint8Array): void {
+    let reflect;
+    try {
+      reflect = parseClockReflect(cookedBytes);
+    } catch (err) {
+      this.emit({
+        kind: 'corrupt_packet',
+        reason: `parseClockReflect: ${err instanceof Error ? err.message : String(err)}`,
+        rawBytes: cookedBytes,
+      });
+      return;
+    }
+    const rtt = clockReflectRttMs(reflect.timeStamp, localSyncStampShort());
+    this.latencySamples.push(rtt);
+    try {
+      this.onClockSync?.(rtt);
+    } catch {
+      // swallow listener errors
+    }
+  }
+
+  /**
+   * Public histogram of recorded RTT samples. Returns null if no samples
+   * have been collected yet — keep-alive-only or short-lived connections
+   * may never see a ClockReflect.
+   */
+  getLatencyStats(): LatencyStats | null {
+    return summarizeLatency(this.latencySamples);
+  }
+
+  // ────────────────────────────────────────────────────────────────────────
+  // Test hooks for the clock-sync flow
+  // ────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Append a synthetic RTT sample to the latency histogram. Useful for unit
+   * tests that want to assert downstream consumers (e.g. LifecycleResult
+   * surfacing) wire stats correctly without actually round-tripping packets.
+   */
+  testPushLatencySample(rttMs: number): void {
+    this.latencySamples.push(rttMs);
+  }
+
   private cleanup(): void {
     if (this.keepAliveTimer !== null) {
       clearInterval(this.keepAliveTimer);
       this.keepAliveTimer = null;
+    }
+    if (this.clockSyncTimer !== null) {
+      clearInterval(this.clockSyncTimer);
+      this.clockSyncTimer = null;
     }
     if (this.socket !== null) {
       try {
@@ -615,6 +807,79 @@ export class SoeConnection implements ISoeConnection {
       }
       this.socket = null;
     }
+    this.closeRawCapture();
+  }
+
+  // ────────────────────────────────────────────────────────────────────────
+  // Raw-byte capture tee (see SoeConnectionOptions.rawCapture)
+  //
+  // All capture writes are wrapped in try/catch so a misbehaving filesystem
+  // can never abort a send/recv. We open lazily, write append-only with a
+  // trailing `\n`, and rely on Node's WriteStream buffering — fsync isn't
+  // needed for a debug-only tool.
+  // ────────────────────────────────────────────────────────────────────────
+
+  private openRawCapture(opts: RawCaptureOptions): void {
+    try {
+      this.rawCaptureStream = createWriteStream(opts.writePath, {
+        encoding: 'utf8',
+        flags: 'w', // truncate so re-running tests doesn't append to stale captures
+      });
+      const meta: Record<string, unknown> = metaToJson({
+        ts: Date.now(),
+        // No socket yet (we haven't bind()ed) — fill localEndpoint on
+        // socket-attach if needed. For now report null.
+        localEndpoint: null,
+        remoteEndpoint: `${this.endpoint.host}:${this.endpoint.port}`,
+        connectionCode: this.connectionCode,
+        maxRawPacketSize: this.maxRawPacketSize,
+        ...(opts.stage !== undefined ? { stage: opts.stage } : {}),
+      });
+      this.rawCaptureStream.write(`${JSON.stringify(meta)}\n`);
+    } catch {
+      // Capture failures must never crash the connection. Drop silently.
+      this.rawCaptureStream = null;
+    }
+  }
+
+  private captureSession(params: EncryptionParams): void {
+    if (this.rawCaptureStream === null || this.rawCaptureSessionWritten) return;
+    try {
+      const line = JSON.stringify(
+        sessionToJson({
+          ts: Date.now(),
+          encryptCode: params.encryptCode,
+          connectionCode: params.connectionCode,
+          crcBytes: params.crcBytes,
+          encryptMethods: params.encryptMethods,
+          negotiatedMaxRawPacketSize: params.maxRawPacketSize,
+        }),
+      );
+      this.rawCaptureStream.write(`${line}\n`);
+      this.rawCaptureSessionWritten = true;
+    } catch {
+      // ignore
+    }
+  }
+
+  private captureFrame(direction: 'send' | 'recv', bytes: Uint8Array): void {
+    if (this.rawCaptureStream === null) return;
+    try {
+      const line = JSON.stringify(frameToJson({ direction, ts: Date.now(), bytes }));
+      this.rawCaptureStream.write(`${line}\n`);
+    } catch {
+      // ignore
+    }
+  }
+
+  private closeRawCapture(): void {
+    if (this.rawCaptureStream === null) return;
+    try {
+      this.rawCaptureStream.end();
+    } catch {
+      // ignore
+    }
+    this.rawCaptureStream = null;
   }
 
   private emit(event: ConnectionEvent): void {

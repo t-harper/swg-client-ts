@@ -20,6 +20,12 @@ import {
   adminSpawnInto,
 } from './admin.js';
 import {
+  adminCityGetCityAtLocation,
+  adminCityInfo,
+  adminCityListCitizens,
+  adminCityListStructures,
+} from './admin-city.js';
+import {
   CITY_CENTER,
   CITY_NAME,
   CITY_PLANET,
@@ -39,12 +45,46 @@ import {
   type CharacterRecord,
   type CityState,
   type PhaseName,
+  type StructureRecord,
   isPhaseComplete,
   loadState,
   markPhaseFinished,
   markPhaseStarted,
   saveState,
 } from './state.js';
+
+/**
+ * Build a callback that persists a `StructureRecord` into `state.structures`.
+ *
+ * Keying strategy:
+ *   - One structure per owner (cityhall, house, guildhall, civic) →
+ *     key = `${ownerAccount}` (overwrites prior placement record).
+ *   - Multi-structure per owner (mayor's gardens) → key =
+ *     `${ownerAccount}:${subKind}` so each garden is recorded separately.
+ *
+ * Each invocation mutates the in-memory state and writes it back to disk so
+ * partial-success scenarios still leave behind a paper trail even if a later
+ * step crashes. Scenarios run in parallel inside a Fleet but JS is
+ * single-threaded, so concurrent callback invocations interleave at await
+ * points only — the keyed assignment + `saveState` pair is atomic from the
+ * orchestrator's point of view.
+ */
+function makeStructurePersistCallback(
+  state: CityState,
+): (rec: StructureRecord) => void {
+  return (rec) => {
+    const key =
+      rec.kind === 'garden' && rec.subKind !== undefined
+        ? `${rec.ownerAccount}:${rec.subKind}`
+        : rec.ownerAccount;
+    state.structures[key] = rec;
+    try {
+      saveState(state);
+    } catch {
+      // Disk write failure shouldn't abort the in-flight scenario.
+    }
+  };
+}
 
 export type Mode = 'mvp' | 'full' | 'verify' | 'phase0pre';
 
@@ -377,10 +417,13 @@ async function phase2_mayor(
   }
 
   const client = new SwgClient({ loginServer: opts.loginServer });
+  const onStructurePlaced = makeStructurePersistCallback(state);
   const scenario = mayorScenario({
     cityCenter: { x: mayor.x, z: mayor.z },
     cityName: state.cityName,
     rotation: mayor.rotation,
+    ownerAccount: mayor.account,
+    onStructurePlaced,
   });
 
   const result = await client.fullLifecycle({
@@ -418,13 +461,14 @@ async function phase3_housing(
     return { ok: true, notes: 'dry-run' };
   }
 
+  const onStructurePlaced = makeStructurePersistCallback(state);
   const configs: FleetClientConfig[] = residents.map((slot) => ({
     account: slot.account,
     characterName: slot.characterName,
     planet: 'mos_eisley',
     profession: 'combat_brawler',
     holdZonedInMs: 60_000, // walk + place + walk-in + declare-residence
-    script: residentScenario({ slot }),
+    script: residentScenario({ slot, onStructurePlaced }),
   }));
 
   const fleet = new Fleet({ loginServer: opts.loginServer });
@@ -454,6 +498,7 @@ async function phase4_civic(
     return { ok: true, notes: 'dry-run' };
   }
 
+  const onStructurePlaced = makeStructurePersistCallback(state);
   const configs: FleetClientConfig[] = [
     ...civic.map((slot) => ({
       account: slot.account,
@@ -461,7 +506,7 @@ async function phase4_civic(
       planet: 'mos_eisley',
       profession: 'combat_brawler',
       holdZonedInMs: 45_000,
-      script: civicScenario({ slot }),
+      script: civicScenario({ slot, onStructurePlaced }),
     })),
     ...guildLeaders.map((slot) => ({
       account: slot.account,
@@ -469,7 +514,7 @@ async function phase4_civic(
       planet: 'mos_eisley',
       profession: 'combat_brawler',
       holdZonedInMs: 45_000,
-      script: guildScenario({ slot }),
+      script: guildScenario({ slot, onStructurePlaced }),
     })),
     ...guildExtras.map((slot) => ({
       account: slot.account,
@@ -477,7 +522,7 @@ async function phase4_civic(
       planet: 'mos_eisley',
       profession: 'combat_brawler',
       holdZonedInMs: 45_000,
-      script: guildScenario({ slot }),
+      script: guildScenario({ slot, onStructurePlaced }),
     })),
   ];
 
@@ -507,13 +552,18 @@ async function phase5_decor(
   }
 
   const client = new SwgClient({ loginServer: opts.loginServer });
+  const onStructurePlaced = makeStructurePersistCallback(state);
   const result = await client.fullLifecycle({
     account: mayor.account,
     characterName: mayor.characterName,
     planet: 'mos_eisley',
     profession: 'combat_brawler',
     holdZonedInMs: 90_000,
-    script: decorationScenario({ decorations: gardenAnchors() }),
+    script: decorationScenario({
+      decorations: gardenAnchors(),
+      ownerAccount: mayor.account,
+      onStructurePlaced,
+    }),
   });
   const failures = result.scriptResult?.assertionFailures ?? [];
   return {
@@ -524,7 +574,19 @@ async function phase5_decor(
 }
 
 /**
- * Phase 6 — verify. Mayor logs in, walks a circle, snapshots baselines.
+ * Phase 6 — verify (deterministic).
+ *
+ * Mayor logs in (with god mode), queries the server's city-state directly via
+ * the `city` console-command family (see scripts/build-city/admin-city.ts),
+ * and asserts:
+ *   - a city exists at our recorded city center
+ *   - `info.citizenCount >= expectedCitizens`
+ *   - `structures.length >= expectedStructures`
+ * Also walks a circle so the transcript still has visual broadcasts (kept
+ * for inspection / capture-replay, but no longer used for assertion).
+ *
+ * Persists `state.cityOid` once we discover it — downstream phases (if any)
+ * can use it without a second lookup.
  */
 async function phase6_verify(
   opts: OrchestratorOptions,
@@ -536,57 +598,117 @@ async function phase6_verify(
   if (mayor.account === null) return { ok: false, notes: 'no mayor account in state' };
 
   if (opts.dryRun) {
-    log('would log in as mayor → walk 350m circle → assert structures');
+    log('would log in as mayor → city listByPlanet → city showCityDetails → assert counts');
     return { ok: true, notes: 'dry-run' };
   }
 
-  const expectedStructureMin = opts.mode === 'mvp' ? 5 : 22;
+  // MVP layout: mayor + 4 residents = 5 citizens; cityhall + 4 houses = 5 structures.
+  // Full layout: mayor + ~14 residents + ~6 civic + ~9 guild = ~30 citizens; cityhall +
+  // ~15 houses + ~6 civic + 1 guild hall = ~22 structures.
+  const expectedCitizens = opts.mode === 'mvp' ? 5 : 30;
+  const expectedStructures = opts.mode === 'mvp' ? 5 : 22;
+
+  // Phase 6 doesn't need the slot list now that it queries the server
+  // directly; keep the param for symmetry with the other phase signatures.
+  void slots;
+
   const client = new SwgClient({ loginServer: opts.loginServer });
 
-  let structureCount = 0;
-  const result = await client.fullLifecycle({
+  let verifyResult: { ok: boolean; notes?: string } = {
+    ok: false,
+    notes: 'phase6: verify script did not run',
+  };
+
+  await client.fullLifecycle({
     account: mayor.account,
     characterName: mayor.characterName,
     planet: 'mos_eisley',
     profession: 'combat_brawler',
     holdZonedInMs: 60_000,
     script: async (ctx) => {
-      // Walk a circle around the city
-      const radius = opts.mode === 'mvp' ? 300 : 450;
-      await ctx.walkCircle({
-        centerX: state.cityCenter.x,
-        centerZ: state.cityCenter.z,
-        radius,
-        durationMs: 45_000,
-        speed: 8,
-      });
+      try {
+        // 1. God-mode on so subsequent `city ...` console commands are accepted.
+        await adminGodModeOn(ctx);
+
+        // 2. Find the city at our recorded center (with a small radius buffer to
+        // tolerate sub-meter placement offsets).
+        const cityId = await adminCityGetCityAtLocation(
+          ctx,
+          state.cityPlanet,
+          state.cityCenter.x,
+          state.cityCenter.z,
+          50,
+        );
+        if (cityId === null) {
+          verifyResult = {
+            ok: false,
+            notes: `city not found at ${state.cityPlanet} (${state.cityCenter.x}, ${state.cityCenter.z})`,
+          };
+          return;
+        }
+        state.cityOid = cityId.toString();
+        log(`Phase 6: located city id=${cityId.toString()}`);
+
+        // 3. Fetch full city info + citizen + structure lists.
+        const info = await adminCityInfo(ctx, cityId);
+        const citizens = await adminCityListCitizens(ctx, cityId);
+        const structures = await adminCityListStructures(ctx, cityId);
+        log(
+          `Phase 6: cityName=${info.cityName} rank=${info.rank} citizens=${citizens.length}/${info.citizenCount} structures=${structures.length}/${info.structureCount}`,
+        );
+
+        if (info.citizenCount < expectedCitizens) {
+          verifyResult = {
+            ok: false,
+            notes: `citizens ${info.citizenCount}/${expectedCitizens} (need at least ${expectedCitizens})`,
+          };
+          return;
+        }
+        if (structures.length < expectedStructures) {
+          verifyResult = {
+            ok: false,
+            notes: `structures ${structures.length}/${expectedStructures} (need at least ${expectedStructures})`,
+          };
+          return;
+        }
+
+        verifyResult = {
+          ok: true,
+          notes: `${info.citizenCount} citizens, ${structures.length} structures, rank ${info.rank}, cityId=${cityId.toString()}`,
+        };
+
+        // 4. Optional visual confirmation pass — walk a circle so the transcript
+        // has neighbor broadcasts (useful for capture-replay debugging). Not
+        // asserted against; the deterministic city-state checks above are
+        // the source of truth.
+        const radius = opts.mode === 'mvp' ? 300 : 450;
+        try {
+          await ctx.walkCircle({
+            centerX: state.cityCenter.x,
+            centerZ: state.cityCenter.z,
+            radius,
+            durationMs: 45_000,
+            speed: 8,
+          });
+        } catch (err) {
+          // Non-fatal — visual pass is informational only.
+          log(
+            `Phase 6: walkCircle errored (informational, not asserted): ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      } catch (err) {
+        verifyResult = {
+          ok: false,
+          notes: `verify threw: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
     },
   });
 
-  // Count naboo-family structures from the transcript
-  for (const ev of result.transcript) {
-    if (ev.direction !== 'recv') continue;
-    if (ev.messageName !== 'SceneCreateObjectByName') continue;
-    const decoded = ev.decoded as { templateName?: string } | null;
-    if (decoded?.templateName !== undefined && /naboo/i.test(decoded.templateName)) {
-      structureCount++;
-    }
-  }
-  for (const ev of result.transcript) {
-    if (ev.direction !== 'recv') continue;
-    if (ev.messageName !== 'SceneCreateObjectByCrc') continue;
-    // CRC-based — we don't have a server template lookup, so just count all in the area as candidates
-    structureCount++;
-  }
+  // Persist cityOid (and any newly-set state) on the way out.
+  saveState(state);
 
-  log(`Phase 6: observed ${structureCount} structures (need ≥${expectedStructureMin})`);
-  if (structureCount < expectedStructureMin) {
-    return {
-      ok: false,
-      notes: `only ${structureCount}/${expectedStructureMin} structures visible — placement may have failed`,
-    };
-  }
-  return { ok: true, notes: `${structureCount} structures observed` };
+  return verifyResult;
 }
 
 // ────────────────────────────────────────────────────────────────────────────

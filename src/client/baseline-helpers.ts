@@ -11,11 +11,22 @@
 import { BaselinesMessage } from '../messages/game/baselines/baselines-message.js';
 import { BatchBaselinesMessage } from '../messages/game/baselines/batch-baselines-message.js';
 import type {
+  BuildingObjectSharedBaseline,
+  CellObjectSharedBaseline,
+  CellObjectSharedNpBaseline,
   DecodedBaseline,
   PlayerObjectSharedBaseline,
+  TangibleObjectSharedBaseline,
 } from '../messages/game/baselines/index.js';
-import { ObjectTypeTags, PlayerObjectSharedKind } from '../messages/game/baselines/index.js';
+import {
+  BuildingObjectSharedKind,
+  CellObjectSharedKind,
+  CellObjectSharedNpKind,
+  ObjectTypeTags,
+  PlayerObjectSharedKind,
+} from '../messages/game/baselines/index.js';
 import { SceneCreateObjectByName } from '../messages/game/scene-create-object-by-name.js';
+import { UpdateContainmentMessage } from '../messages/game/update-containment-message.js';
 import type { NetworkId } from '../types.js';
 import type { TranscriptEvent } from './dispatcher.js';
 
@@ -162,4 +173,217 @@ export function playerObjectIds(source: TranscriptSource): NetworkId[] {
 /** Convenience: `networkIdsByObjectType(source, ObjectTypeTags.CREO)`. */
 export function creatureObjectIds(source: TranscriptSource): NetworkId[] {
   return networkIdsByObjectType(source, ObjectTypeTags.CREO);
+}
+
+// =============================================================================
+// Building + Cell containment index
+// =============================================================================
+
+/**
+ * One entry in the building side of the BuildingCellIndex. The `name` is a
+ * best-effort display name pulled from any decoded BUIO SHARED baseline (the
+ * Unicode override `objectName` wins, else the `nameStringId.text` lookup
+ * key). `cells` lists every NetworkId reported as a child of this building
+ * via an `UpdateContainmentMessage` event for which we also observed a
+ * CellObjectSharedDecoder baseline, in arrival order (== building's cell-
+ * table walk order).
+ */
+export interface BuildingIndexEntry {
+  /** Free-text or string-id-derived display name, if any baseline carried one. */
+  name?: string;
+  /** Cell NetworkIds linked to this building, in observation order. */
+  cells: NetworkId[];
+}
+
+/**
+ * One entry in the cell side of the BuildingCellIndex. `buildingId` is the
+ * `containerId` reported by the cell's `UpdateContainmentMessage`. The other
+ * fields come from the cell's SHARED + SHARED_NP baselines when those were
+ * decoded (the optional fields are absent when the corresponding baseline
+ * was not observed for this cell).
+ */
+export interface CellIndexEntry {
+  /** NetworkId of the parent building (from this cell's UpdateContainmentMessage). */
+  buildingId: NetworkId;
+  /** Index into the building's cell table (from SHARED baseline). */
+  cellNumber: number;
+  /** Player-assigned label, if any (from SHARED_NP baseline). */
+  cellName?: string;
+  /** True iff the cell is publicly accessible (from SHARED baseline). */
+  isPublic?: boolean;
+}
+
+/**
+ * Two-way index of buildings and cells observed in a transcript:
+ *   - `buildings` maps each building's NetworkId to its display name and the
+ *     ordered list of NetworkIds of its child cells.
+ *   - `cells` maps each cell's NetworkId to its parent building plus its
+ *     decoded SHARED/SHARED_NP fields.
+ *
+ * Returned by `buildBuildingCellIndex`. Both maps are scoped to objects for
+ * which we observed at least the relevant baseline (BUIO SHARED for the
+ * building side; SCLT SHARED for the cell side). Cells whose parent
+ * containment was never linked via `UpdateContainmentMessage` are still
+ * present in `cells` (with `buildingId = 0n`) so callers can detect them.
+ *
+ * Use this to:
+ *   - Look up "what cells does this cantina have?" given a building's NetworkId
+ *   - Look up "which building is this cell inside?" given a cell's NetworkId
+ *   - Find the public main-entrance cell of a building (filter by `isPublic`)
+ *
+ * For walk-to-cell scripting, pair this with `ctx.walkToCell(cellId, ...)`
+ * after pulling the right cell NetworkId from this index.
+ */
+export interface BuildingCellIndex {
+  buildings: Map<NetworkId, BuildingIndexEntry>;
+  cells: Map<NetworkId, CellIndexEntry>;
+}
+
+/**
+ * Pick the best display name for a building from a decoded baseline. Mirrors
+ * the pickName logic in ContainerView — `objectName` (Unicode free-text) wins
+ * if non-empty, else fall back to the `nameStringId.text` lookup key.
+ */
+function pickBuildingName(
+  shared: BuildingObjectSharedBaseline | TangibleObjectSharedBaseline,
+): string | undefined {
+  if (shared.objectName !== '') return shared.objectName;
+  if (shared.nameStringId.text !== '') return shared.nameStringId.text;
+  return undefined;
+}
+
+/**
+ * Walk the transcript and build a `BuildingCellIndex` mapping every observed
+ * BuildingObject and CellObject to its sibling.
+ *
+ * Algorithm:
+ *   1. Pass 1: collect per-cell SHARED + SHARED_NP baseline data (the
+ *      `cellNumber` / `isPublic` / `cellLabel` fields) plus per-building
+ *      SHARED baseline data (the display name). Index by NetworkId.
+ *   2. Pass 2: walk `UpdateContainmentMessage` events. For each cell, link
+ *      it to its parent building via `containerId`. The cell list per
+ *      building is built in observation order (== arrival order from the
+ *      server's `BatchBaselinesMessage` flood, which mirrors the building's
+ *      cell-table walk order).
+ *
+ * Cells whose SHARED baseline was never decoded are NOT included in the
+ * `cells` map (we need at least the `cellNumber` to make the entry
+ * meaningful). Buildings without any decoded baseline are still included
+ * if at least one cell linked to them — the `name` is then `undefined`.
+ *
+ * Idempotent under reordering: every field uses the most-recent non-null
+ * value observed, and the containment linkage walks the UpdateContainment
+ * events in order so reorders only affect cell-list ordering.
+ */
+export function buildBuildingCellIndex(transcript: readonly TranscriptEvent[]): BuildingCellIndex {
+  const buildings = new Map<NetworkId, BuildingIndexEntry>();
+  const cells = new Map<NetworkId, CellIndexEntry>();
+
+  // Pass 1: per-building names (from BUIO SHARED) and per-cell fields
+  // (from SCLT SHARED + SCLT SHARED_NP).
+  for (const event of transcript) {
+    if (event.direction !== 'recv') continue;
+    if (event.decoded === null || event.decoded === undefined) continue;
+
+    if (event.decoded instanceof BaselinesMessage) {
+      ingestBaseline(buildings, cells, event.decoded);
+    } else if (event.decoded instanceof BatchBaselinesMessage) {
+      for (const b of event.decoded.baselines) {
+        ingestBaseline(buildings, cells, b);
+      }
+    }
+  }
+
+  // Pass 2: link cells to their parent buildings via UpdateContainmentMessage.
+  // Track cells we've already linked so a re-containment event (rare, but
+  // possible: cell unloaded then re-loaded) updates the buildingId without
+  // duplicating the entry in the building's `cells` list.
+  for (const event of transcript) {
+    if (event.direction !== 'recv') continue;
+    if (event.decoded === null || event.decoded === undefined) continue;
+    if (!(event.decoded instanceof UpdateContainmentMessage)) continue;
+
+    const cell = cells.get(event.decoded.networkId);
+    if (cell === undefined) continue; // not a cell we know about
+    const newParent = event.decoded.containerId;
+    const oldParent = cell.buildingId;
+    cell.buildingId = newParent;
+
+    // If the parent actually changed (initial 0n → real, OR mid-flight move),
+    // adjust the building → cells reverse index.
+    if (oldParent !== newParent) {
+      if (oldParent !== 0n) {
+        const oldEntry = buildings.get(oldParent);
+        if (oldEntry !== undefined) {
+          const idx = oldEntry.cells.indexOf(event.decoded.networkId);
+          if (idx >= 0) oldEntry.cells.splice(idx, 1);
+        }
+      }
+      if (newParent !== 0n) {
+        const entry = ensureBuildingEntry(buildings, newParent);
+        if (!entry.cells.includes(event.decoded.networkId)) {
+          entry.cells.push(event.decoded.networkId);
+        }
+      }
+    }
+  }
+
+  return { buildings, cells };
+}
+
+function ensureBuildingEntry(
+  buildings: Map<NetworkId, BuildingIndexEntry>,
+  id: NetworkId,
+): BuildingIndexEntry {
+  let entry = buildings.get(id);
+  if (entry === undefined) {
+    entry = { cells: [] };
+    buildings.set(id, entry);
+  }
+  return entry;
+}
+
+function ensureCellEntry(
+  cells: Map<NetworkId, CellIndexEntry>,
+  id: NetworkId,
+): CellIndexEntry {
+  let entry = cells.get(id);
+  if (entry === undefined) {
+    entry = { buildingId: 0n, cellNumber: -1 };
+    cells.set(id, entry);
+  }
+  return entry;
+}
+
+function ingestBaseline(
+  buildings: Map<NetworkId, BuildingIndexEntry>,
+  cells: Map<NetworkId, CellIndexEntry>,
+  b: BaselinesMessage,
+): void {
+  const decoded: DecodedBaseline | null = b.decodedBaseline;
+  if (decoded === null) return;
+  switch (decoded.kind) {
+    case BuildingObjectSharedKind: {
+      const entry = ensureBuildingEntry(buildings, b.target);
+      const name = pickBuildingName(decoded.data as BuildingObjectSharedBaseline);
+      if (name !== undefined) entry.name = name;
+      break;
+    }
+    case CellObjectSharedKind: {
+      const entry = ensureCellEntry(cells, b.target);
+      const data = decoded.data as CellObjectSharedBaseline;
+      entry.cellNumber = data.cellNumber;
+      entry.isPublic = data.isPublic;
+      break;
+    }
+    case CellObjectSharedNpKind: {
+      const entry = ensureCellEntry(cells, b.target);
+      const data = decoded.data as CellObjectSharedNpBaseline;
+      if (data.cellLabel !== '') entry.cellName = data.cellLabel;
+      break;
+    }
+    default:
+      // Other baselines are irrelevant for this index.
+      break;
+  }
 }

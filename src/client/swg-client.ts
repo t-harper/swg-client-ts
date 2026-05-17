@@ -66,6 +66,8 @@ import '../messages/game/update-transform-message.js';
 import '../messages/game/update-transform-with-parent-message.js';
 
 import { Buffer } from 'node:buffer';
+import type { LatencyStats } from '../soe/clock-sync.js';
+import type { RawCaptureOptions } from '../soe/interface.js';
 import {
   type CharacterInfo,
   type ClusterInfo,
@@ -78,6 +80,28 @@ import type { TranscriptEvent } from './dispatcher.js';
 import { runGameStage } from './game-stage.js';
 import { runLoginStage } from './login-stage.js';
 import type { ScenarioFn, ScriptResult } from './script/context.js';
+
+/**
+ * Options for raw-byte SOE capture across a full lifecycle. Because Stage 1
+ * and Stages 2-3 use independent SOE sessions (different encryptCodes), each
+ * is written to a distinct file derived from `basePath` (or supplied
+ * explicitly via `loginPath`/`gamePath`).
+ *
+ * Recommended: pass `basePath: '/tmp/capture'` to get
+ *   `/tmp/capture.login.ndjson` + `/tmp/capture.game.ndjson`.
+ */
+export interface FullLifecycleRawCaptureOptions {
+  /**
+   * Base file path. Suffixes `.login.ndjson` and `.game.ndjson` are appended
+   * to derive per-stage output paths. Ignored if `loginPath`/`gamePath` are
+   * supplied.
+   */
+  basePath?: string;
+  /** Explicit Stage 1 output path. Overrides `basePath`. */
+  loginPath?: string;
+  /** Explicit Stage 2+3 output path. Overrides `basePath`. */
+  gamePath?: string;
+}
 
 export interface SwgClientOptions {
   loginServer: ServerEndpoint;
@@ -116,6 +140,34 @@ export interface FullLifecycleOptions {
   onTranscript?: (event: TranscriptEvent) => void;
   /** Stream every state transition to this hook. */
   onStateChange?: (state: ZoneState) => void;
+  /**
+   * If set, every UDP datagram on the LoginServer and ConnectionServer
+   * sockets is teed to per-stage NDJSON files. See
+   * `FullLifecycleRawCaptureOptions` for details.
+   *
+   * The decoder CLI (`pnpm cli decode-raw`) replays the byte stream offline,
+   * verifying CRC and emitting the same message decodes the live client saw.
+   */
+  rawCapture?: FullLifecycleRawCaptureOptions;
+}
+
+/**
+ * Latency histogram surfaced from the connection-stage SOE socket (the same
+ * one that gets re-routed into game-stage). Login-stage's socket closes
+ * before its first ClockSync interval elapses, so any samples there would
+ * be discarded — only the connection/game socket's samples make it here.
+ */
+export interface LifecycleLatency {
+  /** Number of ClockReflect samples observed. */
+  samples: number;
+  /** 50th percentile RTT (ms), nearest-rank. */
+  p50: number;
+  /** 95th percentile RTT (ms), nearest-rank. */
+  p95: number;
+  /** 99th percentile RTT (ms), nearest-rank. */
+  p99: number;
+  /** Arithmetic mean RTT (ms). */
+  mean: number;
 }
 
 export interface LifecycleResult {
@@ -150,6 +202,12 @@ export interface LifecycleResult {
   receivedErrorMessage: boolean;
   /** Set if a script ran during the dwell. */
   scriptResult?: ScriptResult;
+  /**
+   * Round-trip-time histogram from ClockSync/ClockReflect exchanges. Null if
+   * no samples were collected (short-lived lifecycles may not span an
+   * interval, default 45s).
+   */
+  latency: LifecycleLatency | null;
 }
 
 export class SwgClient {
@@ -172,12 +230,16 @@ export class SwgClient {
 
     opts.onStateChange?.(ZoneState.LoginHandshake);
 
+    const loginRawCapture = resolveRawCapture(opts.rawCapture, 'login');
+    const gameRawCapture = resolveRawCapture(opts.rawCapture, 'game');
+
     // ── STAGE 1 ──────────────────────────────────────────────────────────
     const login = await runLoginStage({
       endpoint: this.loginServer,
       username: opts.account,
       password: opts.password,
       onTranscript,
+      ...(loginRawCapture !== undefined ? { rawCapture: loginRawCapture } : {}),
     });
     opts.onStateChange?.(ZoneState.LoginAuthed);
 
@@ -233,6 +295,7 @@ export class SwgClient {
       ...(characterToCreate !== undefined ? { characterToCreate } : {}),
       ...(picker !== undefined ? { pickCharacter: picker } : {}),
       onTranscript,
+      ...(gameRawCapture !== undefined ? { rawCapture: gameRawCapture } : {}),
     });
     opts.onStateChange?.(ZoneState.CharacterSelected);
 
@@ -264,6 +327,23 @@ export class SwgClient {
       (e) => e.direction === 'recv' && e.messageName === 'ErrorMessage',
     );
 
+    // Query latency stats from the connection-stage socket — the same socket
+    // is reused for game-stage, so all RTT samples observed across stages 2
+    // through 4 land here. (Login-stage uses a separate socket that closes
+    // before any ClockSync interval elapses, so its samples are discarded.)
+    // disconnect() above only clears timers + closes the socket; the
+    // latencySamples array survives.
+    const rawLatency = connectionStage.connection.getLatencyStats();
+    const latency: LifecycleLatency | null = rawLatency
+      ? {
+          samples: rawLatency.count,
+          p50: rawLatency.p50,
+          p95: rawLatency.p95,
+          p99: rawLatency.p99,
+          mean: rawLatency.mean,
+        }
+      : null;
+
     const result: LifecycleResult = {
       stages: {
         login: login.elapsedMs,
@@ -283,6 +363,7 @@ export class SwgClient {
       stationId: login.token.stationId,
       receivedErrorMessage,
       ...(game?.scriptResult !== undefined ? { scriptResult: game.scriptResult } : {}),
+      latency,
     };
     return result;
   }
@@ -314,4 +395,25 @@ function normalize(value: unknown): unknown {
     return out;
   }
   return value;
+}
+
+/**
+ * Resolve `FullLifecycleRawCaptureOptions` → per-stage `RawCaptureOptions`.
+ * Returns undefined if no capture was requested for this stage.
+ *
+ * Stages: `'login'` for Stage 1, `'game'` for Stages 2+3 (same SOE session).
+ */
+function resolveRawCapture(
+  opts: FullLifecycleRawCaptureOptions | undefined,
+  stage: 'login' | 'game',
+): RawCaptureOptions | undefined {
+  if (opts === undefined) return undefined;
+  const explicit = stage === 'login' ? opts.loginPath : opts.gamePath;
+  if (explicit !== undefined) {
+    return { writePath: explicit, stage };
+  }
+  if (opts.basePath !== undefined) {
+    return { writePath: `${opts.basePath}.${stage}.ndjson`, stage };
+  }
+  return undefined;
 }

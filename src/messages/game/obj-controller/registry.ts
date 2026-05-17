@@ -270,6 +270,40 @@ export const ObjControllerSubtypeIds = {
   CM_scriptTransferMoney: 364,
   CM_alterHitPoints: 384,
   CM_setCombatTarget: 386,
+  /**
+   * Server → server (cross-auth). Sent by a non-authoritative copy of a
+   * BuildingObject / CellObject to the authoritative copy when a permission
+   * grant ("add this player to the ENTRY/ADMIN list") needs to be applied.
+   * Trailer is `MessageQueueGenericValueType<std::string>` = the player or
+   * guild name being added.
+   *
+   * Player-facing wire path: a client sends `useAbility('permissionListModify',
+   * structureOid, '<name> <ENTRY|BAN|ADMIN|HOPPER> <action>')` via the
+   * command queue. The `permissionListModify` C++ command handler fires the
+   * `OnPermissionListModify` script trigger in `player_building.java`, which
+   * calls `player_structure.modifyEntryList/.modifyBanList/etc.`. The
+   * eventual `BuildingObject::addAllowed/.addBanned` call (on a
+   * non-authoritative copy) forwards via this CM id to the auth server.
+   * Modeled here primarily for transcript inspection — the live client
+   * never sees this directly.
+   */
+  CM_addAllowed: 403,
+  /**
+   * Server → server (cross-auth). Inverse of CM_addAllowed; carries the
+   * player/guild name to remove from the ENTRY list. Same trailer shape
+   * (`MessageQueueGenericValueType<std::string>`).
+   */
+  CM_removeAllowed: 404,
+  /**
+   * Server → server (cross-auth). Adds a name to the BAN list. Same trailer
+   * shape as CM_addAllowed (`MessageQueueGenericValueType<std::string>`).
+   */
+  CM_addBanned: 405,
+  /**
+   * Server → server (cross-auth). Removes a name from the BAN list. Same
+   * trailer shape (`MessageQueueGenericValueType<std::string>`).
+   */
+  CM_removeBanned: 406,
   CM_setGroup: 421,
   CM_setMood: 422,
   /**

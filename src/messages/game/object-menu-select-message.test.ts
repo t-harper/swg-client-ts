@@ -16,8 +16,16 @@ describe('ObjectMenuSelectMessage', () => {
     const bytes = stream.toBytes();
     expect(bytes.length).toBe(10); // 8 (NetworkId LE) + 2 (u16 LE)
     expect(Array.from(bytes)).toEqual([
-      0xef, 0xcd, 0xab, 0x89, 0x67, 0x45, 0x23, 0x01, // targetId LE
-      0x15, 0x00, // selectedItemId = 21 (ITEM_USE) LE
+      0xef,
+      0xcd,
+      0xab,
+      0x89,
+      0x67,
+      0x45,
+      0x23,
+      0x01, // targetId LE
+      0x15,
+      0x00, // selectedItemId = 21 (ITEM_USE) LE
     ]);
   });
 
@@ -52,5 +60,22 @@ describe('ObjectMenuSelectMessage', () => {
 
   it('ITEM_USE constant matches menu_info_types.java (21)', () => {
     expect(RadialMenuTypes.ITEM_USE).toBe(21);
+  });
+
+  it('PET_* constants match menu_info_types.java indices', () => {
+    expect(RadialMenuTypes.PET_CALL).toBe(45);
+    expect(RadialMenuTypes.PET_STORE).toBe(60);
+    expect(RadialMenuTypes.VEHICLE_GENERATE).toBe(61);
+    expect(RadialMenuTypes.VEHICLE_STORE).toBe(62);
+    expect(RadialMenuTypes.VEHICLE_OFFER_RIDE).toBe(68);
+    expect(RadialMenuTypes.PET_COMMAND).toBe(224);
+    expect(RadialMenuTypes.PET_FOLLOW).toBe(225);
+    expect(RadialMenuTypes.PET_STAY).toBe(226);
+    expect(RadialMenuTypes.PET_GUARD).toBe(227);
+    expect(RadialMenuTypes.PET_FRIEND).toBe(228);
+    expect(RadialMenuTypes.PET_ATTACK).toBe(229);
+    expect(RadialMenuTypes.PET_PATROL).toBe(230);
+    expect(RadialMenuTypes.SERVER_PET_MOUNT).toBe(288);
+    expect(RadialMenuTypes.SERVER_PET_DISMOUNT).toBe(289);
   });
 });

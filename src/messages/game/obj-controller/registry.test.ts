@@ -12,6 +12,9 @@ import { encodeMessage, parseHeader } from '../../base.js';
 import { messageRegistry } from '../../registry.js';
 import { ObjControllerMessage } from '../obj-controller-message.js';
 import { type CraftingStartData, CraftingStartDecoder } from './crafting-start.js';
+import { DetachAllRidersDecoder } from './detach-all-riders.js';
+import { type DetachRiderData, DetachRiderDecoder } from './detach-rider.js';
+import { EmergencyDismountDecoder } from './emergency-dismount.js';
 import { GroupInviteDecoder } from './group-invite.js';
 import {
   type ObjControllerSubtypeDecoder,
@@ -174,6 +177,70 @@ describe('ObjController parent-message dispatch', () => {
     const data = decoded.decodedSubtype?.data as CraftingStartData;
     expect(data.stationId).toBe(0xc0fen);
     expect(data.sequenceId).toBe(3);
+  });
+
+  it('dispatches a DetachRider trailer (CM_detachRiderForMount)', () => {
+    const s = new ByteStream();
+    DetachRiderDecoder.encode(s, { riderId: 0xdead_beefn });
+
+    const parent = new ObjControllerMessage(
+      0x23,
+      ObjControllerSubtypeIds.CM_detachRiderForMount,
+      0xaa_bbcc_ddeen,
+      0,
+      s.toBytes(),
+    );
+    const bytes = encodeMessage(parent);
+    const { typeCrc, payload } = parseHeader(bytes);
+    const decoder = messageRegistry.getByCrc(typeCrc);
+    if (!decoder) throw new Error('ObjControllerMessage decoder not registered');
+    const decoded = decoder.decodePayload(payload) as ObjControllerMessage;
+    expect(decoded.message).toBe(ObjControllerSubtypeIds.CM_detachRiderForMount);
+    expect(decoded.decodedSubtype?.kind).toBe('DetachRider');
+    const data = decoded.decodedSubtype?.data as DetachRiderData;
+    expect(data.riderId).toBe(0xdead_beefn);
+  });
+
+  it('dispatches an EmergencyDismount trailer (empty payload)', () => {
+    const s = new ByteStream();
+    EmergencyDismountDecoder.encode(s, {});
+    expect(s.toBytes().length).toBe(0);
+
+    const parent = new ObjControllerMessage(
+      0x23,
+      ObjControllerSubtypeIds.CM_emergencyDismountForRider,
+      0xaa_bbcc_ddeen,
+      0,
+      new Uint8Array(0),
+    );
+    const bytes = encodeMessage(parent);
+    const { typeCrc, payload } = parseHeader(bytes);
+    const decoder = messageRegistry.getByCrc(typeCrc);
+    if (!decoder) throw new Error('ObjControllerMessage decoder not registered');
+    const decoded = decoder.decodePayload(payload) as ObjControllerMessage;
+    expect(decoded.message).toBe(ObjControllerSubtypeIds.CM_emergencyDismountForRider);
+    expect(decoded.decodedSubtype?.kind).toBe('EmergencyDismount');
+  });
+
+  it('dispatches a DetachAllRiders trailer (empty payload)', () => {
+    const s = new ByteStream();
+    DetachAllRidersDecoder.encode(s, {});
+    expect(s.toBytes().length).toBe(0);
+
+    const parent = new ObjControllerMessage(
+      0x23,
+      ObjControllerSubtypeIds.CM_detachAllRidersForMount,
+      0xaa_bbcc_ddeen,
+      0,
+      new Uint8Array(0),
+    );
+    const bytes = encodeMessage(parent);
+    const { typeCrc, payload } = parseHeader(bytes);
+    const decoder = messageRegistry.getByCrc(typeCrc);
+    if (!decoder) throw new Error('ObjControllerMessage decoder not registered');
+    const decoded = decoder.decodePayload(payload) as ObjControllerMessage;
+    expect(decoded.message).toBe(ObjControllerSubtypeIds.CM_detachAllRidersForMount);
+    expect(decoded.decodedSubtype?.kind).toBe('DetachAllRiders');
   });
 
   it('dispatches a GroupInvite trailer (CM_setGroupInviter)', () => {

@@ -490,13 +490,20 @@ describe('ScriptContext: survey primitives', () => {
 
     // Simulate the two AttributeListMessages.
     const { AttributeListMessage } = await import('../../messages/game/attribute-list-message.js');
-    simulateRecv(new AttributeListMessage(idA, '', [
-      { key: '@obj_attr_n:res_quality', value: '987' },
-      { key: '@obj_attr_n:res_cold_resist', value: '512' },
-    ], 0));
-    simulateRecv(new AttributeListMessage(idB, '', [
-      { key: '@obj_attr_n:res_quality', value: '450' },
-    ], 0));
+    simulateRecv(
+      new AttributeListMessage(
+        idA,
+        '',
+        [
+          { key: '@obj_attr_n:res_quality', value: '987' },
+          { key: '@obj_attr_n:res_cold_resist', value: '512' },
+        ],
+        0,
+      ),
+    );
+    simulateRecv(
+      new AttributeListMessage(idB, '', [{ key: '@obj_attr_n:res_quality', value: '450' }], 0),
+    );
 
     const result = await promise;
     expect(result.size).toBe(2);
@@ -943,5 +950,191 @@ describe('ScriptContext: mission primitives', () => {
     const obj = sent[0] as ObjControllerMessage;
     // The decoder we set the inline preview to wins:
     expect(obj.decodedSubtype?.kind).toBe('MissionAcceptRequest');
+  });
+});
+
+describe('ScriptContext: vehicle / mount / pet primitives', () => {
+  it('callVehicle sends ObjectMenuSelectMessage(datapadId, PET_CALL=45)', async () => {
+    const { ctx, sent } = createFakeContext();
+    const datapadId = 0xa1a1n;
+    const seq = ctx.callVehicle(datapadId);
+    expect(seq).toBe(1); // first command-queue seq
+    expect(sent.length).toBe(1);
+    const { ObjectMenuSelectMessage } = await import(
+      '../../messages/game/object-menu-select-message.js'
+    );
+    expect(sent[0]).toBeInstanceOf(ObjectMenuSelectMessage);
+    const m = sent[0] as InstanceType<typeof ObjectMenuSelectMessage>;
+    expect(m.targetId).toBe(datapadId);
+    expect(m.selectedItemId).toBe(45); // PET_CALL
+  });
+
+  it('storeVehicle sends ObjectMenuSelectMessage(vehicleId, PET_STORE=60)', async () => {
+    const { ctx, sent } = createFakeContext();
+    const vehicleId = 0xbeef_cafen;
+    const seq = ctx.storeVehicle(vehicleId);
+    expect(seq).toBe(1);
+    const { ObjectMenuSelectMessage } = await import(
+      '../../messages/game/object-menu-select-message.js'
+    );
+    const m = sent[0] as InstanceType<typeof ObjectMenuSelectMessage>;
+    expect(m.targetId).toBe(vehicleId);
+    expect(m.selectedItemId).toBe(60); // PET_STORE
+  });
+
+  it('mount() emits useAbility("mount", vehicleId) — one ObjControllerMessage(CM_commandQueueEnqueue)', () => {
+    const playerId = 0x111n;
+    const vehicleId = 0x222n;
+    const { ctx, sent } = createFakeContext({ playerNetworkId: playerId });
+    ctx.mount(vehicleId);
+    expect(sent.length).toBe(1);
+    const obj = sent[0] as ObjControllerMessage;
+    expect(obj.message).toBe(CM_COMMAND_QUEUE_ENQUEUE);
+    expect(obj.networkId).toBe(playerId);
+    const cq = CommandQueueEnqueue.unpack(new ReadIterator(obj.data));
+    expect(cq.commandHash).toBe(hashCommand('mount'));
+    expect(cq.targetId).toBe(vehicleId);
+  });
+
+  it('mount() sets mountedSpeedCap to the default speeder-bike cap (12 m/s)', () => {
+    const { ctx } = createFakeContext();
+    expect(ctx.mountedSpeedCap()).toBeNull();
+    ctx.mount(0xabn);
+    expect(ctx.mountedSpeedCap()).toBe(12);
+  });
+
+  it('mount({ speedCap }) honors the explicit cap', () => {
+    const { ctx } = createFakeContext();
+    ctx.mount(0xabn, { speedCap: 17.5 });
+    expect(ctx.mountedSpeedCap()).toBe(17.5);
+  });
+
+  it('dismount() emits useAbility("dismount") (no target) and clears the speed cap', () => {
+    const { ctx, sent } = createFakeContext();
+    ctx.mount(0xabn);
+    expect(ctx.mountedSpeedCap()).toBe(12);
+    sent.length = 0;
+    ctx.dismount();
+    expect(ctx.mountedSpeedCap()).toBeNull();
+    expect(sent.length).toBe(1);
+    const obj = sent[0] as ObjControllerMessage;
+    const cq = CommandQueueEnqueue.unpack(new ReadIterator(obj.data));
+    expect(cq.commandHash).toBe(hashCommand('dismount'));
+    expect(cq.targetId).toBe(0n); // NO_TARGET
+  });
+
+  it('callPet sends ObjectMenuSelectMessage(controlDeviceId, PET_CALL=45)', async () => {
+    const { ctx, sent } = createFakeContext();
+    const pcdId = 0x3333n;
+    ctx.callPet(pcdId);
+    const { ObjectMenuSelectMessage } = await import(
+      '../../messages/game/object-menu-select-message.js'
+    );
+    const m = sent[0] as InstanceType<typeof ObjectMenuSelectMessage>;
+    expect(m.targetId).toBe(pcdId);
+    expect(m.selectedItemId).toBe(45);
+  });
+
+  it('storePet sends ObjectMenuSelectMessage(petId, PET_STORE=60)', async () => {
+    const { ctx, sent } = createFakeContext();
+    const petId = 0x4444n;
+    ctx.storePet(petId);
+    const { ObjectMenuSelectMessage } = await import(
+      '../../messages/game/object-menu-select-message.js'
+    );
+    const m = sent[0] as InstanceType<typeof ObjectMenuSelectMessage>;
+    expect(m.targetId).toBe(petId);
+    expect(m.selectedItemId).toBe(60);
+  });
+
+  it('petCommand maps "follow" → PET_FOLLOW (225), no target preamble', async () => {
+    const { ctx, sent } = createFakeContext();
+    const petId = 0x5555n;
+    ctx.petCommand(petId, 'follow');
+    const { ObjectMenuSelectMessage } = await import(
+      '../../messages/game/object-menu-select-message.js'
+    );
+    expect(sent.length).toBe(1);
+    const m = sent[0] as InstanceType<typeof ObjectMenuSelectMessage>;
+    expect(m.targetId).toBe(petId);
+    expect(m.selectedItemId).toBe(225);
+  });
+
+  it('petCommand maps "stay" → PET_STAY (226)', async () => {
+    const { ctx, sent } = createFakeContext();
+    ctx.petCommand(0x10n, 'stay');
+    const { ObjectMenuSelectMessage } = await import(
+      '../../messages/game/object-menu-select-message.js'
+    );
+    expect((sent[0] as InstanceType<typeof ObjectMenuSelectMessage>).selectedItemId).toBe(226);
+  });
+
+  it('petCommand maps "patrol" → PET_PATROL (230)', async () => {
+    const { ctx, sent } = createFakeContext();
+    ctx.petCommand(0x10n, 'patrol');
+    const { ObjectMenuSelectMessage } = await import(
+      '../../messages/game/object-menu-select-message.js'
+    );
+    expect((sent[0] as InstanceType<typeof ObjectMenuSelectMessage>).selectedItemId).toBe(230);
+  });
+
+  it('petCommand("attack", targetId) pre-sends setCombatTarget, then PET_ATTACK', async () => {
+    const { ctx, sent } = createFakeContext();
+    const petId = 0x10n;
+    const enemyId = 0xdeadn;
+    ctx.petCommand(petId, 'attack', enemyId);
+    expect(sent.length).toBe(2);
+    // First: useAbility('setCombatTarget', enemyId) — an ObjControllerMessage.
+    const first = sent[0] as ObjControllerMessage;
+    expect(first.message).toBe(CM_COMMAND_QUEUE_ENQUEUE);
+    const cq = CommandQueueEnqueue.unpack(new ReadIterator(first.data));
+    expect(cq.commandHash).toBe(hashCommand('setCombatTarget'));
+    expect(cq.targetId).toBe(enemyId);
+    // Second: ObjectMenuSelectMessage(petId, PET_ATTACK=229).
+    const { ObjectMenuSelectMessage } = await import(
+      '../../messages/game/object-menu-select-message.js'
+    );
+    const second = sent[1] as InstanceType<typeof ObjectMenuSelectMessage>;
+    expect(second.targetId).toBe(petId);
+    expect(second.selectedItemId).toBe(229);
+  });
+
+  it('petCommand("guard", targetId) also sets the combat target first', async () => {
+    const { ctx, sent } = createFakeContext();
+    ctx.petCommand(0x10n, 'guard', 0xfeedn);
+    expect(sent.length).toBe(2);
+    const cq = CommandQueueEnqueue.unpack(new ReadIterator((sent[0] as ObjControllerMessage).data));
+    expect(cq.commandHash).toBe(hashCommand('setCombatTarget'));
+    expect(cq.targetId).toBe(0xfeedn);
+  });
+
+  it('petCommand("follow", targetId) ignores targetId (follow doesn\'t take one)', () => {
+    const { ctx, sent } = createFakeContext();
+    ctx.petCommand(0x10n, 'follow', 0xfeedn);
+    expect(sent.length).toBe(1); // no setCombatTarget preamble
+  });
+
+  it('vehicle/pet sends count toward sendsCount', async () => {
+    const { ctx } = createFakeContext();
+    const result = await runScript(async (c) => {
+      c.callVehicle(0x10n);
+      c.mount(0x20n);
+      c.dismount();
+      c.storeVehicle(0x20n);
+      c.callPet(0x30n);
+      c.storePet(0x30n);
+      c.petCommand(0x30n, 'follow');
+    }, ctx);
+    expect(result.sendsCount).toBe(7);
+  });
+
+  it('setMountedSpeedCap directly updates the cap without sending wire traffic', () => {
+    const { ctx, sent } = createFakeContext();
+    expect(ctx.mountedSpeedCap()).toBeNull();
+    ctx.setMountedSpeedCap(8);
+    expect(ctx.mountedSpeedCap()).toBe(8);
+    expect(sent.length).toBe(0);
+    ctx.setMountedSpeedCap(null);
+    expect(ctx.mountedSpeedCap()).toBeNull();
   });
 });

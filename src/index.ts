@@ -46,7 +46,12 @@ export type {
 export type { GameStageResult, GameStageOptions, BaselineSummary } from './client/game-stage.js';
 
 // Scripting engine
-export type { ScenarioFn, ScriptContext, ScriptResult, SampleEventKind } from './client/script/context.js';
+export type {
+  ScenarioFn,
+  ScriptContext,
+  ScriptResult,
+  SampleEventKind,
+} from './client/script/context.js';
 export { decodeSampleOob } from './client/script/context.js';
 export type { WalkToOptions, CircleOptions, WalkToCellOptions } from './client/script/movement.js';
 export type { ExpectOptions } from './client/script/expectations.js';
@@ -297,3 +302,21 @@ export type {
   ReconnectHarnessOptions,
   ReconnectHarnessResult,
 } from './client/reconnect-harness.js';
+
+// =============================================================================
+// Vehicle / Mount / Pet (Feature 5)
+// =============================================================================
+export {
+  DetachAllRidersDecoder,
+  DetachAllRidersKind,
+  DetachRiderDecoder,
+  DetachRiderKind,
+  EmergencyDismountDecoder,
+  EmergencyDismountKind,
+} from './messages/game/obj-controller/index.js';
+export type {
+  DetachAllRidersData,
+  DetachRiderData,
+  EmergencyDismountData,
+} from './messages/game/obj-controller/index.js';
+export { rideVehicle } from './scenarios/index.js';

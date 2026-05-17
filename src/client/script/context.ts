@@ -16,8 +16,8 @@
 
 import { ByteStream } from '../../archive/byte-stream.js';
 import {
-  type AttributePair,
   AttributeListMessage,
+  type AttributePair,
 } from '../../messages/game/attribute-list-message.js';
 import {
   type ChatAvatarId,
@@ -27,6 +27,7 @@ import {
   ChatSendToRoom,
   chatAvatarId,
 } from '../../messages/game/chat/index.js';
+import { ChatSystemMessage } from '../../messages/game/chat/index.js';
 import { ClientOpenContainerMessage } from '../../messages/game/client-open-container.js';
 import {
   CLIENT_TO_AUTH_SERVER_FLAGS,
@@ -35,11 +36,13 @@ import {
   hashCommand,
   wrapAsObjControllerMessage,
 } from '../../messages/game/command-queue/index.js';
-import { LogoutMessage } from '../../messages/game/logout-message.js';
 import {
-  ObjectMenuSelectMessage,
-  RadialMenuTypes,
-} from '../../messages/game/object-menu-select-message.js';
+  type DraftSchematicsData,
+  DraftSchematicsKind,
+  type ManufactureSchematicData,
+  ManufactureSchematicKind,
+} from '../../messages/game/crafting/index.js';
+import { LogoutMessage } from '../../messages/game/logout-message.js';
 import {
   type MissionAbortData,
   MissionAbortDecoder,
@@ -50,7 +53,6 @@ import {
   MissionRemoveRequestDecoder,
 } from '../../messages/game/missions/index.js';
 import { ObjControllerMessage } from '../../messages/game/obj-controller-message.js';
-import { _encodeObjectMenu } from '../../messages/game/obj-controller/object-menu-request.js';
 import {
   type CraftingExperimentData,
   CraftingExperimentDecoder,
@@ -65,13 +67,11 @@ import {
   type TeleportAckData,
   TeleportAckDecoder,
 } from '../../messages/game/obj-controller/index.js';
+import { _encodeObjectMenu } from '../../messages/game/obj-controller/object-menu-request.js';
 import {
-  type DraftSchematicsData,
-  DraftSchematicsKind,
-  type ManufactureSchematicData,
-  ManufactureSchematicKind,
-} from '../../messages/game/crafting/index.js';
-import { ChatSystemMessage } from '../../messages/game/chat/index.js';
+  ObjectMenuSelectMessage,
+  RadialMenuTypes,
+} from '../../messages/game/object-menu-select-message.js';
 import {
   ResourceListForSurveyMessage,
   type ResourceListItem,
@@ -723,6 +723,114 @@ export interface ScriptContext {
    * confirmation.
    */
   abortMission(missionId: NetworkId): void;
+
+  // --- Vehicle / Mount / Pet primitives ---
+
+  /**
+   * Current mounted-creature speed cap (m/s), or `null` when the actor is
+   * on foot. Set by `mount()` to a sensible per-class default (12 m/s for
+   * speeder-bike-class vehicles); cleared by `dismount()`. Read by the
+   * movement primitives (`walkTo` / `walkCircle` / `walkToCell`) to clamp
+   * the requested `speed` so the server's anti-cheat doesn't reject the
+   * transform for moving faster than the mount's `MovementSpeed::getRunSpeed()`.
+   */
+  mountedSpeedCap(): number | null;
+
+  /**
+   * Manually override the mounted speed cap. Pass `null` to clear (treat as
+   * on foot). Useful when calling `useAbility('mount', ...)` directly
+   * outside of `mount()` and you want movement primitives to honor a cap.
+   */
+  setMountedSpeedCap(cap: number | null): void;
+
+  /**
+   * "Call vehicle" — radial select on the datapad PCD (the persistent
+   * control device representing the vehicle inside the player's datapad).
+   * Sends `ObjectMenuSelectMessage(datapadItemId, RadialMenuTypes.PET_CALL)`
+   * which fires `pet_control_device.OnObjectMenuSelect(PET_CALL=45)` on the
+   * server — the standard "spawn the vehicle next to me" trigger used by
+   * the real Windows client.
+   *
+   * Returns the command-queue sequenceId reserved for this call (consumes
+   * one slot from the chat/command counter for consistency with other
+   * fire-and-forget primitives).
+   */
+  callVehicle(datapadItemId: NetworkId): number;
+
+  /**
+   * "Store vehicle" — radial select on the live vehicle creature (or its
+   * PCD). Sends `ObjectMenuSelectMessage(vehicleId, RadialMenuTypes.PET_STORE)`.
+   * Server-side `pet_control_device.OnObjectMenuSelect` calls
+   * `callable.storeCallable(player, vehicle)`. The reverse of `callVehicle`.
+   *
+   * Returns the command-queue sequenceId reserved for this call.
+   */
+  storeVehicle(vehicleId: NetworkId): number;
+
+  /**
+   * Mount a vehicle / mountable creature. Wraps `useAbility('mount', mountId)`
+   * — server fires the `mount` script-hook in
+   * `script.player.skill.taming.mount`, validates the actor isn't already
+   * mounted / in shapechange / in a restricted scene, and calls
+   * `mountCreature(player, mount)`. On success the player's
+   * `States::RidingMount` bit is set and `setMountedMovementRate` switches
+   * the anti-cheat speed window to the mount's run-speed.
+   *
+   * Side-effect: sets `mountedSpeedCap()` to 12 m/s (a sensible speeder-bike
+   * default — adjust later if the mount class differs). Movement primitives
+   * automatically clamp requested speed to this cap.
+   *
+   * Returns the command-queue sequenceId.
+   */
+  mount(vehicleId: NetworkId, options?: { speedCap?: number }): number;
+
+  /**
+   * Dismount whatever the player is currently riding. Wraps
+   * `useAbility('dismount')` — server fires the `dismount` script-hook in
+   * `script.player.skill.taming.dismount` which calls `dismountCreature(player)`.
+   *
+   * Side-effect: clears `mountedSpeedCap()` back to `null`.
+   *
+   * Returns the command-queue sequenceId.
+   */
+  dismount(): number;
+
+  /**
+   * "Call pet" — radial select on the pet's datapad PCD. Same wire path
+   * as `callVehicle()` (a PCD doesn't differentiate pet vs. vehicle at the
+   * radial-menu layer; the distinction is in `ai.pet.type` server-side).
+   * Sends `ObjectMenuSelectMessage(controlDeviceId, RadialMenuTypes.PET_CALL=45)`.
+   *
+   * Returns the command-queue sequenceId.
+   */
+  callPet(controlDeviceId: NetworkId): number;
+
+  /**
+   * "Store pet" — radial select on the live pet creature (or its PCD).
+   * Sends `ObjectMenuSelectMessage(petId, RadialMenuTypes.PET_STORE=60)`.
+   *
+   * Returns the command-queue sequenceId.
+   */
+  storePet(petId: NetworkId): number;
+
+  /**
+   * Issue a structured pet command (follow / stay / attack / guard / patrol).
+   * Maps the command string to its `RadialMenuTypes.PET_*` int and sends
+   * `ObjectMenuSelectMessage(petId, PET_FOLLOW=225 | PET_STAY=226 | ...)` —
+   * the same wire path the real client's radial sub-menu uses.
+   *
+   * If `targetId` is supplied AND `command` is `'attack'` or `'guard'`,
+   * `useAbility('setCombatTarget', targetId)` is sent first so the pet
+   * inherits the master's combat target (see `pet.java` — the pet pulls
+   * `master.getCombatTarget()` on attack).
+   *
+   * Returns the command-queue sequenceId reserved for this call.
+   */
+  petCommand(
+    petId: NetworkId,
+    command: 'follow' | 'stay' | 'attack' | 'guard' | 'patrol',
+    targetId?: NetworkId,
+  ): number;
 }
 
 interface InternalContext extends ScriptContext {
@@ -759,6 +867,13 @@ interface InternalContext extends ScriptContext {
      * so the client can correlate request → reply. Wraps to u8 on the wire.
      */
     missionSequence: number;
+    /**
+     * Currently-mounted creature speed cap (m/s). `null` ⇒ on foot;
+     * positive number ⇒ movement primitives clamp to this. Set by
+     * `mount()`; cleared by `dismount()`. Also exposed read/write via
+     * `ctx.mountedSpeedCap()` / `ctx.setMountedSpeedCap()`.
+     */
+    mountedSpeedCap: number | null;
     assertionFailures: string[];
   };
 }
@@ -805,6 +920,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     chatSequence: opts.initialChatSequence ?? 1,
     craftSequence: opts.initialCraftSequence ?? 1,
     missionSequence: opts.initialMissionSequence ?? 1,
+    mountedSpeedCap: null as number | null,
     assertionFailures: [] as string[],
   };
 
@@ -870,16 +986,13 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
       // 3) Subscribe to future signals so subsequent server teleports
       //    (during the script's run) get ACKed automatically.
       if (state.teleportListenerUnsubscribe === null) {
-        state.teleportListenerUnsubscribe = opts.dispatcher.onMessage(
-          ObjControllerMessage,
-          (m) => {
-            if (m.message !== ObjControllerSubtypeIds.CM_netUpdateTransform) return;
-            if (m.networkId !== playerId) return;
-            if (m.decodedSubtype?.kind !== NetUpdateTransformKind) return;
-            const td = m.decodedSubtype.data as NetUpdateTransformData;
-            if (td.sequenceNumber < 0) ackSeq(td.sequenceNumber);
-          },
-        );
+        state.teleportListenerUnsubscribe = opts.dispatcher.onMessage(ObjControllerMessage, (m) => {
+          if (m.message !== ObjControllerSubtypeIds.CM_netUpdateTransform) return;
+          if (m.networkId !== playerId) return;
+          if (m.decodedSubtype?.kind !== NetUpdateTransformKind) return;
+          const td = m.decodedSubtype.data as NetUpdateTransformData;
+          if (td.sequenceNumber < 0) ackSeq(td.sequenceNumber);
+        });
       }
 
       // 4) Brief settle so the server processes the ACK before the next
@@ -1062,9 +1175,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
       return ctx.useAbility('selectDraftSchematic', 0n, String(schematicIndex));
     },
 
-    async waitForDraftSchematics(
-      waitOpts?: { timeoutMs?: number },
-    ): Promise<DraftSchematicsData> {
+    async waitForDraftSchematics(waitOpts?: { timeoutMs?: number }): Promise<DraftSchematicsData> {
       const timeoutMs = waitOpts?.timeoutMs ?? 8_000;
       const msg = await opts.dispatcher.waitFor(ObjControllerMessage, {
         timeoutMs,
@@ -1075,9 +1186,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
       return msg.decodedSubtype!.data as DraftSchematicsData;
     },
 
-    async waitForDraftSlots(
-      waitOpts?: { timeoutMs?: number },
-    ): Promise<ManufactureSchematicData> {
+    async waitForDraftSlots(waitOpts?: { timeoutMs?: number }): Promise<ManufactureSchematicData> {
       const timeoutMs = waitOpts?.timeoutMs ?? 8_000;
       const msg = await opts.dispatcher.waitFor(ObjControllerMessage, {
         timeoutMs,
@@ -1303,19 +1412,13 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
       const cur = ctx.position();
       // Use walkTo with a 2m offset; default tickMs/speed give us a quick send.
       const { walkTo: walkToImplLocal } = await import('./movement.js');
-      await walkToImplLocal(
-        ctx,
-        { x: cur.x + 2.5, z: cur.z + 2.5 },
-        { speed: 4, tickMs: 500 },
-      );
+      await walkToImplLocal(ctx, { x: cur.x + 2.5, z: cur.z + 2.5 }, { speed: 4, tickMs: 500 });
     },
 
-    async waitForSampleEvent(
-      sampleOpts?: {
-        timeoutMs?: number;
-        predicate?: (kind: SampleEventKind, raw: string) => boolean;
-      },
-    ): Promise<{ kind: SampleEventKind; raw: string }> {
+    async waitForSampleEvent(sampleOpts?: {
+      timeoutMs?: number;
+      predicate?: (kind: SampleEventKind, raw: string) => boolean;
+    }): Promise<{ kind: SampleEventKind; raw: string }> {
       const timeoutMs = sampleOpts?.timeoutMs ?? 60_000;
       const pred = sampleOpts?.predicate;
       const msg = await opts.dispatcher.waitFor(ChatSystemMessage, {
@@ -1461,10 +1564,83 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
       );
       ctx.send(wrapped);
     },
+
+    // --- Vehicle / Mount / Pet primitives ---
+
+    mountedSpeedCap(): number | null {
+      return state.mountedSpeedCap;
+    },
+
+    setMountedSpeedCap(cap: number | null): void {
+      state.mountedSpeedCap = cap;
+    },
+
+    callVehicle(datapadItemId: NetworkId): number {
+      const seq = ctx.nextCommandSequence();
+      ctx.send(new ObjectMenuSelectMessage(datapadItemId, RadialMenuTypes.PET_CALL));
+      return seq;
+    },
+
+    storeVehicle(vehicleId: NetworkId): number {
+      const seq = ctx.nextCommandSequence();
+      ctx.send(new ObjectMenuSelectMessage(vehicleId, RadialMenuTypes.PET_STORE));
+      return seq;
+    },
+
+    mount(vehicleId: NetworkId, mountOpts?: { speedCap?: number }): number {
+      // SPEEDER_DEFAULT_CAP — chosen as a permissive baseline for the
+      // generic speeder-bike class; callers with a faster mount should
+      // pass an explicit `speedCap` (e.g. swoop bike: 17.5 m/s).
+      const SPEEDER_DEFAULT_CAP = 12;
+      state.mountedSpeedCap = mountOpts?.speedCap ?? SPEEDER_DEFAULT_CAP;
+      return ctx.useAbility('mount', vehicleId);
+    },
+
+    dismount(): number {
+      state.mountedSpeedCap = null;
+      return ctx.useAbility('dismount');
+    },
+
+    callPet(controlDeviceId: NetworkId): number {
+      const seq = ctx.nextCommandSequence();
+      ctx.send(new ObjectMenuSelectMessage(controlDeviceId, RadialMenuTypes.PET_CALL));
+      return seq;
+    },
+
+    storePet(petId: NetworkId): number {
+      const seq = ctx.nextCommandSequence();
+      ctx.send(new ObjectMenuSelectMessage(petId, RadialMenuTypes.PET_STORE));
+      return seq;
+    },
+
+    petCommand(
+      petId: NetworkId,
+      command: 'follow' | 'stay' | 'attack' | 'guard' | 'patrol',
+      targetId?: NetworkId,
+    ): number {
+      const itemId = PET_COMMAND_RADIAL[command];
+      // For target-bearing commands, pre-set the master's combat target so
+      // the pet's `getCurrentAttackTarget(master)` resolves to it on the
+      // first AI tick. See ai/pet.java `tellPetAttack` flow.
+      if (targetId !== undefined && (command === 'attack' || command === 'guard')) {
+        ctx.useAbility('setCombatTarget', targetId);
+      }
+      const seq = ctx.nextCommandSequence();
+      ctx.send(new ObjectMenuSelectMessage(petId, itemId));
+      return seq;
+    },
   };
 
   return ctx;
 }
+
+const PET_COMMAND_RADIAL: Record<'follow' | 'stay' | 'attack' | 'guard' | 'patrol', number> = {
+  follow: RadialMenuTypes.PET_FOLLOW,
+  stay: RadialMenuTypes.PET_STAY,
+  attack: RadialMenuTypes.PET_ATTACK,
+  guard: RadialMenuTypes.PET_GUARD,
+  patrol: RadialMenuTypes.PET_PATROL,
+};
 
 /** Run a scenario function and return a ScriptResult. Never throws. */
 export async function runScript(fn: ScenarioFn, ctx: ScriptContext): Promise<ScriptResult> {

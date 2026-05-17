@@ -223,4 +223,25 @@ export const ObjControllerSubtypeIds = {
   CM_setCombatTarget: 386,
   CM_setGroup: 421,
   CM_setMood: 422,
+  /**
+   * Server → server (cross-auth). Sent by the rider's authoritative server
+   * when the rider has been emergency-dismounted (e.g. mount destroyed, mount
+   * went out of range, instance exit). The trailer is empty.
+   *
+   * Modeled as a decoder for transcript inspection; the wire is observable
+   * server-side but the client doesn't initiate it.
+   */
+  CM_emergencyDismountForRider: 540,
+  /**
+   * Server → server (cross-auth). Sent from a non-authoritative copy of the
+   * mount asking the authoritative copy to detach a specific rider. Trailer
+   * is `MessageQueueGenericValueType<NetworkId>` = 8 bytes (the riderId).
+   */
+  CM_detachRiderForMount: 541,
+  /**
+   * Server → server (cross-auth). Sent from a non-authoritative copy of the
+   * mount asking the authoritative copy to detach EVERY rider in one go
+   * (used at mount destruction). Trailer is empty.
+   */
+  CM_detachAllRidersForMount: 1205,
 } as const;

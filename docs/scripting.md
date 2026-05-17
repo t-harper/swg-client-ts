@@ -78,6 +78,13 @@ Declared in `src/client/script/context.ts`.
 | `sample(toolId, resourceTypeName)` | `useAbility('requestcoresample', toolId, resourceTypeName)`. Server starts a ~30-second-tick sample loop. Each tick has a ~50-70% success chance (skill-dependent); successful units stack into an existing matching resource container in inventory or create a new one. |
 | `cancelSampling()` | Walks 2.5m to bust the loop on the next server tick. Returns once the move is sent; the server's `sample_cancel` chat arrives a few seconds later. |
 | `waitForSampleEvent({ timeoutMs?, predicate? })` | Resolves to `{ kind: SampleEventKind, raw }` where `kind` is one of `'located'` / `'failed'` / `'cancel'` / `'in_progress'` / `'start'` / `'mind'` / `'density'` / `'trace'` / `'other'` (parsed from the STF token in `ChatSystemMessage.outOfBand`). |
+| **Vehicle / Mount / Pet** | |
+| `callVehicle(datapadItemId)` / `storeVehicle(vehicleId)` | Radial-menu flow: `ObjectMenuSelectMessage(id, RadialMenuTypes.PET_CALL=45)` to spawn the vehicle next to the player; `PET_STORE=60` to put it back. Server-side dispatches `pet_control_device.OnObjectMenuSelect`. Returns the command-queue seq. |
+| `mount(vehicleId, { speedCap? })` | `useAbility('mount', vehicleId)` — server fires the `taming.mount` script-hook which calls `mountCreature(player, vehicle)`. Side-effect: `mountedSpeedCap()` is set to 12 m/s (or the provided cap); movement primitives auto-clamp `speed`. |
+| `dismount()` | `useAbility('dismount')` — server fires `taming.dismount`. Clears `mountedSpeedCap()` back to `null`. |
+| `callPet(controlDeviceId)` / `storePet(petId)` | Same wire path as vehicle: `ObjectMenuSelectMessage(..., PET_CALL=45` or `PET_STORE=60)`. The server distinguishes pet vs. vehicle via `ai.pet.type` objvar — no client-side difference. |
+| `petCommand(petId, 'follow'\|'stay'\|'attack'\|'guard'\|'patrol', targetId?)` | `ObjectMenuSelectMessage(petId, PET_FOLLOW=225` etc.). For `'attack'`/`'guard'` with a `targetId`, the helper sends `useAbility('setCombatTarget', targetId)` first so the pet's AI tick inherits the master's combat target. |
+| `mountedSpeedCap()` / `setMountedSpeedCap(cap)` | Read or override the current cap (m/s) used by movement clamping. `null` = on foot. |
 | **Missions** | |
 | `requestMissionList(terminalId, { flags? })` / `acceptMission` / `removeMission` / `abortMission` | Driven through `CM_mission*` subtypes; server replies with `MissionObject` baselines + `PopulateMissionBrowserMessage` + `CM_missionAcceptResponse` |
 | **Crafting** | |
@@ -110,6 +117,7 @@ Registered in `src/scenarios/index.ts`. Pass `--script=<name>` and zero or more 
 | `posture-cycle` | `durationMs=5000 tickMs=1000` | Cycle standing → crouched → prone → standing |
 | `survey` | `toolId=(required) resourceTypeName=(required) waitMs=2000` | One-shot `requestsurvey` (assumes the tool is already activated; use `ctx.fetchSurveyResources` to discover legal `resourceTypeName` values) |
 | `group-trade` | `role=leader|invitee otherId=(required) tradeAmount?` | Two-client coordination — invite, form group, optional secure-trade, disband. See `scripts/group-trade-demo.ts`. |
+| `ride-vehicle` | `datapadItemId=(required) vehicleId? radius=30 durationMs=10000 speed=12 settleMs=1500 skipMount=false` | Calls vehicle from datapad PCD (`PET_CALL`), waits `settleMs`, mounts it via `useAbility('mount', vehicleId)`, rides a `walkCircle` clamped by the mounted speed cap, dismounts, then stores via `PET_STORE`. Pass `skipMount=true` for a call→store smoke test that doesn't try to mount. |
 | `dwell` | `durationMs=5000` | Idle baseline |
 
 `NetworkId` args accept hex (`0x...`) or decimal.

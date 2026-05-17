@@ -238,7 +238,9 @@ async function runScenario(
   const wrapVerbose = (label: string, inner: ScenarioFn): ScenarioFn => {
     if (!args.verbose) return inner;
     return async (ctx) => {
-      const log = (m: string): void => process.stderr.write(`[${label}] ${m}\n`);
+      const log = (m: string): void => {
+        process.stderr.write(`[${label}] ${m}\n`);
+      };
       log('scenario start');
       try {
         await inner(ctx);

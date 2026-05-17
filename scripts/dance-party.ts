@@ -188,9 +188,9 @@ async function main(): Promise<number> {
     failed: result.summary.failed,
     totalElapsedMs: result.summary.totalElapsedMs,
     cumulativeElapsedMs: result.summary.cumulativeElapsedMs,
-    danceCommandsSent: result.summary.messageCounts.ObjControllerMessage?.send ?? 0,
-    movementsSent: result.summary.messageCounts.UpdateTransformMessage?.send ?? 0,
-    logoutsSent: result.summary.messageCounts.LogoutMessage?.send ?? 0,
+    danceCommandsSent: result.summary.messageCounts.ObjControllerMessage?.sent ?? 0,
+    movementsSent: result.summary.messageCounts.UpdateTransformMessage?.sent ?? 0,
+    logoutsSent: result.summary.messageCounts.LogoutMessage?.sent ?? 0,
     serverErrors: result.summary.clientsWithErrorMessage,
     outcomes: result.outcomes.map((o) => ({
       character: o.config.characterName,

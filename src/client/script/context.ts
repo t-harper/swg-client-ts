@@ -120,6 +120,10 @@ import {
 import type { GameNetworkMessage } from '../../messages/interface.js';
 import type { NetworkId, SceneStart, Vector3 } from '../../types.js';
 import type { MessageDispatcher } from '../dispatcher.js';
+import {
+  InventoryViewImpl,
+  type InventoryView,
+} from '../inventory-view.js';
 import type { WorldModel, WorldObject } from '../world-model.js';
 import {
   BaselinePackageIds,
@@ -401,6 +405,27 @@ export interface ScriptContext {
    * reference to a `WorldObject` is safe: it's mutated in place.
    */
   readonly world: WorldModel;
+  /**
+   * Always-accessible, auto-synced view of the player's inventory. The
+   * game-stage orchestrator opens the inventory container on the wire
+   * once at zone-in (`ClientOpenContainerMessage(playerNetworkId,
+   * 'inventory')`) and this view absorbs the server's response — every
+   * subsequent `UpdateContainmentMessage` / `BaselinesMessage` / delta /
+   * scene-destroy automatically rolls into `inventory.items`.
+   *
+   * `inventory.items` reflects the live state — read it at any time,
+   * don't cache the array.
+   *
+   * Common queries:
+   *   `ctx.inventory.items`                       — every item right now
+   *   `ctx.inventory.findByTemplate(/survey_tool/i)` — pattern-match
+   *   `ctx.inventory.findById(0xabcdn)`           — by NetworkId
+   *   `ctx.inventory.ready`                       — true once populated
+   *   `ctx.inventory.containerId`                 — NetworkId of the
+   *                                                 inventory container
+   *                                                 (null pre-zone-in)
+   */
+  readonly inventory: InventoryView;
   /**
    * Find the nearest `WorldObject` matching `typeId` (one of `ObjectTypeTags`),
    * sorted by 2D distance from the player. Excludes the player itself by
@@ -1283,6 +1308,13 @@ interface InternalContext extends ScriptContext {
     /** Per-player bazaar-browse request id. */
     bazaarRequestId: number;
     assertionFailures: string[];
+    /**
+     * `InventoryViewImpl` constructed by `createScriptContext` (vs. passed
+     * in via opts). Detached during `runScript` teardown. Null when the
+     * caller supplied their own InventoryView (assumed to be managed
+     * externally).
+     */
+    ownedInventoryView: InventoryViewImpl | null;
   };
 }
 
@@ -1296,6 +1328,13 @@ export interface CreateScriptContextOptions {
    * scripts can query `ctx.world.nearby(20)` etc.
    */
   world: WorldModel;
+  /**
+   * Optional pre-built {@link InventoryView}. If omitted, a fresh one is
+   * constructed over `world` here and attached for the lifetime of the
+   * context. Pass an externally-managed instance (e.g. one that was
+   * primed before the script started) if you need precise control.
+   */
+  inventory?: InventoryView;
   /** Initial sequence number for UpdateTransformMessage. Default 1. */
   initialSequenceNumber?: number;
   /** Initial sequence number for command-queue messages. Default 1. */
@@ -1311,6 +1350,19 @@ export interface CreateScriptContextOptions {
 }
 
 export function createScriptContext(opts: CreateScriptContextOptions): ScriptContext {
+  // Construct (and attach) an InventoryView if the caller didn't provide
+  // one. Either way, the script context just exposes it via `ctx.inventory`.
+  let ownedInventoryView: InventoryViewImpl | null = null;
+  let inventoryView: InventoryView;
+  if (opts.inventory !== undefined) {
+    inventoryView = opts.inventory;
+  } else {
+    const impl = new InventoryViewImpl(opts.world, opts.sceneStart.playerNetworkId);
+    impl.attach();
+    ownedInventoryView = impl;
+    inventoryView = impl;
+  }
+
   const state = {
     sendsCount: 0,
     didLogout: false,
@@ -1339,6 +1391,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     mountedSpeedCap: null as number | null,
     bazaarRequestId: opts.initialBazaarRequestId ?? 1,
     assertionFailures: [] as string[],
+    ownedInventoryView,
   };
 
   const ctx: InternalContext = {
@@ -1346,6 +1399,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     sceneStart: opts.sceneStart,
     signal: opts.signal,
     world: opts.world,
+    inventory: inventoryView,
     _state: state,
 
     findNearest(
@@ -2448,6 +2502,10 @@ export async function runScript(fn: ScenarioFn, ctx: ScriptContext): Promise<Scr
     if (internal._state.teleportListenerUnsubscribe !== null) {
       internal._state.teleportListenerUnsubscribe();
       internal._state.teleportListenerUnsubscribe = null;
+    }
+    if (internal._state.ownedInventoryView !== null) {
+      internal._state.ownedInventoryView.detach();
+      internal._state.ownedInventoryView = null;
     }
   }
   return {

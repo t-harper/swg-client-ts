@@ -7,8 +7,10 @@
  *               NOT a class name like "mineral".
  *
  * Use these helpers from a `ScenarioFn` to:
- *   1. `findSurveyTools(ctx)` — scan the player's containers for survey
+ *   1. `findSurveyTools(ctx)` — scan the live `ctx.inventory` for survey
  *      tools and map each class (`mineral`, `gas`, ...) to its tool id.
+ *      Also walks any nested containers (bag, datapad, …) via the live
+ *      `ctx.findInContainer(id)` WorldModel query.
  *   2. `pickToolForClass(tools, 'mineral')` — return either the matching
  *      class tool or the universal tool if available.
  *   3. `fetchTypeNamesForClass(ctx, tools, 'mineral')` — return the list
@@ -21,12 +23,11 @@
  * in `scripts/check-resources-at-location.ts`.
  */
 
-import {
-  buildContainerIndex,
-  type NetworkId,
-  type ResourceListItem,
-  type ScriptContext,
-  type TranscriptEvent,
+import type {
+  NetworkId,
+  ResourceListItem,
+  ScriptContext,
+  WorldObject,
 } from '../../src/index.js';
 
 /**
@@ -50,9 +51,15 @@ const TOOL_TEMPLATE_TO_CLASSES: Array<{ pattern: RegExp; classes: string[] }> = 
 ];
 
 /**
- * Scan the player's containers for survey tools. Returns a `class → toolId`
- * map. The universal tool (if found) is stored under the key `"*"` and
- * `pickToolForClass()` falls back to it when no class-specific tool exists.
+ * Scan the player's inventory + nested containers for survey tools.
+ * Returns a `class → toolId` map. The universal tool (if found) is stored
+ * under the key `"*"` and `pickToolForClass()` falls back to it when no
+ * class-specific tool exists.
+ *
+ * Reads from `ctx.inventory.items` (auto-synced view) plus a BFS into any
+ * sub-containers via `ctx.findInContainer`. The auto-sync layer is fed
+ * from the WorldModel, so this stays accurate mid-script as items move
+ * around without needing a fresh `openContainer` call.
  *
  * Convenience aliases mapped here use the SHORT class names returned by
  * the survey-tool patterns above:
@@ -64,39 +71,75 @@ const TOOL_TEMPLATE_TO_CLASSES: Array<{ pattern: RegExp; classes: string[] }> = 
  */
 export function findSurveyTools(ctx: ScriptContext): Map<string, NetworkId> {
   const result = new Map<string, NetworkId>();
-  // dispatcher.transcript is the live partial transcript (events accumulated
-  // so far). buildContainerIndex accepts either a wrapper or a raw array.
-  const transcriptRef = { transcript: ctx.dispatcher.transcript };
-  const index = buildContainerIndex(transcriptRef as { transcript: TranscriptEvent[] });
+
+  // Seed the BFS with every item in the inventory (the auto-synced view
+  // already filters to direct children of the inventory container).
+  const queue: Array<{ id: NetworkId; templateName: string | null; name: string | null }> = [];
+  for (const item of ctx.inventory.items) {
+    queue.push({ id: item.networkId, templateName: item.templateName, name: item.name });
+  }
+  // Also walk anything that's directly contained by the player (datapad,
+  // appearance inventory, etc.) — those don't live "in the inventory".
+  for (const obj of ctx.findInContainer(ctx.sceneStart.playerNetworkId)) {
+    queue.push({
+      id: obj.id,
+      templateName: obj.templateName ?? null,
+      name: deriveName(obj),
+    });
+  }
+
   const visited = new Set<string>();
-  const queue: NetworkId[] = [ctx.sceneStart.playerNetworkId];
   while (queue.length > 0) {
-    const parent = queue.shift();
-    if (parent === undefined) continue;
-    const key = parent.toString();
+    const cur = queue.shift();
+    if (cur === undefined) continue;
+    const key = cur.id.toString();
     if (visited.has(key)) continue;
     visited.add(key);
-    const children = index.get(parent) ?? [];
-    for (const child of children) {
-      const candidates = [child.templateName ?? '', child.name ?? ''];
-      for (const text of candidates) {
-        if (text === '') continue;
-        let matched = false;
-        for (const { pattern, classes } of TOOL_TEMPLATE_TO_CLASSES) {
-          if (pattern.test(text)) {
-            for (const cls of classes) {
-              if (!result.has(cls)) result.set(cls, child.networkId);
-            }
-            matched = true;
-            break;
+
+    const candidates = [cur.templateName ?? '', cur.name ?? ''];
+    let matchedAsTool = false;
+    for (const text of candidates) {
+      if (text === '') continue;
+      for (const { pattern, classes } of TOOL_TEMPLATE_TO_CLASSES) {
+        if (pattern.test(text)) {
+          for (const cls of classes) {
+            if (!result.has(cls)) result.set(cls, cur.id);
           }
+          matchedAsTool = true;
+          break;
         }
-        if (matched) break;
       }
-      queue.push(child.networkId);
+      if (matchedAsTool) break;
+    }
+
+    // Recurse into nested containers (bags inside the inventory, etc.).
+    for (const child of ctx.findInContainer(cur.id)) {
+      queue.push({
+        id: child.id,
+        templateName: child.templateName ?? null,
+        name: deriveName(child),
+      });
     }
   }
   return result;
+}
+
+/**
+ * Best-effort name pulled from the SHARED baseline (the WorldModel keeps
+ * it on `WorldObject.baselines.get(BaselinePackageIds.SHARED)`). Used for
+ * matching admin-spawned tools that don't carry a templateName.
+ */
+function deriveName(obj: WorldObject): string | null {
+  // BaselinePackageIds.SHARED = 3
+  const shared = obj.baselines.get(3) as
+    | { objectName?: string; nameStringId?: { text?: string } }
+    | undefined;
+  if (shared === undefined) return null;
+  if (typeof shared.objectName === 'string' && shared.objectName !== '') return shared.objectName;
+  if (typeof shared.nameStringId?.text === 'string' && shared.nameStringId.text !== '') {
+    return shared.nameStringId.text;
+  }
+  return null;
 }
 
 /**

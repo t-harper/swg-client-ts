@@ -38,13 +38,12 @@
  */
 
 import {
-  buildContainerIndex,
-  type ContainerItem,
   type LifecycleResult,
   type NetworkId,
   type ScenarioFn,
   type ScriptContext,
   SwgClient,
+  type WorldObject,
 } from '../src/index.js';
 
 /**
@@ -71,47 +70,69 @@ const TOOL_TEMPLATE_TO_CLASSES: Array<{ pattern: RegExp; classes: string[] }> = 
   { pattern: /survey_tool_wind/, classes: ['wind_energy'] },
 ];
 
-/** Find all survey tools in any container reachable from the player's networkId (recursive). */
-function findSurveyTools(
-  transcript: { transcript: import('../src/client/dispatcher.js').TranscriptEvent[] } | import('../src/client/dispatcher.js').TranscriptEvent[],
-  playerNetworkId: NetworkId,
-): Map<string, NetworkId> {
+/**
+ * Find all survey tools in the live `ctx.inventory` + any nested container
+ * reachable from the player (datapad, bag, etc.).
+ *
+ * Walks the live WorldModel (via the auto-synced inventory view +
+ * `ctx.findInContainer`). Matches by `templateName` (full path; may be
+ * null if only CRC is known) OR by the short display name from the SHARED
+ * baseline (admin-spawned items often arrive name-only).
+ */
+function findSurveyTools(ctx: ScriptContext): Map<string, NetworkId> {
   const result = new Map<string, NetworkId>();
-  const index = buildContainerIndex(transcript);
   const visited = new Set<string>();
-  const queue: NetworkId[] = [playerNetworkId];
+  const queue: Array<{ id: NetworkId; templateName: string; name: string }> = [];
+  for (const it of ctx.inventory.items) {
+    queue.push({ id: it.networkId, templateName: it.templateName ?? '', name: it.name ?? '' });
+  }
+  for (const obj of ctx.findInContainer(ctx.sceneStart.playerNetworkId)) {
+    queue.push({ id: obj.id, templateName: obj.templateName ?? '', name: deriveBaselineName(obj) });
+  }
+
   while (queue.length > 0) {
-    const parent = queue.shift();
-    if (parent === undefined) continue;
-    const key = parent.toString();
+    const cur = queue.shift();
+    if (cur === undefined) continue;
+    const key = cur.id.toString();
     if (visited.has(key)) continue;
     visited.add(key);
-    const children = index.get(parent) ?? [];
-    for (const child of children) {
-      // Match by templateName (full path; may be null if only CRC is known)
-      // OR by the short display name from the SHARED baseline (this is
-      // what the server actually sends for GM-spawned items — see the
-      // truncation note above).
-      const candidates = [child.templateName ?? '', child.name ?? ''];
-      for (const text of candidates) {
-        if (text === '') continue;
-        let matched = false;
-        for (const { pattern, classes } of TOOL_TEMPLATE_TO_CLASSES) {
-          if (pattern.test(text)) {
-            for (const cls of classes) {
-              if (!result.has(cls)) result.set(cls, child.networkId);
-            }
-            matched = true;
-            break;
+
+    const candidates = [cur.templateName, cur.name];
+    for (const text of candidates) {
+      if (text === '') continue;
+      let matched = false;
+      for (const { pattern, classes } of TOOL_TEMPLATE_TO_CLASSES) {
+        if (pattern.test(text)) {
+          for (const cls of classes) {
+            if (!result.has(cls)) result.set(cls, cur.id);
           }
+          matched = true;
+          break;
         }
-        if (matched) break;
       }
-      // Recurse into containers (e.g. inventory → bag → tool).
-      queue.push(child.networkId);
+      if (matched) break;
+    }
+    // Recurse into nested containers (e.g. inventory → bag → tool).
+    for (const child of ctx.findInContainer(cur.id)) {
+      queue.push({
+        id: child.id,
+        templateName: child.templateName ?? '',
+        name: deriveBaselineName(child),
+      });
     }
   }
   return result;
+}
+
+function deriveBaselineName(obj: WorldObject): string {
+  // BaselinePackageIds.SHARED = 3
+  const shared = obj.baselines.get(3) as
+    | { objectName?: string; nameStringId?: { text?: string } }
+    | undefined;
+  if (shared === undefined) return '';
+  if (typeof shared.objectName === 'string' && shared.objectName !== '') return shared.objectName;
+  if (typeof shared.nameStringId?.text === 'string') return shared.nameStringId.text;
+  return '';
 }
 
 /** Get the survey-tool NetworkId for a given resource class. Returns undefined if no matching tool. */
@@ -265,7 +286,7 @@ function makeScenario(args: Args, results: Map<string, PerClassResult>, target: 
     // Scan the player's containers for survey tools. Server-side
     // commandFuncRequestSurvey requires the TOOL networkId as the
     // command's target — passing 0n is a silent no-op.
-    const tools = findSurveyTools(ctx.dispatcher.transcript, ctx.sceneStart.playerNetworkId);
+    const tools = findSurveyTools(ctx);
     log(
       `found ${tools.size} survey tool(s) in inventory: ${
         [...tools.entries()].map(([cls, id]) => `${cls}=${id}`).join(', ') || '(none)'

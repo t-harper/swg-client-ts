@@ -372,6 +372,13 @@ export type {
 export { ContainerView, containerView, buildContainerIndex } from './client/container-view.js';
 export type { ContainerItem } from './client/container-view.js';
 
+// Inventory view — always-accessible, auto-synced reactive snapshot of the
+// player's inventory. Exposed on `ScriptContext.inventory`. Reads through
+// the live WorldModel so contents always reflect the latest server-pushed
+// containment / baseline / delta / scene-destroy traffic.
+export { InventoryViewImpl } from './client/inventory-view.js';
+export type { InventoryItem, InventoryView } from './client/inventory-view.js';
+
 // Character snapshot + diff — hashable, deterministic projection of the
 // persisted character state from a LifecycleResult. Used by the reconnect
 // regression test to validate the DB save/load pipeline end-to-end.

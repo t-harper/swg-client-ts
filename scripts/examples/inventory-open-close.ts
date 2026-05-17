@@ -2,10 +2,13 @@
 /**
  * inventory-open-close.ts — open inventory, dwell, close, dwell, repeat.
  *
- * Soak-tests the container UI handler. Each cycle:
- *   1. ctx.openPlayerInventory()
- *   2. wait `--open-ms`
- *   3. ctx.closeContainer(playerNetworkId)  (no-op send — wire has no close)
+ * Soak-tests the container UI handler. With the always-on auto-sync
+ * inventory view (`ctx.inventory.items`), the explicit open/close cycle
+ * is now informational only — the view is fresh from the moment zone-in
+ * completes regardless. Each cycle:
+ *   1. ctx.openPlayerInventory()                      (wire send — UI hint)
+ *   2. wait `--open-ms`, optionally log `ctx.inventory.items.length`
+ *   3. ctx.closeContainer(playerNetworkId)            (no-op wire send)
  *   4. wait `--close-ms`
  *
  * Example:
@@ -42,10 +45,15 @@ function buildScenario(args: ScriptArgs, totalMs: number, verbose: boolean): Sce
     while (Date.now() < deadline) {
       ctx.openPlayerInventory();
       await ctx.wait(args.openMs);
+      const items = ctx.inventory.items;
+      if (cycle === 0 || cycle % 10 === 0) {
+        log(`cycle ${cycle}: ctx.inventory has ${items.length} items (containerId=${
+          ctx.inventory.containerId === null ? 'null' : `0x${ctx.inventory.containerId.toString(16)}`
+        })`);
+      }
       ctx.closeContainer(playerId);
       await ctx.wait(args.closeMs);
       cycle++;
-      if (cycle % 10 === 0) log(`cycle ${cycle}`);
     }
     log(`done: ${cycle} open/close cycles`);
     await ctx.logout();

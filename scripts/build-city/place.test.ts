@@ -44,11 +44,16 @@ function autoReply(fake: ReturnType<typeof createFakeContext>, replyFor: (cmd: s
 }
 
 function makeSuiPage(pageId: number, label = 'page'): SuiCreatePageMessage {
-  // SuiPageData starts with [i32 LE pageId]; remaining bytes are opaque widget tree
-  const buf = Buffer.alloc(64);
-  buf.writeInt32LE(pageId, 0);
-  buf.write(label, 4);
-  return new SuiCreatePageMessage(new Uint8Array(buf));
+  // Construct a minimal typed SuiPageData (Feat #3: pageData is now decoded
+  // not opaque bytes). label is preserved in pageName for debugging.
+  return new SuiCreatePageMessage({
+    pageId,
+    pageName: label,
+    commands: [],
+    associatedObjectId: 0n,
+    associatedLocation: { x: 0, y: 0, z: 0 },
+    maxRangeFromObject: 0,
+  });
 }
 
 describe('resolveInventoryOid', () => {

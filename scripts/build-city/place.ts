@@ -39,12 +39,12 @@ export async function resolveInventoryOid(ctx: ScriptContext): Promise<NetworkId
 }
 
 /**
- * Read the LE i32 pageId from a `SuiCreatePageMessage.pageData` (first 4 bytes).
+ * Read the pageId from a `SuiCreatePageMessage`. After Feat #3 (SuiPageData
+ * decode), this is just the decoded struct field — no manual byte unpacking
+ * needed.
  */
 function suiPageId(msg: SuiCreatePageMessage): number {
-  const d = msg.pageData;
-  if (d.length < 4) throw new Error(`SuiCreatePageMessage.pageData too short (${d.length} bytes)`);
-  return (d[0]! | (d[1]! << 8) | (d[2]! << 16) | (d[3]! << 24)) | 0;
+  return msg.pageData.pageId;
 }
 
 export interface PlaceDeedOptions {

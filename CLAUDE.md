@@ -16,8 +16,8 @@ The server side lives at `~/code/swg-main/`. **Read `~/code/swg-main/CLAUDE.md` 
 cd ~/code/swg-ts-client
 nvm use                # Node 24 (LTS as of 2026-05)
 pnpm install
-pnpm test              # ~1395 unit tests — no server needed
-LIVE=1 pnpm test       # ~1421 total under LIVE (includes ~26 integration tests against 10.254.0.253)
+pnpm test              # ~1734 unit tests — no server needed
+LIVE=1 pnpm test       # ~1761 total under LIVE (includes ~27 integration tests against 10.254.0.253)
 pnpm cli zone --host=10.254.0.253 --user=ci-test --character=TsTest
 ```
 
@@ -124,7 +124,10 @@ The client started as just `SwgClient.fullLifecycle()` and is now a full program
 | **City admin commands** | `scripts/build-city/admin-city.ts` — `adminCityInfo` / `adminCityListCitizens` / `adminCityListStructures` / `adminCityGetCityAtLocation` | Wrappers over `city showCityDetails` / `city listByPlanet` from `ConsoleCommandParserCity.cpp`. Used by build-city Phase 6 for deterministic verify (citizen + structure counts via server query, not heuristic transcript scan). |
 | **Building permissions** | `scripts/build-city/admin-permissions.ts` — `adminStructurePermissionAdd` / `Remove` / `List` + 4 obj-controller subtype decoders | Drives the `permissionListModify` command-queue command idempotently (queries the list first, only toggles if needed). Server→server CM_addAllowed/removeAllowed/addBanned/removeBanned (403-406) modeled as decoders. Build-city Phase 3 grants paired guildExtras ENTRY+ADMIN on each resident's house. |
 | **StructureRecord tracking** | `placeDeed()` returns `{ deedOid, structureOid, structureTemplate, ... }`; orchestrator persists per owner to `state.structures` | After successful placement, scans incoming `SceneCreateObjectByName` for the deed→structure template match (`*_deed.iff` → `*.iff` under `object/{building,installation,tangible}/`) and captures the new structure's NetworkId. State persisted via `onStructurePlaced` callback wired into each Phase 2/3/4/5 scenario. |
-| **ClockSync / latency stats** | Auto-reply to opcode-7 ClockSync; RTT samples from opcode-8 ClockReflect | `SoeConnection.getLatencyStats()` returns `{ samples, count, min, mean, p50, p95, p99, max }`. `LifecycleResult.latency` carries the connection-stage socket's stats. Periodic client-initiated ClockSync every 45s (configurable via `clockSyncIntervalMs`; set to 0 to disable). |
+| **ClockSync / latency stats** | Auto-reply to opcode-7 ClockSync; RTT samples from opcode-8 ClockReflect | `SoeConnection.getLatencyStats()` returns `{ samples, count, min, mean, p50, p95, p99, max }`. `LifecycleResult.latency` carries the connection-stage socket's stats. Periodic client-initiated ClockSync every 45s (configurable via `clockSyncIntervalMs`; set to 0 to disable). Plus `SoeConnection.addClockReflectListener(cb)` for multi-subscriber per-sample observation (RTT + the server's reflected `serverSyncStampLong`). |
+| **Cooldown tracker** | `ctx.cooldowns.msUntil(name)` / `isReady(name)` / `all()` — `src/client/timing.ts` | Live per-command-name cooldown view derived from `ObjControllerMessage(CM_commandTimer=762)`. Hash→name map populated automatically by `ctx.useAbility` calls so by-name lookups work without extra registration. Decays against `Date.now()` on every read — no internal timer. |
+| **Server-time tracker** | `ctx.serverTime.ms()` / `seconds()` / `samples` — `src/client/timing.ts` | Best-estimate of the current server wall-clock. Seeded from `CmdStartScene.serverEpoch` (Unix epoch seconds; NOT `serverTimeSeconds`, which is server uptime). Refined by every ClockReflect sample via an EMA-smoothed offset. Useful for comparing mission-expiry / bazaar-window timestamps without sending another wire request. |
+| **Combat timer** | `ctx.combat.timeSinceLastHitMs` / `engaged` / `lastHit()` — `src/client/timing.ts` | Tracks the most-recent `ObjControllerMessage(CM_combatAction=204)` where the player is in the `defenders[]` list. Returns `POSITIVE_INFINITY` if never hit; `engaged` is true within 10s of the last hit (window configurable via direct `createCombatTimer({engagementWindowMs})` constructor). |
 | **Raw SOE byte capture + offline decode** | `FullLifecycleOptions.rawCapture: { basePath }` writes one NDJSON per stage; `pnpm cli decode-raw --input=<file>` replays through the SOE pipeline offline | For wire-drift debugging when the GameNetworkMessage transcript doesn't show the issue. Captures pre-decrypt datagrams + the session-negotiated `encryptCode`/`encryptMethods`/`crcBytes` so the offline decoder can reconstruct everything. |
 
 ## Six wire-format gotchas (memorize)
@@ -315,7 +318,7 @@ Individual stage drivers and the `dispatcher` are also exported as types — use
 
 ## When you next sit down
 
-1. `cd ~/code/swg-ts-client && nvm use && pnpm test` — confirm baseline (should be ~1395 unit green; ~1421 total under `LIVE=1`).
+1. `cd ~/code/swg-ts-client && nvm use && pnpm test` — confirm baseline (should be ~1734 unit green; ~1761 total under `LIVE=1`).
 2. If anything's red, check `git log --oneline` — most recent change is probably the culprit; revert it locally and retry.
 3. If you bumped `~/code/swg-main` submodules, the wire-format may have drifted. Run `LIVE=1 pnpm test tests/integration/live-login.test.ts` — if it fails with a `LoginIncorrectClientId` or `Archive::ReadException`-style error, the message struct shape changed server-side. Find the C++ commit that added/removed fields, update `varCount` + encode/decode here. For broader drift, replay a baseline NDJSON capture (`pnpm cli capture` once on green, then `pnpm cli replay --compare=count` after the bump).
 4. To do "more SWG protocol work" — read `docs/adding-a-message.md` and pick a message from `~/code/swg-main/src/engine/shared/library/sharedNetworkMessages/src/shared/`. The mechanical pattern handles itself. For ObjController subtypes (combat/movement/etc.) the recipe is the same but the file lives in `src/messages/game/obj-controller/` and registers via the subtype CRC instead of the top-level `messageRegistry`.

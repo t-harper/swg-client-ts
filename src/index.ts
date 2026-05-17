@@ -50,7 +50,13 @@ export type {
 } from './client/swg-client.js';
 // SOE clock-sync / latency stats — surfaced so consumers can hook ClockSync
 // events directly on a custom SoeConnection or interpret LifecycleResult.latency.
-export type { ClockReflectPacket, ClockSyncPacket, LatencyStats } from './soe/clock-sync.js';
+export type {
+  ClockReflectListener,
+  ClockReflectPacket,
+  ClockReflectSample,
+  ClockSyncPacket,
+  LatencyStats,
+} from './soe/clock-sync.js';
 export {
   buildClockReflect,
   buildClockSync,
@@ -113,6 +119,29 @@ export type {
   HamBar,
   PostureName,
 } from './client/character-sheet.js';
+
+// Live timing views (exposed as `ctx.cooldowns`, `ctx.serverTime`,
+// `ctx.combat` during script runs). Cooldowns derived from
+// CM_commandTimer; serverTime seeded from CmdStartScene + refined by
+// ClockReflect samples; combat timer driven by CM_combatAction targeting
+// the player.
+export {
+  createCombatTimer,
+  createCooldownTracker,
+  createServerTimeTracker,
+} from './client/timing.js';
+export type {
+  CombatHitInfo,
+  CombatTimerHandle,
+  CombatTimerView,
+  CooldownEntry,
+  CooldownTrackerHandle,
+  CooldownView,
+  CreateCombatTimerOptions,
+  CreateServerTimeTrackerOptions,
+  ServerTimeTrackerHandle,
+  ServerTimeView,
+} from './client/timing.js';
 export type { WalkToOptions, CircleOptions, WalkToCellOptions } from './client/script/movement.js';
 export type { ExpectOptions } from './client/script/expectations.js';
 export { groupTradeScenario, scenarios } from './scenarios/index.js';

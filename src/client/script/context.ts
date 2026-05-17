@@ -124,6 +124,17 @@ import type { NetworkId, SceneStart, Vector3 } from '../../types.js';
 import type { CharacterSheet } from '../character-sheet.js';
 import { createCharacterSheet } from '../character-sheet.js';
 import type { MessageDispatcher } from '../dispatcher.js';
+import {
+  type CombatTimerHandle,
+  type CombatTimerView,
+  type CooldownTrackerHandle,
+  type CooldownView,
+  type ServerTimeTrackerHandle,
+  type ServerTimeView,
+  createCombatTimer,
+  createCooldownTracker,
+  createServerTimeTracker,
+} from '../timing.js';
 import { SceneCreateObjectByCrc } from '../../messages/game/scene-create-object-by-crc.js';
 import { SceneCreateObjectByName } from '../../messages/game/scene-create-object-by-name.js';
 import {
@@ -421,6 +432,48 @@ export interface ScriptContext {
    * default to 0/null.
    */
   readonly character: CharacterSheet;
+
+  /**
+   * Live cooldown tracker — `ctx.cooldowns.msUntil('mount')` returns the
+   * remaining cooldown in ms (0 if ready or unknown); `ctx.cooldowns.isReady('mount')`
+   * is the boolean equivalent; `ctx.cooldowns.all()` snapshots every tracked
+   * command. Driven by `CM_commandTimer` (762) ObjController subtypes — when
+   * the server sends a cooldown timer for a command, the expiry timestamp
+   * is stored and decays against `Date.now()` on every read.
+   *
+   * Pair with `useAbility` to issue a command and then poll readiness; the
+   * dispatcher-side subscribe means the cooldown surfaces within one tick
+   * of the server's reply.
+   */
+  readonly cooldowns: CooldownView;
+
+  /**
+   * Live server-time view — `ctx.serverTime.ms()` returns the best estimate
+   * of the current server wall-clock in ms (Unix epoch), seeded from
+   * `CmdStartScene.serverEpoch` (the i32 Unix-epoch field — NOT
+   * `serverTimeSeconds`, which is the server's GameTime / uptime) and
+   * continuously refined by ClockReflect samples. Useful for comparing
+   * mission expiry timestamps, bazaar listing windows, and anything tied
+   * to a wall-clock reading on the server.
+   *
+   * `samples` is the count of ClockReflect samples folded in; when 0 the
+   * view falls back to pure seed projection (still accurate to within a
+   * couple of ms on a healthy connection, but drift accumulates over long
+   * runs without samples).
+   */
+  readonly serverTime: ServerTimeView;
+
+  /**
+   * Live combat-engagement view — `ctx.combat.timeSinceLastHitMs` returns
+   * the ms since the player was last targeted by a `CM_combatAction` (204)
+   * server delivery (or `Number.POSITIVE_INFINITY` if never hit during the
+   * script run); `ctx.combat.engaged` is a derived boolean true when within
+   * 10s of the last hit.
+   *
+   * Useful for: deciding whether to flee, gating "out-of-combat" abilities,
+   * or measuring how long a soak script sat unmolested.
+   */
+  readonly combat: CombatTimerView;
 
   /**
    * Always-fresh view of the player's datapad — vehicle/pet PCDs,
@@ -1285,6 +1338,18 @@ export interface ScriptContext {
 interface InternalContext extends ScriptContext {
   /** Detach handle for the character sheet's dispatcher subscriptions. */
   readonly _characterSheetDetach: () => void;
+  /** Detach handle for the cooldown tracker's dispatcher subscriptions. */
+  readonly _cooldownTrackerDetach: () => void;
+  /** Detach handle for the server-time tracker's clock-reflect subscription. */
+  readonly _serverTimeTrackerDetach: () => void;
+  /** Detach handle for the combat timer's dispatcher subscriptions. */
+  readonly _combatTimerDetach: () => void;
+  /** Internal handle for cooldown tracker — allows useAbility to register names. */
+  readonly _cooldownTrackerHandle: CooldownTrackerHandle;
+  /** Internal handle for the server-time tracker — exposed for the orchestrator's seed call. */
+  readonly _serverTimeTrackerHandle: ServerTimeTrackerHandle;
+  /** Internal handle for the combat timer — exposed mainly for tests. */
+  readonly _combatTimerHandle: CombatTimerHandle;
   /** Tracking for the orchestrator. */
   readonly _state: {
     sendsCount: number;
@@ -1445,16 +1510,44 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     templateName: opts.sceneStart.templateName,
   });
 
+  // Timing trackers — cooldowns, server-time, combat. All three are wire-
+  // driven; the orchestrator's only obligation is to seed serverTime with
+  // the absolute server wall-clock from CmdStartScene (which the dispatcher
+  // never sees again, so we can't subscribe to it after the fact).
+  const cooldownTrackerHandle = createCooldownTracker({ dispatcher: opts.dispatcher });
+  const serverTimeTrackerHandle = createServerTimeTracker({ dispatcher: opts.dispatcher });
+  // CmdStartScene carries two time fields: `serverTimeSeconds` (the
+  // server's GameTime — seconds-since-server-process-start — NOT a Unix
+  // epoch) and `serverEpoch` (i32 = `time(0)` server wall-clock as Unix
+  // seconds). Seed the server-time tracker from `serverEpoch` so `ms()`
+  // returns a real Unix-epoch ms reading.
+  if (opts.sceneStart.serverEpoch > 0) {
+    serverTimeTrackerHandle.setSeed(BigInt(opts.sceneStart.serverEpoch));
+  }
+  const combatTimerHandle = createCombatTimer({
+    dispatcher: opts.dispatcher,
+    playerNetworkId: opts.sceneStart.playerNetworkId,
+  });
+
   const ctx: InternalContext = {
     dispatcher: opts.dispatcher,
     sceneStart: opts.sceneStart,
     signal: opts.signal,
     world: opts.world,
     character: characterSheetHandle.view,
+    cooldowns: cooldownTrackerHandle.view,
+    serverTime: serverTimeTrackerHandle.view,
+    combat: combatTimerHandle.view,
     datapad: datapadView,
     inventory: inventoryView,
     _state: state,
     _characterSheetDetach: characterSheetHandle.detach,
+    _cooldownTrackerDetach: cooldownTrackerHandle.detach,
+    _serverTimeTrackerDetach: serverTimeTrackerHandle.detach,
+    _combatTimerDetach: combatTimerHandle.detach,
+    _cooldownTrackerHandle: cooldownTrackerHandle,
+    _serverTimeTrackerHandle: serverTimeTrackerHandle,
+    _combatTimerHandle: combatTimerHandle,
 
     findNearest(
       typeId: number,
@@ -1678,6 +1771,10 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
         params ?? '',
       );
       const wrapped = wrapAsObjControllerMessage(enqueue, opts.sceneStart.playerNetworkId);
+      // Tell the cooldown tracker the human-readable name BEFORE we send so
+      // any CM_commandTimer that arrives can be looked up by-name via
+      // ctx.cooldowns.msUntil(commandName).
+      cooldownTrackerHandle.registerCommandName(commandName);
       ctx.send(wrapped);
       return seq;
     },
@@ -2559,6 +2656,11 @@ export async function runScript(fn: ScenarioFn, ctx: ScriptContext): Promise<Scr
     // multiple times — `detach()` empties the unsubscriber list on the
     // first call.
     internal._characterSheetDetach();
+    // Detach the timing trackers (cooldowns / serverTime / combat). All
+    // three are idempotent.
+    internal._cooldownTrackerDetach();
+    internal._serverTimeTrackerDetach();
+    internal._combatTimerDetach();
     if (internal._state.datapadCreateUnsubscribe !== null) {
       internal._state.datapadCreateUnsubscribe();
       internal._state.datapadCreateUnsubscribe = null;

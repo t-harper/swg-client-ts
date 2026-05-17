@@ -7,7 +7,7 @@
  */
 
 import type { EncryptionParams, ServerEndpoint } from '../types.js';
-import type { LatencyStats } from './clock-sync.js';
+import type { ClockReflectListener, LatencyStats } from './clock-sync.js';
 
 /** Callback for an incoming, fully-decrypted, fully-defragmented application payload. */
 export type AppMessageHandler = (payload: Uint8Array) => void;
@@ -109,4 +109,12 @@ export interface ISoeConnection {
    * that disconnect before the first ClockSync interval elapses).
    */
   getLatencyStats(): LatencyStats | null;
+
+  /**
+   * Subscribe to ClockReflect samples (per-sample, full record including
+   * RTT + the server's reflected `serverSyncStampLong`). Returns an
+   * unsubscribe function. Distinct from the single `onClockSync` option
+   * callback that only delivers RTT.
+   */
+  addClockReflectListener(listener: ClockReflectListener): () => void;
 }

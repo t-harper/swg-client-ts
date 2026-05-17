@@ -434,3 +434,22 @@ export type {
   ListForSaleResult,
 } from './client/script/context.js';
 export { bazaarSnipe } from './scenarios/index.js';
+
+// =============================================================================
+// TRE (SOE TreeFile) archive reader + writer — game-asset bundle format.
+// See src/tre/tre-reader.ts for the on-disk layout and the C++ reference.
+// =============================================================================
+export {
+  TreReader,
+  TreWriter,
+  normalizeFilename,
+  treFilenameCrc,
+  treFilenameCrcBytes,
+} from './tre/index.js';
+export type { TreAddOptions, TreBuildOptions, TreEntry } from './tre/index.js';
+
+// =============================================================================
+// Terrain helpers — TRN metadata reader, empirical buildability probe, and a
+// concentric-ring grid search for flat patches. See src/terrain/index.ts.
+// =============================================================================
+export * from './terrain/index.js';

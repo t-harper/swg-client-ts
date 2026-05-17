@@ -369,8 +369,11 @@ export type {
 // Baseline analysis helpers — scan a LifecycleResult's transcript for common
 // findings (e.g. the player's inventory container's NetworkId).
 export {
+  PLAYER_DATAPAD_TEMPLATE_CRC,
+  PLAYER_INVENTORY_TEMPLATE_CRC,
   buildBuildingCellIndex,
   extractBaselinesForObject,
+  extractDatapadContainerId,
   extractInventoryContainerId,
   extractPlayerObjectBaseline,
   findBaselinesByKind,
@@ -380,6 +383,13 @@ export type {
   BuildingIndexEntry,
   CellIndexEntry,
 } from './client/baseline-helpers.js';
+
+// Datapad view — `ctx.datapad` types for consumers that want the typed
+// surface (e.g. typed test helpers, snapshot tooling). The instance lives on
+// `ScriptContext`, not on `LifecycleResult` (the script-context lifetime is
+// shorter than the lifecycle's).
+export type { DatapadItem, DatapadItemKind, DatapadView } from './client/script/datapad-view.js';
+export { classifyDatapadItem } from './client/script/datapad-view.js';
 
 // Container inspection — walk the transcript and answer "what's inside the
 // inventory / backpack / bank / etc.?" Pair with extractInventoryContainerId

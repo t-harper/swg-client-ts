@@ -20,6 +20,7 @@
  *   /home/tharper/code/swg-main/src/engine/server/application/SwgGameServer/src/shared/
  *   /home/tharper/code/swg-main/src/engine/server/library/serverGame/src/shared/network/
  */
+import { ClientOpenContainerMessage } from '../messages/game/client-open-container.js';
 import { CmdSceneReady } from '../messages/game/cmd-scene-ready.js';
 import { CmdStartScene } from '../messages/game/cmd-start-scene.js';
 import { HeartBeat } from '../messages/game/heart-beat.js';
@@ -155,6 +156,20 @@ export async function runGameStage(opts: GameStageOptions): Promise<GameStageRes
     // 4. Send CmdSceneReady — client confirms it has loaded.
     dispatcher.send(new CmdSceneReady());
     opts.onStateChange?.(ZoneState.ZonedIn);
+
+    // 4a. Open the datapad container so the server pushes baselines for
+    // every vehicle/pet PCD, waypoint, mission, ship, and manufacturing
+    // schematic inside it. This populates `ctx.datapad.items` for the
+    // script's dwell. Same wire pattern as `openPlayerInventory()`. Fired
+    // once per zone-in; the dispatcher's transcript carries the response
+    // baselines once they arrive.
+    try {
+      dispatcher.send(
+        new ClientOpenContainerMessage(startScene.playerNetworkId, 'datapad'),
+      );
+    } catch {
+      // socket may have closed mid-zone-in — ignore
+    }
 
     // 5. Hold zoned-in. Optional heartbeats during the dwell.
     if (heartbeatMs > 0 && holdZonedInMs > heartbeatMs) {

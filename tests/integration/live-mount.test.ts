@@ -43,6 +43,7 @@ describe.skipIf(!LIVE)('live vehicle / mount (admin-spawn → mount → walk →
       capDuringMount: null as number | null,
       capAfterDismount: undefined as number | null | undefined,
       ranMountFlow: false,
+      bailReason: null as string | null,
     };
 
     const lifecycleResult = await client.fullLifecycle({
@@ -73,9 +74,18 @@ describe.skipIf(!LIVE)('live vehicle / mount (admin-spawn → mount → walk →
 
         const idMatch = responses.find((r) => /NetworkId:\s*\d+/.test(r));
         if (idMatch === undefined) {
-          console.warn(
-            `[live-mount] /object create did not return a NetworkId. Responses: ${JSON.stringify(responses)}`,
-          );
+          // Record the bail reason so the outer assertion can fail loudly
+          // rather than silently passing. Common causes:
+          //   - god-mode not enabled (account missing from stella_admin.tab)
+          //   - `setGodMode` command rate-limited / queued / failed silently
+          //   - admin-spawn template path drifted server-side
+          //   - server didn't echo the "NetworkId: <id>" response within 2.5s
+          observed.bailReason =
+            `/object create did not return a NetworkId within 2.5s. ` +
+            `Likely god-mode failed to enable (account not in stella_admin.tab?) ` +
+            `or the template path '${VEHICLE_CREATURE_TEMPLATE}' was rejected. ` +
+            `ConGenericMessage responses captured: ${JSON.stringify(responses)}`;
+          console.warn(`[live-mount] ${observed.bailReason}`);
           return;
         }
         const idStr = idMatch.match(/NetworkId:\s*(\d+)/)![1]!;
@@ -114,10 +124,14 @@ describe.skipIf(!LIVE)('live vehicle / mount (admin-spawn → mount → walk →
     expect(lifecycleResult.zonedInAt, 'zonedInAt populated').not.toBeNull();
     expect(lifecycleResult.scriptResult?.error, 'script did not throw').toBeUndefined();
 
-    if (!observed.ranMountFlow) {
-      // Diagnostic skip path — the script logged the reason.
-      return;
-    }
+    // Hard-fail if the mount flow never executed. Previously this was a
+    // silent early-return that let vitest report green even though the
+    // wire-assertions below were skipped — masking real regressions like
+    // god-mode being lost or the admin-spawn command path drifting.
+    expect(
+      observed.ranMountFlow,
+      `mount flow did not execute end-to-end. Reason: ${observed.bailReason ?? 'unknown (no bail reason captured)'}`,
+    ).toBe(true);
 
     // mount()/dismount() each toggle mountedSpeedCap as a side effect of
     // wrapping useAbility('mount'|'dismount', ...) — observing the toggle

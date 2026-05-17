@@ -32,7 +32,7 @@ const BAZAAR_TEMPLATE = 'object/tangible/terminal/terminal_bazaar.iff';
 
 describe.skipIf(!LIVE)('live bazaar browse (admin-spawn terminal → browseBazaar)', () => {
   it('round-trips ctx.browseBazaar() against an admin-spawned terminal', async () => {
-    const { account, characterName } = liveCredentials('bz');
+    const { account, characterName } = await liveCredentials('bz');
     await sessionSettle();
     const client = new SwgClient({ loginServer: { host: HOST, port: PORT } });
 

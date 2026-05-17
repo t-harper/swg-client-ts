@@ -32,7 +32,7 @@ const PORT = Number(process.env.SWG_LOGIN_PORT ?? 44453);
 
 describe.skipIf(!LIVE)('live persistence (snapshot before/after reconnect)', () => {
   it('character state survives a logout+login cycle', async () => {
-    const { account, characterName, reused } = liveCredentials('per');
+    const { account, characterName, reused } = await liveCredentials('per');
     const client = new SwgClient({ loginServer: { host: HOST, port: PORT } });
 
     // First lifecycle: zone in, dwell, log out. The server will persist

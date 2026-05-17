@@ -24,7 +24,7 @@ const PORT = Number(process.env.SWG_LOGIN_PORT ?? 44453);
 describe.skipIf(!LIVE)('live login (Stage 1)', () => {
   it('connects, authenticates, enumerates clusters, and disconnects cleanly', async () => {
     // Server enforces MAX_ACCOUNT_NAME_LENGTH = 15 — keep it short.
-    const username = liveAccount('tslv');
+    const username = await liveAccount('tslv');
     const result = await runLoginStage({
       endpoint: { host: HOST, port: PORT },
       username,

@@ -24,7 +24,7 @@ const PORT = Number(process.env.SWG_LOGIN_PORT ?? 44453);
 
 describe.skipIf(!LIVE)('live survey command', () => {
   it('emits a requestSurvey command without server-side error', async () => {
-    const { account, characterName } = liveCredentials('sv');
+    const { account, characterName } = await liveCredentials('sv');
     await sessionSettle();
     const client = new SwgClient({ loginServer: { host: HOST, port: PORT } });
 

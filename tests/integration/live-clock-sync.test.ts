@@ -26,7 +26,7 @@ const PORT = Number(process.env.SWG_LOGIN_PORT ?? 44453);
 describe.skipIf(!LIVE)('live ClockSync / ClockReflect round-trip', () => {
   it('records an RTT sample when the server reflects a manually-sent ClockSync', async () => {
     // Stand up a real Stage-1 login so we have a token + a cluster to attach to.
-    const account = liveAccount('cs');
+    const account = await liveAccount('cs');
     const login = await runLoginStage({
       endpoint: { host: HOST, port: PORT },
       username: account,

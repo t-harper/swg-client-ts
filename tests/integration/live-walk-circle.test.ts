@@ -21,7 +21,7 @@ const PORT = Number(process.env.SWG_LOGIN_PORT ?? 44453);
 describe.skipIf(!LIVE)('live walk-circle script', () => {
   it('runs a 3-second walk-circle then logs out cleanly', async () => {
     // Set CI_REUSE_ACCOUNT + CI_REUSE_CHARACTER to reuse instead of leaking.
-    const { account, characterName } = liveCredentials('wc');
+    const { account, characterName } = await liveCredentials('wc');
     await sessionSettle();
     const client = new SwgClient({ loginServer: { host: HOST, port: PORT } });
 

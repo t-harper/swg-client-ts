@@ -29,7 +29,7 @@ const PORT = Number(process.env.SWG_LOGIN_PORT ?? 44453);
 
 describe.skipIf(!LIVE)('live crafting wire test', () => {
   it('sends beginCrafting against a non-existent tool and survives the round-trip', async () => {
-    const { account, characterName } = liveCredentials('cr');
+    const { account, characterName } = await liveCredentials('cr');
     await sessionSettle();
     const client = new SwgClient({ loginServer: { host: HOST, port: PORT } });
 

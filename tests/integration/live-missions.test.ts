@@ -30,7 +30,7 @@ const PORT = Number(process.env.SWG_LOGIN_PORT ?? 44453);
 
 describe.skipIf(!LIVE)('live mission system', () => {
   it('emits no ErrorMessage when scanning for mission baselines', async () => {
-    const { account, characterName } = liveCredentials('ms');
+    const { account, characterName } = await liveCredentials('ms');
     await sessionSettle();
     const client = new SwgClient({ loginServer: { host: HOST, port: PORT } });
 

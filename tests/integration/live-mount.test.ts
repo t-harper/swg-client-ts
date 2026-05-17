@@ -34,7 +34,7 @@ const VEHICLE_CREATURE_TEMPLATE = 'object/mobile/vehicle/landspeeder_av21.iff';
 
 describe.skipIf(!LIVE)('live vehicle / mount (admin-spawn → mount → walk → dismount)', () => {
   it('drives the mount flow end-to-end against an admin-spawned vehicle', async () => {
-    const { account, characterName } = liveCredentials('mt');
+    const { account, characterName } = await liveCredentials('mt');
     await sessionSettle();
     const client = new SwgClient({ loginServer: { host: HOST, port: PORT } });
 

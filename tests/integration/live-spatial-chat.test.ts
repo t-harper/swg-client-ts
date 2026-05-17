@@ -84,7 +84,7 @@ describe.skipIf(!LIVE)('live spatial chat — single-client self-broadcast', () 
     // The 2-client co-located variant (below) is the more interesting test
     // but is gated on the cluster having `canCreateRegularCharacter=true`
     // (currently disabled — see live-fleet.test.ts).
-    const { account, characterName } = liveCredentials('sc');
+    const { account, characterName } = await liveCredentials('sc');
     const needle = `selftest ${Date.now() % 100_000_000}`;
 
     const observed = { data: undefined as SpatialChatData | undefined };
@@ -119,16 +119,8 @@ describe.skipIf(!LIVE)('live spatial chat — single-client self-broadcast', () 
         },
       });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('canCreateRegularCharacter=false')) {
-        // eslint-disable-next-line no-console
-        console.warn(
-          `[live-spatial-chat] Server has disabled character creation; skipping. ` +
-            `Set CI_REUSE_ACCOUNT + CI_REUSE_CHARACTER to a pre-existing pair to ` +
-            `run this test without needing fresh-character creation.`,
-        );
-        return;
-      }
+      // Admin pool guarantees canCreateRegularCharacter=true; any failure is
+      // a real server/wire regression, not a soft-skip condition.
       throw err;
     }
 
@@ -206,6 +198,10 @@ describe.skipIf(!LIVE)('live spatial chat (2 co-located clients, /say round-trip
   it('A says something — B observes the inbound CM_spatialChatReceive', async () => {
     const runTag = (Date.now() % 100_000_000).toString(36);
     const needle = `hello from A ${runTag}`;
+    // Pull 2 distinct admin-pool accounts (helpers.liveCredentials rotates
+    // through tslive01..20). Fresh timestamp accounts would silently soft-skip.
+    const credA = await liveCredentials('sca');
+    const credB = await liveCredentials('scb');
 
     // Cross-script coordination state, shared by closure.
     //
@@ -301,15 +297,15 @@ describe.skipIf(!LIVE)('live spatial chat (2 co-located clients, /say round-trip
     const fleetPromise = fleet.run(
       [
         {
-          account: `tssp${runTag}a`,
-          characterName: `TsSayA${Date.now() % 1_000_000}`,
+          account: credA.account,
+          characterName: credA.characterName,
           planet: 'mos_eisley',
           holdZonedInMs: 0, // scripts gate the dwell themselves
           script: scriptA,
         },
         {
-          account: `tssp${runTag}b`,
-          characterName: `TsSayB${Date.now() % 1_000_000}`,
+          account: credB.account,
+          characterName: credB.characterName,
           planet: 'mos_eisley',
           holdZonedInMs: 0,
           script: scriptB,
@@ -336,20 +332,8 @@ describe.skipIf(!LIVE)('live spatial chat (2 co-located clients, /say round-trip
 
     const fleetResult = await fleetPromise;
 
-    // Graceful skip — server may have disabled character creation due to
-    // accumulated test-leakage filling the cluster's slot cap.
-    const blocked = fleetResult.summary.errorMessages.some((e) =>
-      e.includes('canCreateRegularCharacter=false'),
-    );
-    if (blocked) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        '[live-spatial-chat] Server has disabled character creation; skipping. ' +
-          'Re-run after the cluster admin re-enables creation or after sweeping ' +
-          'leaked test characters.',
-      );
-      return;
-    }
+    // Admin pool guarantees canCreateRegularCharacter=true; any failure here
+    // is a real server/wire regression, not a soft-skip condition.
 
     // Both clients must have succeeded (both reached zone-in and ran their script).
     expect(

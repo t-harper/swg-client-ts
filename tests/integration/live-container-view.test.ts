@@ -29,7 +29,7 @@ const PORT = Number(process.env.SWG_LOGIN_PORT ?? 44453);
 
 describe.skipIf(!LIVE)('live ContainerView (Stages 1 → 2 → 3 → 4)', () => {
   it('builds a ContainerView of the player inventory and logs its contents', async () => {
-    const { account, characterName } = liveCredentials('cv');
+    const { account, characterName } = await liveCredentials('cv');
     await sessionSettle();
     const client = new SwgClient({ loginServer: { host: HOST, port: PORT } });
 

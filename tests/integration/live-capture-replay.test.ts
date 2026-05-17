@@ -23,23 +23,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { captureLifecycle, replay } from '../../src/index.js';
-
-/**
- * Inline credential generator (this worktree doesn't have helpers.ts).
- * Honors CI_REUSE_ACCOUNT/CI_REUSE_CHARACTER if set; otherwise generates
- * a unique pair per test run.
- */
-function liveCredentials(prefix: string): { account: string; characterName: string } {
-  const reuseAcct = process.env.CI_REUSE_ACCOUNT;
-  const reuseChar = process.env.CI_REUSE_CHARACTER;
-  if (reuseAcct !== undefined && reuseAcct !== '' && reuseChar !== undefined && reuseChar !== '') {
-    return { account: reuseAcct, characterName: reuseChar };
-  }
-  return {
-    account: `${prefix}${(Date.now() % 100_000_000).toString(36)}`,
-    characterName: `Ts${prefix}${Date.now() % 1_000_000}`,
-  };
-}
+import { liveCredentials } from './helpers.js';
 
 const LIVE = process.env.LIVE === '1';
 const HOST = process.env.SWG_HOST ?? '10.254.0.253';
@@ -47,7 +31,7 @@ const PORT = Number(process.env.SWG_LOGIN_PORT ?? 44453);
 
 describe.skipIf(!LIVE)('live capture + replay (Stage 3 harness)', () => {
   it('captures a zone-in transcript and replays it against the live server', async () => {
-    const { account, characterName } = liveCredentials('rp');
+    const { account, characterName } = await liveCredentials('rp');
 
     // 1. First lifecycle: create the character.
     const cap1 = await captureLifecycle({

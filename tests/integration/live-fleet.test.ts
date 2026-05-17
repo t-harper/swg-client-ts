@@ -16,6 +16,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { Fleet } from '../../src/client/fleet.js';
+import { liveCredentials } from './helpers.js';
 
 const LIVE = process.env.LIVE === '1';
 const HOST = process.env.SWG_HOST ?? '10.254.0.253';
@@ -23,22 +24,24 @@ const PORT = Number(process.env.SWG_LOGIN_PORT ?? 44453);
 
 describe.skipIf(!LIVE)('live fleet (2 concurrent clients, Stage 1 + 2 only)', () => {
   it('runs two clients in parallel and aggregates per-client outcomes', async () => {
-    // Server caps account at MAX_ACCOUNT_NAME_LENGTH=15. Use shared compact
-    // run tag + per-client suffix so we stay well under 15 chars.
-    const runTag = (Date.now() % 100_000_000).toString(36);
+    // Pull 2 distinct accounts from the admin pool (tslive01..20) — fresh
+    // timestamp accounts hit canCreateRegularCharacter=false and silently
+    // fall through the soft-skip path below, masking real wire failures.
+    const a = await liveCredentials('fla');
+    const b = await liveCredentials('flb');
 
     const fleet = new Fleet({ loginServer: { host: HOST, port: PORT } });
     const result = await fleet.run(
       [
         {
-          account: `tsfl${runTag}a`,
-          characterName: `TsFleetA${Date.now() % 1_000_000}`,
+          account: a.account,
+          characterName: a.characterName,
           planet: 'mos_eisley',
           skipGameStage: true,
         },
         {
-          account: `tsfl${runTag}b`,
-          characterName: `TsFleetB${Date.now() % 1_000_000}`,
+          account: b.account,
+          characterName: b.characterName,
           planet: 'mos_eisley',
           skipGameStage: true,
         },
@@ -50,22 +53,11 @@ describe.skipIf(!LIVE)('live fleet (2 concurrent clients, Stage 1 + 2 only)', ()
     // Both clients succeeded.
     expect(result.summary.totalClients).toBe(2);
 
-    // Graceful skip when the server has disabled character creation
-    // (canCreateRegularCharacter=false — happens when the cluster hits
-    // its max-characters cap from accumulated test leakage). The test
-    // can't synthesize fresh characters in this state; not a code bug.
-    const blocked = result.summary.errorMessages.some((e) =>
-      e.includes('canCreateRegularCharacter=false'),
-    );
-    if (blocked) {
-      console.warn(
-        '[live-fleet] Server rejected character creation; skipping. ' +
-          'Re-run after the cluster admin re-enables creation or after ' +
-          'sweeping leaked test characters.',
-      );
-      return;
-    }
-
+    // We now route through the admin pool (tslive01..20 — see helpers.ts
+    // and stella_admin.tab). Those accounts bypass the cluster's player /
+    // tutorial limits via the clientIsInternal path, so creation must
+    // succeed. If we still see canCreateRegularCharacter=false here, it's
+    // a real wire/server regression — not a soft skip.
     expect(
       result.summary.succeeded,
       `expected 2 successes; errors=${result.summary.errorMessages.join(' | ')}`,

@@ -21,7 +21,7 @@ const PORT = Number(process.env.SWG_LOGIN_PORT ?? 44453);
 describe.skipIf(!LIVE)('live login + connection (Stage 1 + 2)', () => {
   it('logs in, attaches to ConnectionServer, gets character list (creates if empty), selects', async () => {
     // Set CI_REUSE_ACCOUNT + CI_REUSE_CHARACTER to reuse instead of leaking.
-    const { account, characterName } = liveCredentials('cn');
+    const { account, characterName } = await liveCredentials('cn');
     await sessionSettle();
     const client = new SwgClient({ loginServer: { host: HOST, port: PORT } });
     const result = await client.fullLifecycle({

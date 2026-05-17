@@ -23,6 +23,7 @@ import { describe, expect, it } from 'vitest';
 
 import { Fleet } from '../../src/client/fleet.js';
 import { groupTradeScenario } from '../../src/scenarios/index.js';
+import { liveCredentials } from './helpers.js';
 
 const LIVE = process.env.LIVE === '1';
 const HOST = process.env.SWG_HOST ?? '10.254.0.253';
@@ -30,12 +31,14 @@ const PORT = Number(process.env.SWG_LOGIN_PORT ?? 44453);
 
 describe.skipIf(!LIVE)('live group-trade (2 clients, invite → accept → disband)', () => {
   it('forms a group between two characters and disbands cleanly', async () => {
-    // Distinct accounts (server allows one session per account).
-    const runTag = (Date.now() % 100_000_000).toString(36);
-    const leaderAccount = `gtl${runTag}`.slice(0, 15);
-    const inviteeAccount = `gti${runTag}`.slice(0, 15);
-    const leaderCharacter = `GtLead${Date.now() % 1_000_000}`;
-    const inviteeCharacter = `GtInv${Date.now() % 1_000_000}`;
+    // Two distinct admin-pool accounts (tslive01..20). Fresh timestamp
+    // accounts hit canCreateRegularCharacter=false and silently soft-skip.
+    const leader = await liveCredentials('gtl');
+    const invitee = await liveCredentials('gti');
+    const leaderAccount = leader.account;
+    const inviteeAccount = invitee.account;
+    const leaderCharacter = leader.characterName;
+    const inviteeCharacter = invitee.characterName;
 
     // Phase 1: lookup NetworkIds via Stage 1+2 only.
     const lookupFleet = new Fleet({ loginServer: { host: HOST, port: PORT } });
@@ -57,18 +60,8 @@ describe.skipIf(!LIVE)('live group-trade (2 clients, invite → accept → disba
       { staggerMs: 100 },
     );
 
-    const blocked = lookup.summary.errorMessages.some((e) =>
-      e.includes('canCreateRegularCharacter=false'),
-    );
-    if (blocked) {
-      console.warn(
-        '[live-group-trade] Server rejected character creation; skipping. ' +
-          'Re-run after the cluster admin re-enables creation or after ' +
-          'sweeping leaked test characters.',
-      );
-      return;
-    }
-
+    // Admin pool guarantees canCreateRegularCharacter=true (see helpers.ts).
+    // Any creation failure here is a real server/wire regression.
     expect(
       lookup.summary.succeeded,
       `lookup phase failed: ${lookup.summary.errorMessages.join(' | ')}`,
@@ -110,14 +103,6 @@ describe.skipIf(!LIVE)('live group-trade (2 clients, invite → accept → disba
       ],
       { staggerMs: 200 },
     );
-
-    const phase2Blocked = result.summary.errorMessages.some((e) =>
-      e.includes('canCreateRegularCharacter=false'),
-    );
-    if (phase2Blocked) {
-      console.warn('[live-group-trade] Phase 2 blocked by character-creation cap; skipping.');
-      return;
-    }
 
     // Both clients ran the lifecycle without thrown errors.
     expect(

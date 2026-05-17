@@ -42,7 +42,7 @@ const PORT = Number(process.env.SWG_LOGIN_PORT ?? 44453);
 
 describe.skipIf(!LIVE)('live baseline decoding (Stages 1 → 2 → 3 → 4)', () => {
   it('decodes at least a handful of inbound BaselinesMessage events', async () => {
-    const { account, characterName } = liveCredentials('bd');
+    const { account, characterName } = await liveCredentials('bd');
     await sessionSettle();
     const client = new SwgClient({ loginServer: { host: HOST, port: PORT } });
 
@@ -103,7 +103,7 @@ describe.skipIf(!LIVE)('live baseline decoding (Stages 1 → 2 → 3 → 4)', ()
   }, 60_000);
 
   it('extracts a PlayerObject baseline matching the character we played as', async () => {
-    const { account, characterName } = liveCredentials('bp');
+    const { account, characterName } = await liveCredentials('bp');
     await sessionSettle();
     const client = new SwgClient({ loginServer: { host: HOST, port: PORT } });
 
@@ -135,7 +135,7 @@ describe.skipIf(!LIVE)('live baseline decoding (Stages 1 → 2 → 3 → 4)', ()
   }, 60_000);
 
   it('finds the inventory container via extractInventoryContainerId (best-effort)', async () => {
-    const { account, characterName } = liveCredentials('bi');
+    const { account, characterName } = await liveCredentials('bi');
     await sessionSettle();
     const client = new SwgClient({ loginServer: { host: HOST, port: PORT } });
 
@@ -166,7 +166,7 @@ describe.skipIf(!LIVE)('live baseline decoding (Stages 1 → 2 → 3 → 4)', ()
   }, 60_000);
 
   it('handles the case where some packages are SHARED_NP (transient state)', async () => {
-    const { account, characterName } = liveCredentials('bn');
+    const { account, characterName } = await liveCredentials('bn');
     await sessionSettle();
     const client = new SwgClient({ loginServer: { host: HOST, port: PORT } });
 
@@ -190,7 +190,7 @@ describe.skipIf(!LIVE)('live baseline decoding (Stages 1 → 2 → 3 → 4)', ()
   }, 60_000);
 
   it("decodes the player's own CREO SHARED baseline (CreatureObject p3)", async () => {
-    const { account, characterName } = liveCredentials('bcr');
+    const { account, characterName } = await liveCredentials('bcr');
     await sessionSettle();
     const client = new SwgClient({ loginServer: { host: HOST, port: PORT } });
 
@@ -236,7 +236,7 @@ describe.skipIf(!LIVE)('live baseline decoding (Stages 1 → 2 → 3 → 4)', ()
     // but this is soft: the server may push only opaque pkg=4/6 envelopes,
     // or filter out buildings until the player moves. We log diagnostics on
     // either outcome rather than fail hard.
-    const { account, characterName } = liveCredentials('bs');
+    const { account, characterName } = await liveCredentials('bs');
     await sessionSettle();
     const client = new SwgClient({ loginServer: { host: HOST, port: PORT } });
 

@@ -43,19 +43,67 @@ export interface LiveCredentials {
  * cluster's player-limit/tutorial-limit checks via the `clientIsInternal` path
  * (LoginServer.cpp:946-950). Set `LIVE_ADMIN_POOL=0` to disable and fall back
  * to fresh timestamp-suffixed accounts.
+ *
+ * Allocation strategy: least-recently-used. The pool keeps a per-account
+ * last-handout-ms map; each call picks the oldest account and stamps it.
+ * This minimizes the chance of two adjacent tests in a serial run colliding
+ * on the same account (the server holds a GameConnection open ~10s after
+ * LogoutMessage before allowing the same account to re-attach, which would
+ * otherwise surface as a CmdStartScene timeout on the second test).
  */
 const ADMIN_POOL_PREFIX = 'tslive';
 const ADMIN_POOL_SIZE = 20;
-// Seed the cursor from PID so concurrent vitest worker processes don't all
-// race on tslive01 — each worker gets a different starting offset.
-let adminPoolCursor = process.pid % ADMIN_POOL_SIZE;
+/** Server-side post-logout settle. Empirically ~10s; 12s gives a safety margin. */
+const ADMIN_POOL_MIN_GAP_MS = 12_000;
+/** Per-account last-handout-ms. Used to pick LRU and to compute required wait. */
+const adminPoolLastHandout = new Map<string, number>();
 
-function nextAdminPoolAccount(): string {
-  const idx = (adminPoolCursor++ % ADMIN_POOL_SIZE) + 1;
-  return `${ADMIN_POOL_PREFIX}${idx.toString().padStart(2, '0')}`;
+interface AdminPoolPick {
+  account: string;
+  /** Milliseconds the caller must wait before logging in to avoid session collision. */
+  requiredSettleMs: number;
 }
 
-export function liveCredentials(prefix: string): LiveCredentials {
+function pickAdminPoolAccount(): AdminPoolPick {
+  // Find the account with the oldest last-handout time (LRU).
+  let oldestAccount = `${ADMIN_POOL_PREFIX}01`;
+  let oldestStamp = Number.POSITIVE_INFINITY;
+  for (let i = 1; i <= ADMIN_POOL_SIZE; i++) {
+    const account = `${ADMIN_POOL_PREFIX}${i.toString().padStart(2, '0')}`;
+    const stamp = adminPoolLastHandout.get(account) ?? 0;
+    if (stamp < oldestStamp) {
+      oldestStamp = stamp;
+      oldestAccount = account;
+    }
+  }
+  const now = Date.now();
+  const elapsed = now - oldestStamp;
+  const requiredSettleMs = elapsed >= ADMIN_POOL_MIN_GAP_MS ? 0 : ADMIN_POOL_MIN_GAP_MS - elapsed;
+  // Stamp NOW + settle so concurrent callers see this account as "in-flight"
+  // and pick a different one rather than racing.
+  adminPoolLastHandout.set(oldestAccount, now + requiredSettleMs);
+  return { account: oldestAccount, requiredSettleMs };
+}
+
+/**
+ * Refresh an account's last-handout timestamp. Tests that re-use the same
+ * pinned account across multiple lifecycles in one test (e.g. live-persistence)
+ * should call this between lifecycles so subsequent test runs know the account
+ * was just used.
+ */
+export function markAdminPoolAccountUsed(account: string): void {
+  if (account.startsWith(ADMIN_POOL_PREFIX)) {
+    adminPoolLastHandout.set(account, Date.now());
+  }
+}
+
+/**
+ * Async-only — the helper waits for any required admin-pool settle window
+ * before returning, so the caller can immediately log in without racing the
+ * server's prior-session release. Adding `await` at the callsite is cheap;
+ * silent CmdStartScene timeouts are not.
+ */
+export async function liveCredentials(prefix: string): Promise<LiveCredentials> {
   const reuseAcct = process.env.CI_REUSE_ACCOUNT;
   const reuseChar = process.env.CI_REUSE_CHARACTER;
   if (reuseAcct !== undefined && reuseAcct !== '' && reuseChar !== undefined && reuseChar !== '') {
@@ -64,7 +112,10 @@ export function liveCredentials(prefix: string): LiveCredentials {
   // Default to the admin-whitelisted account pool — fresh per-run accounts
   // would hit cluster player-limit gating which silently disables char creation.
   if (process.env.LIVE_ADMIN_POOL !== '0') {
-    const account = nextAdminPoolAccount();
+    const { account, requiredSettleMs } = pickAdminPoolAccount();
+    if (requiredSettleMs > 0) {
+      await new Promise((r) => setTimeout(r, requiredSettleMs));
+    }
     return {
       account,
       characterName: `Ts${prefix}${Date.now() % 1_000_000}`,
@@ -97,11 +148,16 @@ export async function sessionSettle(ms = 8_000): Promise<void> {
  * For Stage-1-only tests (live-login) — returns just an account name.
  * Honors CI_REUSE_ACCOUNT; ignores CI_REUSE_CHARACTER.
  */
-export function liveAccount(prefix: string): string {
+export async function liveAccount(prefix: string): Promise<string> {
   const reuseAcct = process.env.CI_REUSE_ACCOUNT;
   if (reuseAcct !== undefined && reuseAcct !== '') return reuseAcct;
-  // Default to admin pool (see liveCredentials comment).
-  if (process.env.LIVE_ADMIN_POOL !== '0') return nextAdminPoolAccount();
+  if (process.env.LIVE_ADMIN_POOL !== '0') {
+    const { account, requiredSettleMs } = pickAdminPoolAccount();
+    if (requiredSettleMs > 0) {
+      await new Promise((r) => setTimeout(r, requiredSettleMs));
+    }
+    return account;
+  }
   return `${prefix}${(Date.now() % 100_000_000).toString(36)}`;
 }
 
@@ -167,7 +223,7 @@ export async function poolCredentials(prefix: string, count = 1): Promise<PoolCr
   }
   const credentials: Array<{ account: string; characterName: string }> = [];
   for (let i = 0; i < count; i++) {
-    const { account, characterName } = liveCredentials(`${prefix}${i}`);
+    const { account, characterName } = await liveCredentials(`${prefix}${i}`);
     credentials.push({ account, characterName });
   }
   return {

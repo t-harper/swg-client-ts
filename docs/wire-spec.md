@@ -443,15 +443,26 @@ Reference: `GenericValueTypeMessage.h`. Our impl: `src/messages/base.ts:defineGe
 | `SuiUpdatePageMessage` | 0x5f3342f6 | 2 | Server → client. Same wire shape as `SuiCreatePageMessage`; in-place widget updates. |
 | `SuiForceClosePage` | 0x990b5de0 | 2 | Server → client. Close a SUI page. Payload: `[i32 clientPageId]`. |
 | `SuiEventNotification` | 0x092d3564 | 4 | Client → server. Reply to a SUI page: `[i32 pageId][i32 subscribedEventIndex][u32 returnList.length][u32 baselineCommandCount=0][UnicodeString]*length`. |
-| `BeginTradeMessage` | 0x325932d8 | 2 | Server → client. Server confirms both parties accepted the initial `CM_secureTrade(RequestTrade)`. Trailer: `[NetworkId player]` (the OTHER party). |
-| `AddItemMessage` | 0x1e8d1356 | 2 | Bidirectional. Adds a tangible item. Trailer: `[NetworkId object]`. |
-| `RemoveItemMessage` | 0x4417af8b | 2 | Bidirectional. Retracts an item. Trailer: `[NetworkId object]`. |
-| `GiveMoneyMessage` | 0xd1527ee8 | 2 | Bidirectional. Sets credits offered. Trailer: `[i32 amount]`. |
-| `AcceptTransactionMessage` | 0xb131ca17 | 1 | Bidirectional, empty body. "I accept". |
-| `UnAcceptTransactionMessage` | 0xe81e4382 | 1 | Bidirectional, empty body. Un-checks acceptance. |
+| `BeginTradeMessage` | 0x325932d8 | 2 | Server → client. Trailer: `[NetworkId player]` (the OTHER party). |
+| `AddItemMessage` | 0x1e8d1356 | 2 | Bidirectional. Trailer: `[NetworkId object]`. |
+| `RemoveItemMessage` | 0x4417af8b | 2 | Bidirectional. Trailer: `[NetworkId object]`. |
+| `GiveMoneyMessage` | 0xd1527ee8 | 2 | Bidirectional. Trailer: `[i32 amount]`. |
+| `AcceptTransactionMessage` | 0xb131ca17 | 1 | Bidirectional, empty body. |
+| `UnAcceptTransactionMessage` | 0xe81e4382 | 1 | Bidirectional, empty body. |
 | `VerifyTradeMessage` | 0x9ae247ee | 1 | Bidirectional, empty body. Final commit confirmation. |
-| `TradeCompleteMessage` | 0xc542038b | 1 | Server → client, empty body. Items + credits moved; trade window can close. |
-| `AbortTradeMessage` | 0x9ca80f98 | 1 | Bidirectional, empty body. Either party cancels. |
+| `TradeCompleteMessage` | 0xc542038b | 1 | Server → client, empty body. |
+| `AbortTradeMessage` | 0x9ca80f98 | 1 | Bidirectional, empty body. |
+| `AuctionQueryHeadersMessage` | constcrc | 17 | C→S: bazaar browse. Trailer fields (in `addVariable` order): `locationSearchType, requestId, searchType, itemType, itemTypeExactMatch, itemTemplateId, textFilterAll(UString), textFilterAny(UString), priceFilterMin, priceFilterMax, priceFilterIncludesFee, advancedSearch(vector<SearchCondition>), advancedSearchMatchAllAny(i8), container(NetworkId), myVendorsOnly, queryOffset(u16)`. |
+| `AuctionQueryHeadersResponseMessage` | constcrc | 8 | S→C: page of bazaar headers. Server palettizes shared strings: `[i32 requestId][i32 typeFlag][AutoArray<std::string> stringPalette][AutoArray<Unicode::String> widePalette][AutoArray<PalettizedItemDataHeader>][u16 queryOffset][bool hasMorePages]`. Decoder depalettizes back to `AuctionListing[]`. |
+| `BidAuctionMessage` / `BidAuctionResponseMessage` | constcrc | 4 / 3 | C→S `[NetworkId itemId][i32 bid][i32 maxProxyBid]`; S→C `[NetworkId itemId][i32 result]` |
+| `AcceptAuctionMessage` / `AcceptAuctionResponseMessage` | constcrc | 2 / 3 | Instant-buy on a buy-now auction. |
+| `CreateAuctionMessage` | constcrc | 8 | C→S list (bidding-style): `[NetworkId itemId][UString name][NetworkId containerId][i32 minBid][i32 lengthSeconds][UString description][bool premium]` |
+| `CreateImmediateAuctionMessage` | constcrc | 9 | C→S list (instant-buy): same as CreateAuctionMessage with `price` replacing `minBid` plus trailing `[bool vendorTransfer]` |
+| `CreateAuctionResponseMessage` | constcrc | 4 | S→C `[NetworkId itemId][i32 result][std::string rejectionMessage]` |
+| `CancelLiveAuctionMessage` / `CancelLiveAuctionResponseMessage` | constcrc | 2 / 4 | C→S `[NetworkId itemId]`; S→C `[NetworkId itemId][i32 result][bool vendorRefusal]` |
+| `RetrieveAuctionItemMessage` / `RetrieveAuctionItemResponseMessage` | constcrc | 3 / 3 | C→S `[NetworkId itemId][NetworkId containerId]`; S→C `[NetworkId itemId][i32 result]` |
+| `GetAuctionDetails` / `GetAuctionDetailsResponse` | constcrc | 2 / 2 | C→S `[NetworkId itemId]`; S→C single `Auction::ItemDataDetails` struct. |
+| `IsVendorOwnerMessage` / `IsVendorOwnerResponseMessage` | constcrc | 2 / 6 | C→S `[NetworkId containerId]`; S→C `[i32 ownerResult][i32 result][NetworkId containerId][std::string marketName][u16 maxPageSize]`. |
 
 ### ObjController subtypes
 

@@ -30,6 +30,23 @@ import { ChatRoomList } from './game/chat/chat-room-list.js';
 import { ChatSendToRoom } from './game/chat/chat-send-to-room.js';
 import { CmdSceneReady } from './game/cmd-scene-ready.js';
 import { CmdStartScene } from './game/cmd-start-scene.js';
+import { AcceptAuctionMessage } from './game/commodities/accept-auction-message.js';
+import { AcceptAuctionResponseMessage } from './game/commodities/accept-auction-response-message.js';
+import { AuctionQueryHeadersMessage } from './game/commodities/auction-query-headers-message.js';
+import { AuctionQueryHeadersResponseMessage } from './game/commodities/auction-query-headers-response-message.js';
+import { BidAuctionMessage } from './game/commodities/bid-auction-message.js';
+import { BidAuctionResponseMessage } from './game/commodities/bid-auction-response-message.js';
+import { CancelLiveAuctionMessage } from './game/commodities/cancel-live-auction-message.js';
+import { CancelLiveAuctionResponseMessage } from './game/commodities/cancel-live-auction-response-message.js';
+import { CreateAuctionMessage } from './game/commodities/create-auction-message.js';
+import { CreateAuctionResponseMessage } from './game/commodities/create-auction-response-message.js';
+import { CreateImmediateAuctionMessage } from './game/commodities/create-immediate-auction-message.js';
+import { GetAuctionDetailsResponse } from './game/commodities/get-auction-details-response.js';
+import { GetAuctionDetails } from './game/commodities/get-auction-details.js';
+import { IsVendorOwnerMessage } from './game/commodities/is-vendor-owner-message.js';
+import { IsVendorOwnerResponseMessage } from './game/commodities/is-vendor-owner-response-message.js';
+import { RetrieveAuctionItemMessage } from './game/commodities/retrieve-auction-item-message.js';
+import { RetrieveAuctionItemResponseMessage } from './game/commodities/retrieve-auction-item-response-message.js';
 import { HeartBeat } from './game/heart-beat.js';
 import { LogoutMessage } from './game/logout-message.js';
 import { PopulateMissionBrowserMessage } from './game/missions/populate-mission-browser-message.js';
@@ -104,11 +121,28 @@ const ALL_DECODERS = [
   VerifyTradeMessage,
   TradeCompleteMessage,
   AbortTradeMessage,
+  AcceptAuctionMessage,
+  AcceptAuctionResponseMessage,
+  AuctionQueryHeadersMessage,
+  AuctionQueryHeadersResponseMessage,
+  BidAuctionMessage,
+  BidAuctionResponseMessage,
+  CancelLiveAuctionMessage,
+  CancelLiveAuctionResponseMessage,
+  CreateAuctionMessage,
+  CreateAuctionResponseMessage,
+  CreateImmediateAuctionMessage,
+  GetAuctionDetails,
+  GetAuctionDetailsResponse,
+  IsVendorOwnerMessage,
+  IsVendorOwnerResponseMessage,
+  RetrieveAuctionItemMessage,
+  RetrieveAuctionItemResponseMessage,
 ];
 
 describe('message registration', () => {
-  it('exports 46 message classes', () => {
-    expect(ALL_DECODERS.length).toBe(46);
+  it('exports 63 message classes', () => {
+    expect(ALL_DECODERS.length).toBe(63);
   });
 
   it('every class has a non-empty messageName', () => {

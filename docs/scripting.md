@@ -88,7 +88,13 @@ Declared in `src/client/script/context.ts`.
 | **Missions** | |
 | `requestMissionList(terminalId, { flags? })` / `acceptMission` / `removeMission` / `abortMission` | Driven through `CM_mission*` subtypes; server replies with `MissionObject` baselines + `PopulateMissionBrowserMessage` + `CM_missionAcceptResponse` |
 | **SecureTrade** | |
-| `tradeWith(otherId, { items?, credits?, beginTimeoutMs?, acceptTimeoutMs?, verifyTimeoutMs? })` | Drive the full handshake end-to-end. Sends `CM_secureTrade(RequestTrade)` → waits for `BeginTradeMessage` (server confirms other party accepted) → sends `AddItemMessage` per item + `GiveMoneyMessage` if credits > 0 + `AcceptTransactionMessage` → waits for `VerifyTradeMessage` (or `AbortTradeMessage`) → echoes `VerifyTradeMessage` → waits for `TradeCompleteMessage`. Resolves `{ completed: true }` on success or `{ completed: false, abortReason: 'no-begin'|'aborted'|'no-verify'|'no-complete' }` on failure. Default per-step timeout 15s. |
+| `tradeWith(otherId, { items?, credits?, beginTimeoutMs?, acceptTimeoutMs?, verifyTimeoutMs? })` | Drive the full handshake end-to-end. Sends `CM_secureTrade(RequestTrade)` → waits for `BeginTradeMessage` → sends `AddItemMessage` per item + `GiveMoneyMessage` + `AcceptTransactionMessage` → waits for `VerifyTradeMessage` (or `AbortTradeMessage`) → echoes `VerifyTradeMessage` → waits for `TradeCompleteMessage`. Resolves `{ completed: true }` or `{ completed: false, abortReason: 'no-begin'|'aborted'|'no-verify'|'no-complete' }`. Default per-step timeout 15s. |
+| **Commodities / bazaar** | |
+| `browseBazaar(terminalId, { searchType?, category?, minPrice?, maxPrice?, textFilterAll?, textFilterAny?, advancedSearch?, queryOffset?, myVendorsOnly?, timeoutMs? })` | Sends `AuctionQueryHeadersMessage` and resolves with the depalettized `AuctionListing[]` from the matching `AuctionQueryHeadersResponseMessage`. |
+| `getAuctionDetails(auctionId, { timeoutMs? })` | Sends `GetAuctionDetails`, awaits the matching `GetAuctionDetailsResponse`. |
+| `bidOn(auctionId, credits, maxProxy?)` | Fire-and-forget `BidAuctionMessage`. `maxProxy` defaults to `credits`. |
+| `listForSale(terminalId, itemId, { price, durationHours?, description?, localizedName?, instantSale?, premium?, vendorTransfer? })` | Sends `CreateAuctionMessage` (auction) or `CreateImmediateAuctionMessage` (when `instantSale: true`) and resolves with `{ success, auctionId?, resultCode, errorReason? }`. |
+| `retrieveBazaarItem(terminalId, itemId)` / `cancelMyListing(auctionId)` | Fire-and-forget `RetrieveAuctionItemMessage` / `CancelLiveAuctionMessage`. |
 | **Crafting** | |
 | `beginCrafting(toolId, schematicCrc?)` | `useAbility('requestCraftingSession', toolId, ...)`. Server opens session and replies with `CM_craftingResult` + `CM_draftSchematicsMessage`. |
 | `waitForDraftSchematics({ timeoutMs? })` | Resolves the server's `DraftSchematicsMessage` — list of `{serverCrc, sharedCrc, category}` entries you can choose from. Default timeout 8s. |
@@ -126,8 +132,9 @@ Registered in `src/scenarios/index.ts`. Pass `--script=<name>` and zero or more 
 | `combat-attack` | `targetId=(required) durationMs=5000 tickMs=1000` | Queue `attack` against `targetId` every tickMs |
 | `posture-cycle` | `durationMs=5000 tickMs=1000` | Cycle standing → crouched → prone → standing |
 | `survey` | `toolId=(required) resourceTypeName=(required) waitMs=2000` | One-shot `requestsurvey` (assumes the tool is already activated; use `ctx.fetchSurveyResources` to discover legal `resourceTypeName` values) |
-| `group-trade` | `role=leader|invitee otherId=(required) tradeAmount?` | Two-client coordination — invite, form group, drive full SecureTrade handshake via `ctx.tradeWith` when `tradeAmount > 0` (transfers credits leader → invitee), disband. See `scripts/group-trade-demo.ts`. |
-| `ride-vehicle` | `datapadItemId=(required) vehicleId? radius=30 durationMs=10000 speed=12 settleMs=1500 skipMount=false` | Calls vehicle from datapad PCD (`PET_CALL`), waits `settleMs`, mounts it via `useAbility('mount', vehicleId)`, rides a `walkCircle` clamped by the mounted speed cap, dismounts, then stores via `PET_STORE`. |
+| `group-trade` | `role=leader|invitee otherId=(required) tradeAmount?` | Two-client coordination — invite, form group, drive full SecureTrade handshake via `ctx.tradeWith` when `tradeAmount > 0`, disband. See `scripts/group-trade-demo.ts`. |
+| `ride-vehicle` | `datapadItemId=(required) vehicleId? radius=30 durationMs=10000 speed=12 settleMs=1500 skipMount=false` | Calls vehicle from datapad PCD (`PET_CALL`), mounts via `useAbility('mount', vehicleId)`, rides a `walkCircle` clamped by the mounted speed cap, dismounts, then stores via `PET_STORE`. |
+| `bazaar-snipe` | `terminalId=(required) auctionId?=(opt) credits=(required when auctionId set) browseMs=5000` | When `auctionId` is set, fire a `BidAuctionMessage(auctionId, credits)`. Otherwise browse for `browseMs` and surface top-three lowest-priced listings via `ctx.fail(...)`. |
 | `dwell` | `durationMs=5000` | Idle baseline |
 
 `NetworkId` args accept hex (`0x...`) or decimal.

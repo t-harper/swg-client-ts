@@ -37,6 +37,24 @@ import {
   wrapAsObjControllerMessage,
 } from '../../messages/game/command-queue/index.js';
 import {
+  AdvancedSearchMatchAllAny,
+  AuctionLocationSearch,
+  type AuctionListing,
+  AuctionQueryHeadersMessage,
+  AuctionQueryHeadersResponseMessage,
+  AuctionResult,
+  AuctionSearchType,
+  BidAuctionMessage,
+  CancelLiveAuctionMessage,
+  CreateAuctionMessage,
+  CreateAuctionResponseMessage,
+  CreateImmediateAuctionMessage,
+  GetAuctionDetails,
+  GetAuctionDetailsResponse,
+  RetrieveAuctionItemMessage,
+  type SearchCondition,
+} from '../../messages/game/commodities/index.js';
+import {
   type DraftSchematicsData,
   DraftSchematicsKind,
   type ManufactureSchematicData,
@@ -206,6 +224,91 @@ export interface TradeWithResult {
   completed: boolean;
   /** Populated on any failure — `no-begin`, `aborted`, `no-verify`, `no-complete`. */
   abortReason?: string;
+}
+
+/** Re-export the depalettized commodities listing struct for consumers. */
+export type { AuctionListing } from '../../messages/game/commodities/index.js';
+
+/**
+ * Result of a `ctx.getAuctionDetails(auctionId)` call. Pulls the
+ * `GetAuctionDetailsResponse` server reply into a flat shape — full item
+ * description, the property/attribute pair list, server template name, and
+ * appearance string.
+ */
+export interface AuctionDetails {
+  itemId: NetworkId;
+  userDescription: string;
+  propertyList: ReadonlyArray<readonly [string, string]>;
+  templateName: string;
+  appearanceString: string;
+}
+
+/** Optional overrides for `ctx.browseBazaar()`. */
+export interface BrowseBazaarOptions {
+  /** AuctionSearchType (default ByAll=2). */
+  searchType?: number;
+  /** AuctionLocationSearch (default Galaxy=0). */
+  locationSearchType?: number;
+  /** Category itemType filter (default 0 = all categories). */
+  category?: number;
+  /** When `category` is set, require exact match (default false). */
+  itemTypeExactMatch?: boolean;
+  /** Specific template id filter (default 0 = any). */
+  itemTemplateId?: number;
+  /** All-words text filter (default ''). */
+  textFilterAll?: string;
+  /** Any-of-words text filter (default ''). */
+  textFilterAny?: string;
+  /** Min price (default 0 = no minimum). */
+  minPrice?: number;
+  /** Max price (default 0 = no maximum). */
+  maxPrice?: number;
+  /** Whether the price filter includes the bazaar fee (default false). */
+  priceFilterIncludesFee?: boolean;
+  /** Advanced-search conditions (default []). */
+  advancedSearch?: readonly SearchCondition[];
+  /** Match-mode for advanced-search (default match_all=0). */
+  advancedSearchMatchAllAny?: number;
+  /** Limit to my-vendor listings only (default false). */
+  myVendorsOnly?: boolean;
+  /** Page offset (default 0). */
+  queryOffset?: number;
+  /** Client-side request id (auto-generated if omitted). */
+  requestId?: number;
+  /** Server response timeout (default 8_000ms). */
+  timeoutMs?: number;
+}
+
+/** Optional overrides for `ctx.listForSale()`. */
+export interface ListForSaleOptions {
+  /** Price in credits — for instant-sale this is the buy-now price; for auction-style this is the minimum bid. */
+  price: number;
+  /** Auction window in HOURS (converted to seconds on the wire). Default 24. */
+  durationHours?: number;
+  /** Optional description shown to bidders. Default ''. */
+  description?: string;
+  /** Localized display name. Default ''. */
+  localizedName?: string;
+  /** True ⇒ instant-buy at `price`; false ⇒ bidding-style auction. Default false. */
+  instantSale?: boolean;
+  /** True ⇒ pay the premium-listing fee for higher visibility. Default false. */
+  premium?: boolean;
+  /** Vendor-transfer flag (instant-sale only). Default false. */
+  vendorTransfer?: boolean;
+  /** Server response timeout (default 8_000ms). */
+  timeoutMs?: number;
+}
+
+/** Result of a `ctx.listForSale()` call. */
+export interface ListForSaleResult {
+  /** True when `result === AuctionResult.OK`. */
+  success: boolean;
+  /** Echoed back by the server — usually the item id on success. */
+  auctionId?: NetworkId;
+  /** Raw `AuctionResult` code. */
+  resultCode: number;
+  /** Server-supplied human-readable rejection text (ITEM_RESTRICTED only). */
+  errorReason?: string;
 }
 
 /** Optional overrides for `ctx.say()` — directed chat, shout, mood, etc. */
@@ -975,6 +1078,69 @@ export interface ScriptContext {
    * RequestTrade we send is consumed as a redundant accept.
    */
   tradeWith(otherId: NetworkId, opts?: TradeWithOptions): Promise<TradeWithResult>;
+
+  // --- Commodities / bazaar / auction-house primitives ---
+
+  /**
+   * Browse the bazaar from `terminalId`. Sends
+   * `AuctionQueryHeadersMessage` and resolves with the depalettized listings
+   * from the next `AuctionQueryHeadersResponseMessage` matching the request
+   * id. Defaults to a galaxy-wide ByAll search (no filters).
+   *
+   * The terminal id is the `container` arg the server uses to scope the
+   * search — pass the NetworkId of a bazaar terminal (or a player vendor's
+   * container id for vendor browses).
+   */
+  browseBazaar(terminalId: NetworkId, opts?: BrowseBazaarOptions): Promise<AuctionListing[]>;
+
+  /**
+   * Request full description / attributes / template name for a single
+   * auction. Sends `GetAuctionDetails` and resolves with the depalettized
+   * `AuctionDetails` from the next matching `GetAuctionDetailsResponse`.
+   * Default timeout 8_000ms.
+   */
+  getAuctionDetails(
+    auctionId: NetworkId,
+    opts?: { timeoutMs?: number },
+  ): Promise<AuctionDetails>;
+
+  /**
+   * Place a bid on a live auction. Fire-and-forget — sends
+   * `BidAuctionMessage(itemId=auctionId, bid=credits, maxProxyBid=maxProxy)`.
+   * The server replies asynchronously with `BidAuctionResponseMessage`;
+   * `ctx.waitForMessage(BidAuctionResponseMessage, ...)` if you want to
+   * confirm. `maxProxy` defaults to `credits` (no auto-rebid).
+   */
+  bidOn(auctionId: NetworkId, credits: number, maxProxy?: number): void;
+
+  /**
+   * List an item for sale at `terminalId` (bazaar / vendor container).
+   * Sends either `CreateImmediateAuctionMessage` (when
+   * `opts.instantSale` is true) or `CreateAuctionMessage` (default,
+   * bidding-style auction). Awaits the next matching
+   * `CreateAuctionResponseMessage` and returns its parsed shape.
+   *
+   * `opts.durationHours` is converted to seconds for the wire. Default 24h.
+   */
+  listForSale(
+    terminalId: NetworkId,
+    itemId: NetworkId,
+    opts: ListForSaleOptions,
+  ): Promise<ListForSaleResult>;
+
+  /**
+   * Retrieve a won / expired / cancelled auction item back into your
+   * inventory. Fire-and-forget — sends `RetrieveAuctionItemMessage`. The
+   * server replies asynchronously with `RetrieveAuctionItemResponseMessage`.
+   */
+  retrieveBazaarItem(terminalId: NetworkId, itemId: NetworkId): void;
+
+  /**
+   * Cancel one of your own live listings. Fire-and-forget — sends
+   * `CancelLiveAuctionMessage`. The server replies asynchronously with
+   * `CancelLiveAuctionResponseMessage`.
+   */
+  cancelMyListing(auctionId: NetworkId): void;
 }
 
 interface InternalContext extends ScriptContext {
@@ -1011,13 +1177,10 @@ interface InternalContext extends ScriptContext {
      * so the client can correlate request → reply. Wraps to u8 on the wire.
      */
     missionSequence: number;
-    /**
-     * Currently-mounted creature speed cap (m/s). `null` ⇒ on foot;
-     * positive number ⇒ movement primitives clamp to this. Set by
-     * `mount()`; cleared by `dismount()`. Also exposed read/write via
-     * `ctx.mountedSpeedCap()` / `ctx.setMountedSpeedCap()`.
-     */
+    /** Currently-mounted creature speed cap (m/s). `null` ⇒ on foot. */
     mountedSpeedCap: number | null;
+    /** Per-player bazaar-browse request id. */
+    bazaarRequestId: number;
     assertionFailures: string[];
   };
 }
@@ -1036,6 +1199,8 @@ export interface CreateScriptContextOptions {
   initialCraftSequence?: number;
   /** Initial sequence number for mission-flow messages. Default 1. */
   initialMissionSequence?: number;
+  /** Initial bazaar browse request id. Default 1. */
+  initialBazaarRequestId?: number;
 }
 
 export function createScriptContext(opts: CreateScriptContextOptions): ScriptContext {
@@ -1065,6 +1230,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     craftSequence: opts.initialCraftSequence ?? 1,
     missionSequence: opts.initialMissionSequence ?? 1,
     mountedSpeedCap: null as number | null,
+    bazaarRequestId: opts.initialBazaarRequestId ?? 1,
     assertionFailures: [] as string[],
   };
 
@@ -1959,6 +2125,133 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
       }
 
       return { completed: true };
+    },
+
+    // --- Commodities / bazaar / auction-house primitives ---
+
+    async browseBazaar(
+      terminalId: NetworkId,
+      browseOpts?: BrowseBazaarOptions,
+    ): Promise<AuctionListing[]> {
+      const requestId = browseOpts?.requestId ?? state.bazaarRequestId++;
+      const timeoutMs = browseOpts?.timeoutMs ?? 8_000;
+
+      const responsePromise = opts.dispatcher.waitFor(AuctionQueryHeadersResponseMessage, {
+        timeoutMs,
+        predicate: (m) => m.requestId === requestId,
+      });
+
+      const msg = new AuctionQueryHeadersMessage({
+        locationSearchType: browseOpts?.locationSearchType ?? AuctionLocationSearch.Galaxy,
+        requestId,
+        searchType: browseOpts?.searchType ?? AuctionSearchType.ByAll,
+        itemType: browseOpts?.category ?? 0,
+        itemTypeExactMatch: browseOpts?.itemTypeExactMatch ?? false,
+        itemTemplateId: browseOpts?.itemTemplateId ?? 0,
+        textFilterAll: browseOpts?.textFilterAll ?? '',
+        textFilterAny: browseOpts?.textFilterAny ?? '',
+        priceFilterMin: browseOpts?.minPrice ?? 0,
+        priceFilterMax: browseOpts?.maxPrice ?? 0,
+        priceFilterIncludesFee: browseOpts?.priceFilterIncludesFee ?? false,
+        advancedSearch: browseOpts?.advancedSearch ?? [],
+        advancedSearchMatchAllAny:
+          browseOpts?.advancedSearchMatchAllAny ?? AdvancedSearchMatchAllAny.match_all,
+        container: terminalId,
+        myVendorsOnly: browseOpts?.myVendorsOnly ?? false,
+        queryOffset: browseOpts?.queryOffset ?? 0,
+      });
+      ctx.send(msg);
+
+      const response = await responsePromise;
+      return [...response.listings];
+    },
+
+    async getAuctionDetails(
+      auctionId: NetworkId,
+      detailsOpts?: { timeoutMs?: number },
+    ): Promise<AuctionDetails> {
+      const timeoutMs = detailsOpts?.timeoutMs ?? 8_000;
+      const responsePromise = opts.dispatcher.waitFor(GetAuctionDetailsResponse, {
+        timeoutMs,
+        predicate: (m) => m.details.itemId === auctionId,
+      });
+      ctx.send(new GetAuctionDetails(auctionId));
+      const response = await responsePromise;
+      return {
+        itemId: response.details.itemId,
+        userDescription: response.details.userDescription,
+        propertyList: response.details.propertyList,
+        templateName: response.details.templateName,
+        appearanceString: response.details.appearanceString,
+      };
+    },
+
+    bidOn(auctionId: NetworkId, credits: number, maxProxy?: number): void {
+      ctx.send(new BidAuctionMessage(auctionId, credits, maxProxy ?? credits));
+    },
+
+    async listForSale(
+      terminalId: NetworkId,
+      itemId: NetworkId,
+      listOpts: ListForSaleOptions,
+    ): Promise<ListForSaleResult> {
+      const timeoutMs = listOpts.timeoutMs ?? 8_000;
+      const durationSeconds = (listOpts.durationHours ?? 24) * 3600;
+      const description = listOpts.description ?? '';
+      const localizedName = listOpts.localizedName ?? '';
+      const premium = listOpts.premium ?? false;
+
+      const responsePromise = opts.dispatcher.waitFor(CreateAuctionResponseMessage, {
+        timeoutMs,
+        predicate: (m) => m.itemId === itemId,
+      });
+
+      if (listOpts.instantSale === true) {
+        ctx.send(
+          new CreateImmediateAuctionMessage(
+            itemId,
+            localizedName,
+            terminalId,
+            listOpts.price,
+            durationSeconds,
+            description,
+            premium,
+            listOpts.vendorTransfer ?? false,
+          ),
+        );
+      } else {
+        ctx.send(
+          new CreateAuctionMessage(
+            itemId,
+            localizedName,
+            terminalId,
+            listOpts.price,
+            durationSeconds,
+            description,
+            premium,
+          ),
+        );
+      }
+
+      const response = await responsePromise;
+      const success = response.result === AuctionResult.OK;
+      const result: ListForSaleResult = {
+        success,
+        resultCode: response.result,
+      };
+      if (success) result.auctionId = response.itemId;
+      if (response.itemRestrictedRejectionMessage !== '') {
+        result.errorReason = response.itemRestrictedRejectionMessage;
+      }
+      return result;
+    },
+
+    retrieveBazaarItem(terminalId: NetworkId, itemId: NetworkId): void {
+      ctx.send(new RetrieveAuctionItemMessage(itemId, terminalId));
+    },
+
+    cancelMyListing(auctionId: NetworkId): void {
+      ctx.send(new CancelLiveAuctionMessage(auctionId));
     },
   };
 

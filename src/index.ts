@@ -389,3 +389,48 @@ export {
   TradeStartKind,
 } from './messages/game/obj-controller/index.js';
 export type { TradeStartData } from './messages/game/obj-controller/index.js';
+
+// =============================================================================
+// Commodities / Bazaar / Auction House (Feature 3)
+// =============================================================================
+export {
+  AcceptAuctionMessage,
+  AcceptAuctionResponseMessage,
+  AdvancedSearchMatchAllAny,
+  AuctionFlags,
+  AuctionLocationSearch,
+  AuctionQueryHeadersMessage,
+  AuctionQueryHeadersResponseMessage,
+  AuctionResult,
+  AuctionSearchType,
+  BidAuctionMessage,
+  BidAuctionResponseMessage,
+  CancelLiveAuctionMessage,
+  CancelLiveAuctionResponseMessage,
+  CreateAuctionMessage,
+  CreateAuctionResponseMessage,
+  CreateImmediateAuctionMessage,
+  GetAuctionDetails,
+  GetAuctionDetailsResponse,
+  IsVendorOwnerMessage,
+  IsVendorOwnerResponseMessage,
+  RetrieveAuctionItemMessage,
+  RetrieveAuctionItemResponseMessage,
+  SearchConditionComparison,
+  VendorOwnerResult,
+} from './messages/game/commodities/index.js';
+export type {
+  AuctionItemDetails,
+  AuctionListing,
+  AuctionQueryHeadersFields,
+  AuctionResultValue,
+  SearchCondition,
+  VendorOwnerResultValue,
+} from './messages/game/commodities/index.js';
+export type {
+  AuctionDetails,
+  BrowseBazaarOptions,
+  ListForSaleOptions,
+  ListForSaleResult,
+} from './client/script/context.js';
+export { bazaarSnipe } from './scenarios/index.js';

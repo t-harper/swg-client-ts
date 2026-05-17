@@ -474,6 +474,59 @@ describe('ScriptContext: survey primitives', () => {
     expect(list[1]?.resourceName).toBe('Yponaco');
   });
 
+  it('fetchResourceAttributes() batches getAttributesBatch and collects per-id AttributeListMessages', async () => {
+    const { ctx, sent, simulateRecv } = createFakeContext();
+    const idA = 0x10000564n;
+    const idB = 0x10000565n;
+    const promise = ctx.fetchResourceAttributes([idA, idB], { timeoutMs: 1_000 });
+
+    // One outbound CommandQueueEnqueue carrying getAttributesBatch + "<idA> -1 <idB> -1"
+    expect(sent.length).toBe(1);
+    const obj = sent[0] as ObjControllerMessage;
+    expect(obj.message).toBe(CM_COMMAND_QUEUE_ENQUEUE);
+    const cq = CommandQueueEnqueue.unpack(new ReadIterator(obj.data));
+    expect(cq.commandHash).toBe(hashCommand('getAttributesBatch'));
+    expect(cq.params).toBe(`${idA.toString()} -1 ${idB.toString()} -1`);
+
+    // Simulate the two AttributeListMessages.
+    const { AttributeListMessage } = await import('../../messages/game/attribute-list-message.js');
+    simulateRecv(new AttributeListMessage(idA, '', [
+      { key: '@obj_attr_n:res_quality', value: '987' },
+      { key: '@obj_attr_n:res_cold_resist', value: '512' },
+    ], 0));
+    simulateRecv(new AttributeListMessage(idB, '', [
+      { key: '@obj_attr_n:res_quality', value: '450' },
+    ], 0));
+
+    const result = await promise;
+    expect(result.size).toBe(2);
+    expect(result.get(idA)).toHaveLength(2);
+    expect(result.get(idB)).toHaveLength(1);
+    expect(result.get(idA)?.[0]?.key).toBe('@obj_attr_n:res_quality');
+    expect(result.get(idA)?.[0]?.value).toBe('987');
+  });
+
+  it('fetchResourceAttributes() returns partial map when some ids time out', async () => {
+    const { ctx, simulateRecv } = createFakeContext();
+    const idA = 0x100n;
+    const idB = 0x200n;
+    const promise = ctx.fetchResourceAttributes([idA, idB], { timeoutMs: 50 });
+    const { AttributeListMessage } = await import('../../messages/game/attribute-list-message.js');
+    // Only respond for A; B times out.
+    simulateRecv(new AttributeListMessage(idA, '', [{ key: 'oq', value: '900' }], 0));
+    const result = await promise;
+    expect(result.size).toBe(1);
+    expect(result.has(idA)).toBe(true);
+    expect(result.has(idB)).toBe(false);
+  });
+
+  it('fetchResourceAttributes() with empty array returns immediately without sending', async () => {
+    const { ctx, sent } = createFakeContext();
+    const result = await ctx.fetchResourceAttributes([]);
+    expect(result.size).toBe(0);
+    expect(sent.length).toBe(0);
+  });
+
   it('fetchSurveyResources() filters by surveyToolId — ignores responses for a different tool', async () => {
     const OTHER_TOOL = 0x999n;
     const { ctx, simulateRecv } = createFakeContext();

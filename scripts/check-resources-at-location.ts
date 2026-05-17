@@ -138,6 +138,8 @@ interface Args {
   walkSpeed: number;
   pretty: boolean;
   verbose: boolean;
+  /** Minimum efficiency % to fetch resource stats for. Default 30. */
+  statsThreshold: number;
 }
 
 /**
@@ -169,6 +171,7 @@ function parseArgs(argv: string[]): Args {
     walkSpeed: 8,
     pretty: true,
     verbose: false,
+    statsThreshold: 30,
   };
   for (const arg of argv) {
     if (!arg.startsWith('--')) continue;
@@ -193,6 +196,7 @@ function parseArgs(argv: string[]): Args {
       case 'classes':              a.classes = val.split(',').map((s) => s.trim()).filter(Boolean); break;
       case 'per-class-timeout-ms': a.perClassTimeoutMs = Number.parseInt(val, 10); break;
       case 'walk-speed':           a.walkSpeed = Number.parseFloat(val); break;
+      case 'stats-threshold':      a.statsThreshold = Number.parseFloat(val); break;
       case 'no-pretty':            a.pretty = false; break;
       case 'verbose':              a.verbose = val === 'true' || val === ''; break;
       default:
@@ -240,7 +244,13 @@ interface PerClassResult {
   topAt: { x: number; y: number; z: number } | null;
   status: 'ok' | 'timeout' | 'no-tool' | 'no-list';
   /** The specific spawned resource types surveyed for this class, with their best efficiency. */
-  resourceTypes?: Array<{ name: string; maxPct: number; samples: number }>;
+  resourceTypes?: Array<{
+    name: string;
+    maxPct: number;
+    samples: number;
+    /** Server-reported resource stats (OQ/CR/DR/...). Populated only when maxPct ≥ statsThreshold. */
+    stats?: Record<string, string>;
+  }>;
 }
 
 function makeScenario(args: Args, results: Map<string, PerClassResult>, target: { x: number; z: number } | null): ScenarioFn {
@@ -320,7 +330,7 @@ function makeScenario(args: Args, results: Map<string, PerClassResult>, target: 
       let classSum = 0;
       let classSamples = 0;
       let classTop: { x: number; y: number; z: number } | null = null;
-      const typeResults: Array<{ name: string; maxPct: number; samples: number }> = [];
+      const typeResults: Array<{ name: string; maxPct: number; samples: number; resourceId: NetworkId; stats?: Record<string, string> }> = [];
 
       for (const resType of resourceList) {
         ctx.survey(toolId, resType.resourceName);
@@ -342,13 +352,52 @@ function makeScenario(args: Args, results: Map<string, PerClassResult>, target: 
             name: resType.resourceName,
             maxPct: Math.round(typeMax * 10) / 10,
             samples: points.length,
+            resourceId: resType.resourceId,
           });
           log(`    ${resType.resourceName}: ${points.length} samples, max ${typeMax.toFixed(1)}%`);
         } catch (err) {
           log(`    ${resType.resourceName}: no response (${err instanceof Error ? err.message : String(err)})`);
-          typeResults.push({ name: resType.resourceName, maxPct: 0, samples: 0 });
+          typeResults.push({ name: resType.resourceName, maxPct: 0, samples: 0, resourceId: resType.resourceId });
         }
       }
+
+      // Step 3: for each resource above the stats threshold, fetch its
+      // attributes via getAttributesBatch (TaskGetAttributes routes
+      // ResourceTypeObject ids through ResourceTypeObject::getResourceAttributes
+      // — no sampling needed). Batch them all in one request.
+      const highDensity = typeResults.filter((t) => t.maxPct >= args.statsThreshold);
+      if (highDensity.length > 0) {
+        log(`  fetching stats for ${highDensity.length} resources ≥ ${args.statsThreshold}%`);
+        try {
+          const attrs = await ctx.fetchResourceAttributes(
+            highDensity.map((t) => t.resourceId),
+            { timeoutMs: 15_000 },
+          );
+          for (const t of highDensity) {
+            const pairs = attrs.get(t.resourceId);
+            if (pairs === undefined) {
+              log(`    ${t.name}: stats not received`);
+              continue;
+            }
+            const stats: Record<string, string> = {};
+            for (const p of pairs) stats[shortStatKey(p.key)] = p.value;
+            t.stats = stats;
+            log(`    ${t.name}: ${Object.entries(stats).map(([k, v]) => `${k}=${v}`).join(' ')}`);
+          }
+        } catch (err) {
+          log(`  stats fetch failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      // Strip the internal `resourceId` field from the public result —
+      // consumers don't need it (it's a transient NetworkId) but they DO
+      // need the stats.
+      const publicTypeResults = typeResults.map((t) => ({
+        name: t.name,
+        maxPct: t.maxPct,
+        samples: t.samples,
+        ...(t.stats !== undefined ? { stats: t.stats } : {}),
+      }));
 
       results.set(cls, {
         samples: classSamples,
@@ -356,10 +405,41 @@ function makeScenario(args: Args, results: Map<string, PerClassResult>, target: 
         avgPct: classSamples > 0 ? Math.round((classSum / classSamples) * 10) / 10 : 0,
         topAt: classTop,
         status: 'ok',
-        resourceTypes: typeResults,
+        resourceTypes: publicTypeResults,
       });
     }
   };
+}
+
+/**
+ * Map a raw attribute key (as it comes back in AttributeListMessage) to a
+ * short SWG-standard abbreviation (OQ, CR, DR, ...). The server can hand us
+ * keys with or without the `@obj_attr_n:` STF prefix and with or without a
+ * `res_` prefix — normalize through both. Unrecognized keys pass through.
+ */
+function shortStatKey(rawKey: string): string {
+  // Strip optional `@obj_attr_n:` STF prefix and optional `res_` prefix.
+  const tail = rawKey.replace(/^@obj_attr_n:/, '').replace(/^res_/, '');
+  const MAP: Record<string, string> = {
+    quality: 'OQ',
+    cold_resist: 'CR',
+    cold_resistance: 'CR',
+    conductivity: 'CD',
+    decay_resist: 'DR',
+    decay_resistance: 'DR',
+    entangle_resistance: 'ER',
+    flavor: 'FL',
+    heat_resist: 'HR',
+    heat_resistance: 'HR',
+    malleability: 'MA',
+    potential_energy: 'PE',
+    shock_resistance: 'SR',
+    toughness: 'UT',
+    unit_toughness: 'UT',
+    class_name: 'class',
+    parent_class_name: 'parentClass',
+  };
+  return MAP[tail] ?? tail;
 }
 
 function distance(a: { x: number; z: number }, b: { x: number; z: number }): number {

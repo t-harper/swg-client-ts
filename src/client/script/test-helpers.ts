@@ -22,6 +22,7 @@ import { ObjControllerMessage } from '../../messages/game/obj-controller-message
 import type { GameNetworkMessage } from '../../messages/interface.js';
 import type { NetworkId, SceneStart, Vector3 } from '../../types.js';
 import type { MessageDispatcher, TranscriptEvent } from '../dispatcher.js';
+import { WorldModel } from '../world-model.js';
 import { type ScriptContext, createScriptContext } from './context.js';
 
 type MessageClassRef<T extends GameNetworkMessage> = {
@@ -152,10 +153,16 @@ export function createFakeContext(opts: FakeContextOptions = {}): FakeContext {
     disableWorldSnapshot: false,
   };
 
+  const world = new WorldModel({
+    dispatcher: fakeDispatcher,
+    playerId: sceneStart.playerNetworkId,
+  });
+
   const ctx = createScriptContext({
     dispatcher: fakeDispatcher,
     sceneStart,
     signal: abortController.signal,
+    world,
   });
 
   const simulateRecv = (msg: GameNetworkMessage): void => {

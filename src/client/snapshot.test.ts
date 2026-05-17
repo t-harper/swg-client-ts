@@ -262,6 +262,7 @@ function buildResult(opts: SyntheticOptions = {}): LifecycleResult {
     stationId: 0,
     receivedErrorMessage: false,
     latency: null,
+    world: null,
   };
 }
 

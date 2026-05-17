@@ -172,6 +172,7 @@ function buildLifecycle(opts: FixtureOpts = {}): LifecycleResult {
     stationId: 0,
     receivedErrorMessage: false,
     latency: null,
+    world: null,
   };
 }
 

@@ -1,16 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import { ByteStream } from '../../../archive/byte-stream.js';
-import { writeStdString } from '../../../archive/string.js';
 import { encodeMessage, parseHeader } from '../../base.js';
 import { messageRegistry } from '../../registry.js';
-import {
-  CreoSharedNpIndices,
-  DeltasMessage,
-  decodeGroupDelta,
-  decodeGroupInviterDelta,
-} from './deltas-message.js';
-import { BaselinePackageIds, ObjectTypeTags } from './registry.js';
+import { DeltasMessage } from './deltas-message.js';
+import { BaselinePackageIds, ObjectTypeTags, stringToTag } from './registry.js';
+import type { TangibleObjectClientServerBaseline } from './tangible-object-baseline-1.js';
 
 // Side-effect import: ensure all decoders register.
 import './index.js';
@@ -22,16 +17,13 @@ describe('DeltasMessage', () => {
     expect(DeltasMessage.typeCrc).toBeGreaterThan(0);
   });
 
-  it('is registered in the global registry', () => {
-    expect(messageRegistry.getByCrc(DeltasMessage.typeCrc)).toBeDefined();
-  });
-
   it('round-trips encode → decode (empty package)', () => {
     const original = new DeltasMessage(
-      0xfeed_facen,
-      ObjectTypeTags.CREO,
-      BaselinePackageIds.SHARED_NP,
+      0x1234n,
+      ObjectTypeTags.TANO,
+      BaselinePackageIds.CLIENT_ONLY,
       new Uint8Array(0),
+      null,
     );
     const bytes = encodeMessage(original);
 
@@ -45,144 +37,175 @@ describe('DeltasMessage', () => {
     expect(decoded).toBeInstanceOf(DeltasMessage);
     if (!(decoded instanceof DeltasMessage)) throw new Error('typeguard');
 
-    expect(decoded.target).toBe(0xfeed_facen);
-    expect(decoded.typeId).toBe(ObjectTypeTags.CREO);
-    expect(decoded.typeIdString).toBe('CREO');
-    expect(decoded.packageId).toBe(BaselinePackageIds.SHARED_NP);
+    expect(decoded.target).toBe(0x1234n);
+    expect(decoded.typeId).toBe(ObjectTypeTags.TANO);
+    expect(decoded.typeIdString).toBe('TANO');
+    expect(decoded.packageId).toBe(BaselinePackageIds.CLIENT_ONLY);
     expect(decoded.packageBytes.length).toBe(0);
-    expect(decoded.dirtyCount).toBe(0);
-    expect(decoded.firstDirtyIndex).toBeNull();
+    // No decoder for (TANO, CLIENT_ONLY=0) → null
+    expect(decoded.decodedDelta).toBeNull();
   });
 
-  it('round-trips with a non-empty package and exposes dirty-list header', () => {
-    // Build a 1-item dirty list: [u16 count=1][u16 index=14][8 bytes payload]
-    const pkg = new ByteStream();
-    pkg.writeU16(1);
-    pkg.writeU16(14);
-    for (let i = 0; i < 8; i++) pkg.writeU8(0xab);
-    const pkgBytes = pkg.toBytes();
-
-    const original = new DeltasMessage(
-      0x1234_5678n,
-      ObjectTypeTags.CREO,
-      BaselinePackageIds.SHARED_NP,
-      pkgBytes,
+  it('has the exact byte layout we expect for an empty payload', () => {
+    const msg = new DeltasMessage(
+      0x42n,
+      ObjectTypeTags.TANO,
+      BaselinePackageIds.SHARED,
+      new Uint8Array(0),
+      null,
     );
-    const bytes = encodeMessage(original);
-
-    const { payload } = parseHeader(bytes);
-    const decoded = DeltasMessage.decodePayload(payload);
-    expect(decoded.target).toBe(0x1234_5678n);
-    expect(decoded.typeId).toBe(ObjectTypeTags.CREO);
-    expect(decoded.packageId).toBe(BaselinePackageIds.SHARED_NP);
-    expect(decoded.packageBytes.length).toBe(pkgBytes.length);
-    expect(decoded.dirtyCount).toBe(1);
-    expect(decoded.firstDirtyIndex).toBe(14);
+    const bytes = encodeMessage(msg);
+    // varCount = 5 → 05 00
+    // typeCrc (4 bytes)
+    // target = 0x42 i64 LE → 42 00 00 00 00 00 00 00
+    // typeId TANO serialized LE: bytes 'O','N','A','T' = 4F 4E 41 54
+    // packageId = 3 → 03
+    // packageLen = 0 → 00 00 00 00
+    // Total: 2 + 4 + 8 + 4 + 1 + 4 = 23 bytes
+    expect(bytes.length).toBe(23);
+    expect(bytes[0]).toBe(0x05);
+    expect(bytes[1]).toBe(0x00);
+    expect(bytes[6]).toBe(0x42);
+    expect(bytes[14]).toBe(0x4f);
+    expect(bytes[15]).toBe(0x4e);
+    expect(bytes[16]).toBe(0x41);
+    expect(bytes[17]).toBe(0x54);
+    expect(bytes[18]).toBe(0x03);
+    expect(bytes[19]).toBe(0x00);
+    expect(bytes[22]).toBe(0x00);
   });
 
-  it('decodes the m_groupInviter delta payload (golden bytes from a live invite)', () => {
-    // From a live capture against swg-server: invitee's CreatureObject
-    // SHARED_NP package, index 14 (m_groupInviter) delta:
-    //   01 00     dirtyCount = 1
-    //   0e 00     memberIndex = 14
-    //   f5 90 c7 22 00 00 00 00   inviterId = 0x22c790f5
-    //   08 00 54 73 4c 69 76 65 30 31    "TsLive01" (std::string)
-    //   00 00 00 00 00 00 00 00          inviterShipId = 0
-    const hex =
-      '01000e00f590c72200000000080054734c69766530310000000000000000';
-    const pkgBytes = new Uint8Array(hex.match(/../g)!.map((b) => parseInt(b, 16)));
-    expect(pkgBytes.length).toBe(30);
+  it('dispatches a TANO p1 delta (both fields changed) through the registry', () => {
+    // Build a real TANO p1 delta payload: bankBalance + cashBalance both updated.
+    // packDeltas wire: [u16 count=2][u16 idx=0][i32 bankBalance][u16 idx=1][i32 cashBalance]
+    const inner = new ByteStream();
+    inner.writeU16(2); // count
+    inner.writeU16(0); // fieldIndex 0 = bankBalance
+    inner.writeI32(99_000);
+    inner.writeU16(1); // fieldIndex 1 = cashBalance
+    inner.writeI32(150);
+
+    const packageBytes = inner.toBytes();
+    const msg = new DeltasMessage(
+      0xabcdn,
+      ObjectTypeTags.TANO,
+      BaselinePackageIds.CLIENT_SERVER,
+      packageBytes,
+      null,
+    );
+    const wire = encodeMessage(msg);
+    const { payload } = parseHeader(wire);
+    const decoded = messageRegistry
+      .getByCrc(DeltasMessage.typeCrc)
+      ?.decodePayload(payload) as DeltasMessage;
+
+    expect(decoded.target).toBe(0xabcdn);
+    expect(decoded.packageBytes).toEqual(packageBytes);
+    expect(decoded.decodedDelta).not.toBeNull();
+    expect(decoded.decodedDelta?.kind).toBe('TangibleObjectClientServerDelta');
+
+    const changes = decoded.decodedDelta?.data as Partial<TangibleObjectClientServerBaseline>;
+    expect(changes.bankBalance).toBe(99_000);
+    expect(changes.cashBalance).toBe(150);
+  });
+
+  it('decodes a sparse delta (only one field changed)', () => {
+    // Only bankBalance changed — cashBalance stays at its baseline value.
+    const inner = new ByteStream();
+    inner.writeU16(1); // count
+    inner.writeU16(0); // fieldIndex 0
+    inner.writeI32(42);
 
     const msg = new DeltasMessage(
-      0x238e0e8fn,
-      ObjectTypeTags.CREO,
-      BaselinePackageIds.SHARED_NP,
-      pkgBytes,
+      0xfeedn,
+      ObjectTypeTags.TANO,
+      BaselinePackageIds.CLIENT_SERVER,
+      inner.toBytes(),
+      null,
     );
-    expect(msg.dirtyCount).toBe(1);
-    expect(msg.firstDirtyIndex).toBe(CreoSharedNpIndices.M_GROUP_INVITER);
+    const wire = encodeMessage(msg);
+    const { payload } = parseHeader(wire);
+    const decoded = messageRegistry
+      .getByCrc(DeltasMessage.typeCrc)
+      ?.decodePayload(payload) as DeltasMessage;
 
-    const decoded = decodeGroupInviterDelta(msg);
-    expect(decoded).not.toBeNull();
-    expect(decoded?.inviterId).toBe(0x22c790f5n);
-    expect(decoded?.inviterName).toBe('TsLive01');
-    expect(decoded?.inviterShipId).toBe(0n);
+    expect(decoded.decodedDelta).not.toBeNull();
+    const changes = decoded.decodedDelta?.data as Partial<TangibleObjectClientServerBaseline>;
+    expect(changes.bankBalance).toBe(42);
+    expect(changes.cashBalance).toBeUndefined();
+    expect(Object.keys(changes).length).toBe(1);
   });
 
-  it('decodes a "clear inviter" m_groupInviter delta', () => {
-    // Server-driven clear after accept / decline / timeout:
-    //   01 00     dirtyCount = 1
-    //   0e 00     memberIndex = 14
-    //   00 00 00 00 00 00 00 00   inviterId = 0
-    //   00 00                       empty std::string
-    //   00 00 00 00 00 00 00 00   shipId = 0
-    const pkg = new ByteStream();
-    pkg.writeU16(1);
-    pkg.writeU16(14);
-    pkg.writeI64(0n);
-    writeStdString(pkg, '');
-    pkg.writeI64(0n);
-    const msg = new DeltasMessage(0x1n, ObjectTypeTags.CREO, BaselinePackageIds.SHARED_NP, pkg.toBytes());
-    const decoded = decodeGroupInviterDelta(msg);
-    expect(decoded?.inviterId).toBe(0n);
-    expect(decoded?.inviterName).toBe('');
-    expect(decoded?.inviterShipId).toBe(0n);
+  it('honors the source-exhausted-loop rule (mirrors C++ unpackDeltas)', () => {
+    // C++ reads `count` then loops while bytes remain — `count` is informational.
+    // A payload that claims count=99 but only has 1 entry's worth of bytes
+    // should decode exactly 1 entry, not throw.
+    const inner = new ByteStream();
+    inner.writeU16(99); // misleading count
+    inner.writeU16(1); // fieldIndex 1
+    inner.writeI32(7);
+
+    const msg = new DeltasMessage(
+      0n,
+      ObjectTypeTags.TANO,
+      BaselinePackageIds.CLIENT_SERVER,
+      inner.toBytes(),
+      null,
+    );
+    const wire = encodeMessage(msg);
+    const { payload } = parseHeader(wire);
+    const decoded = messageRegistry
+      .getByCrc(DeltasMessage.typeCrc)
+      ?.decodePayload(payload) as DeltasMessage;
+
+    expect(decoded.decodedDelta).not.toBeNull();
+    const changes = decoded.decodedDelta?.data as Partial<TangibleObjectClientServerBaseline>;
+    expect(changes.cashBalance).toBe(7);
+    expect(Object.keys(changes).length).toBe(1);
   });
 
-  it('decodeGroupInviterDelta returns null for the wrong shape', () => {
-    // Wrong typeId
-    const pkg = new ByteStream();
-    pkg.writeU16(1);
-    pkg.writeU16(14);
-    pkg.writeI64(0n);
-    writeStdString(pkg, '');
-    pkg.writeI64(0n);
-    const wrongType = new DeltasMessage(0x1n, ObjectTypeTags.PLAY, BaselinePackageIds.SHARED_NP, pkg.toBytes());
-    expect(decodeGroupInviterDelta(wrongType)).toBeNull();
+  it('returns null when a delta references an out-of-range field index', () => {
+    const inner = new ByteStream();
+    inner.writeU16(1); // count
+    inner.writeU16(42); // fieldIndex 42 doesn't exist in TANO p1 (only 0, 1)
+    inner.writeI32(0);
 
-    // Wrong packageId
-    const wrongPkg = new DeltasMessage(0x1n, ObjectTypeTags.CREO, BaselinePackageIds.SHARED, pkg.toBytes());
-    expect(decodeGroupInviterDelta(wrongPkg)).toBeNull();
+    const msg = new DeltasMessage(
+      0n,
+      ObjectTypeTags.TANO,
+      BaselinePackageIds.CLIENT_SERVER,
+      inner.toBytes(),
+      null,
+    );
+    const wire = encodeMessage(msg);
+    const { payload } = parseHeader(wire);
+    const decoded = messageRegistry
+      .getByCrc(DeltasMessage.typeCrc)
+      ?.decodePayload(payload) as DeltasMessage;
 
-    // Wrong dirty index
-    const wrongIdx = new ByteStream();
-    wrongIdx.writeU16(1);
-    wrongIdx.writeU16(13); // m_group, not m_groupInviter
-    wrongIdx.writeI64(0n);
-    const wrongIdxMsg = new DeltasMessage(0x1n, ObjectTypeTags.CREO, BaselinePackageIds.SHARED_NP, wrongIdx.toBytes());
-    expect(decodeGroupInviterDelta(wrongIdxMsg)).toBeNull();
+    // tryDecodeDelta swallows the thrown error and returns null;
+    // the raw bytes survive for forensic inspection.
+    expect(decoded.decodedDelta).toBeNull();
+    expect(decoded.packageBytes.length).toBeGreaterThan(0);
   });
 
-  it('decodes the m_group delta payload', () => {
-    // 01 00     dirtyCount = 1
-    // 0d 00     memberIndex = 13
-    // 78 56 34 12 00 00 00 00   groupId = 0x12345678
-    const pkg = new ByteStream();
-    pkg.writeU16(1);
-    pkg.writeU16(13);
-    pkg.writeI64(0x12345678n);
-    const msg = new DeltasMessage(0x42n, ObjectTypeTags.CREO, BaselinePackageIds.SHARED_NP, pkg.toBytes());
-    expect(msg.firstDirtyIndex).toBe(CreoSharedNpIndices.M_GROUP);
+  it('returns null for unknown (typeId, packageId) pairs', () => {
+    const stub = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+    const msg = new DeltasMessage(
+      0n,
+      stringToTag('XXXX'), // not registered
+      BaselinePackageIds.SHARED,
+      stub,
+      null,
+    );
+    const wire = encodeMessage(msg);
+    const { payload } = parseHeader(wire);
+    const decoded = messageRegistry
+      .getByCrc(DeltasMessage.typeCrc)
+      ?.decodePayload(payload) as DeltasMessage;
 
-    const decoded = decodeGroupDelta(msg);
-    expect(decoded?.groupId).toBe(0x12345678n);
-  });
-
-  it('handles a malformed (too-short) package gracefully', () => {
-    // Only the u32 length prefix says 1 byte of payload; not enough to parse the [u16 count].
-    const stream = new ByteStream();
-    stream.writeU16(5); // varCount
-    stream.writeU32(DeltasMessage.typeCrc);
-    stream.writeI64(0n); // target
-    stream.writeU32(ObjectTypeTags.CREO); // typeId
-    stream.writeU8(BaselinePackageIds.SHARED_NP); // packageId
-    stream.writeU32(1); // packageLen
-    stream.writeU8(0xff);
-
-    const { payload } = parseHeader(stream.toBytes());
-    const decoded = DeltasMessage.decodePayload(payload);
-    expect(decoded.packageBytes.length).toBe(1);
-    expect(decoded.dirtyCount).toBe(0);
-    expect(decoded.firstDirtyIndex).toBeNull();
+    expect(decoded.decodedDelta).toBeNull();
+    expect(decoded.typeIdString).toBe('XXXX');
+    expect(decoded.packageBytes).toEqual(stub);
   });
 });

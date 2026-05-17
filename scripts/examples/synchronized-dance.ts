@@ -34,9 +34,23 @@ interface ScriptArgs {
   danceSeconds: number;
   startupMs: number;
   staggerMs: number;
+  /** Optional explicit account list (overrides --count/--prefix). */
+  accounts: string[];
+  /** Optional explicit character-name list, 1:1 with --accounts. */
+  characters: string[];
 }
 
 function parseScriptArgs(extra: Map<string, string>, defaultPrefix: string): ScriptArgs {
+  const accountsRaw = extra.get('accounts') ?? '';
+  const accounts = accountsRaw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  const charsRaw = extra.get('characters') ?? '';
+  const characters = charsRaw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
   return {
     count: Number.parseInt(extra.get('count') ?? '4', 10),
     prefix: extra.get('prefix') ?? defaultPrefix,
@@ -44,6 +58,8 @@ function parseScriptArgs(extra: Map<string, string>, defaultPrefix: string): Scr
     danceSeconds: Number.parseInt(extra.get('dance-seconds') ?? '20', 10),
     startupMs: Number.parseInt(extra.get('startup-ms') ?? '6000', 10),
     staggerMs: Number.parseInt(extra.get('stagger-ms') ?? '300', 10),
+    accounts,
+    characters,
   };
 }
 
@@ -75,9 +91,14 @@ function buildConfigs(
   verbose: boolean,
 ): FleetClientConfig[] {
   const cfgs: FleetClientConfig[] = [];
-  for (let i = 0; i < args.count; i++) {
-    const account = unique15(`${args.prefix}${runTag}`, i);
-    const characterName = `Sync${runTag}${i}`;
+  const explicit = args.accounts.length > 0;
+  const n = explicit ? args.accounts.length : args.count;
+  for (let i = 0; i < n; i++) {
+    const account = explicit
+      ? (args.accounts[i] ?? unique15(`${args.prefix}${runTag}`, i))
+      : unique15(`${args.prefix}${runTag}`, i);
+    const characterName =
+      args.characters[i] !== undefined ? args.characters[i]! : `Sync${runTag}${i}`;
     cfgs.push({
       account,
       characterName,
@@ -99,6 +120,8 @@ async function main(): Promise<number> {
       '  --dance-seconds=N        seconds to hold the dance (default 20)',
       '  --startup-ms=N           ms after launch when the dance begins (default 6000)',
       '  --stagger-ms=N           launch stagger between clients (default 300)',
+      '  --accounts=A,B,C         explicit account list (overrides --count + --prefix)',
+      '  --characters=A,B,C       explicit character list (pairs 1:1 with --accounts)',
     ]);
     return 0;
   }

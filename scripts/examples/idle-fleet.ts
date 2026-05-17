@@ -22,22 +22,48 @@ interface ScriptArgs {
   prefix: string;
   staggerMs: number;
   maxConcurrent: number;
+  /** Optional explicit account list (comma-separated). When supplied,
+   * overrides the generated `${prefix}${runTag}${i}` names — useful when
+   * the test cluster only permits character creation on a pre-allowlisted
+   * set of admin accounts (e.g. `swg,swg2,swg3,swg4,swg5`). */
+  accounts: string[];
+  /** Optional explicit character-name list (comma-separated). Pairs with
+   * `accounts` 1:1. When omitted, names default to `Idle<runTag><i>`. */
+  characters: string[];
 }
 
 function parseScriptArgs(extra: Map<string, string>, defaultPrefix: string): ScriptArgs {
+  const accountsRaw = extra.get('accounts') ?? '';
+  const accounts = accountsRaw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  const charsRaw = extra.get('characters') ?? '';
+  const characters = charsRaw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
   return {
     count: Number.parseInt(extra.get('count') ?? '10', 10),
     prefix: extra.get('prefix') ?? defaultPrefix,
     staggerMs: Number.parseInt(extra.get('stagger-ms') ?? '200', 10),
     maxConcurrent: Number.parseInt(extra.get('max-concurrent') ?? '0', 10),
+    accounts,
+    characters,
   };
 }
 
 function buildConfigs(args: ScriptArgs, runTag: string, holdMs: number): FleetClientConfig[] {
   const cfgs: FleetClientConfig[] = [];
-  for (let i = 0; i < args.count; i++) {
-    const account = unique15(`${args.prefix}${runTag}`, i);
-    const characterName = `Idle${runTag}${i}`;
+  // When --accounts is set, use exactly that list (ignoring --count).
+  const explicit = args.accounts.length > 0;
+  const n = explicit ? args.accounts.length : args.count;
+  for (let i = 0; i < n; i++) {
+    const account = explicit
+      ? (args.accounts[i] ?? unique15(`${args.prefix}${runTag}`, i))
+      : unique15(`${args.prefix}${runTag}`, i);
+    const characterName =
+      args.characters[i] !== undefined ? args.characters[i]! : `Idle${runTag}${i}`;
     cfgs.push({
       account,
       characterName,
@@ -56,6 +82,8 @@ async function main(): Promise<number> {
       '  --prefix=STR             account prefix (default "idle")',
       '  --stagger-ms=N           launch stagger between clients (default 200)',
       '  --max-concurrent=N       cap on parallel clients (default = count)',
+      '  --accounts=A,B,C         explicit account list (overrides --count + --prefix)',
+      '  --characters=A,B,C       explicit character list (pairs 1:1 with --accounts)',
     ]);
     return 0;
   }

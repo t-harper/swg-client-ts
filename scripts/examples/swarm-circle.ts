@@ -29,15 +29,31 @@ interface ScriptArgs {
   radius: number;
   loopSeconds: number;
   staggerMs: number;
+  /** Optional explicit account list (overrides --count/--prefix). */
+  accounts: string[];
+  /** Optional explicit character-name list, 1:1 with --accounts. */
+  characters: string[];
 }
 
 function parseScriptArgs(extra: Map<string, string>, defaultPrefix: string): ScriptArgs {
+  const accountsRaw = extra.get('accounts') ?? '';
+  const accounts = accountsRaw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  const charsRaw = extra.get('characters') ?? '';
+  const characters = charsRaw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
   return {
     count: Number.parseInt(extra.get('count') ?? '6', 10),
     prefix: extra.get('prefix') ?? defaultPrefix,
     radius: Number.parseFloat(extra.get('radius') ?? '10'),
     loopSeconds: Number.parseFloat(extra.get('loop-seconds') ?? '15'),
     staggerMs: Number.parseInt(extra.get('stagger-ms') ?? '250', 10),
+    accounts,
+    characters,
   };
 }
 
@@ -82,9 +98,14 @@ function buildConfigs(
   verbose: boolean,
 ): FleetClientConfig[] {
   const cfgs: FleetClientConfig[] = [];
-  for (let i = 0; i < args.count; i++) {
-    const account = unique15(`${args.prefix}${runTag}`, i);
-    const characterName = `Swrm${runTag}${i}`;
+  const explicit = args.accounts.length > 0;
+  const n = explicit ? args.accounts.length : args.count;
+  for (let i = 0; i < n; i++) {
+    const account = explicit
+      ? (args.accounts[i] ?? unique15(`${args.prefix}${runTag}`, i))
+      : unique15(`${args.prefix}${runTag}`, i);
+    const characterName =
+      args.characters[i] !== undefined ? args.characters[i]! : `Swrm${runTag}${i}`;
     cfgs.push({
       account,
       characterName,
@@ -105,6 +126,8 @@ async function main(): Promise<number> {
       '  --radius=N               circle radius in m (default 10)',
       '  --loop-seconds=N         seconds per revolution (default 15)',
       '  --stagger-ms=N           launch stagger between clients (default 250)',
+      '  --accounts=A,B,C         explicit account list (overrides --count + --prefix)',
+      '  --characters=A,B,C       explicit character list (pairs 1:1 with --accounts)',
     ]);
     return 0;
   }

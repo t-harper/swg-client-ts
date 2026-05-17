@@ -34,6 +34,10 @@ interface Args {
   radius: number;
   staggerMs: number;
   verbose: boolean;
+  /** Optional explicit account list (overrides --count/--prefix). */
+  accounts: string[];
+  /** Optional explicit character-name list (1:1 with --accounts). */
+  characters: string[];
 }
 
 function parseArgs(argv: string[]): Args {
@@ -46,6 +50,8 @@ function parseArgs(argv: string[]): Args {
     radius: 8,
     staggerMs: 200,
     verbose: false,
+    accounts: [],
+    characters: [],
   };
   for (const arg of argv) {
     if (!arg.startsWith('--')) continue;
@@ -61,6 +67,12 @@ function parseArgs(argv: string[]): Args {
       case 'radius':     a.radius = Number.parseFloat(val); break;
       case 'stagger-ms': a.staggerMs = Number.parseInt(val, 10); break;
       case 'verbose':    a.verbose = val === 'true' || val === ''; break;
+      case 'accounts':
+        a.accounts = val.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+        break;
+      case 'characters':
+        a.characters = val.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+        break;
       default:
         process.stderr.write(`Unknown flag: --${key}\n`);
         process.exit(2);
@@ -129,9 +141,11 @@ function makeDanceScenario(opts: {
 
 function buildConfigs(args: Args, runTag: string): FleetClientConfig[] {
   const cfgs: FleetClientConfig[] = [];
-  for (let i = 0; i < args.count; i++) {
+  const explicit = args.accounts.length > 0;
+  const n = explicit ? args.accounts.length : args.count;
+  for (let i = 0; i < n; i++) {
     // Position on a circle around the spawn.
-    const angle = (i / args.count) * 2 * Math.PI;
+    const angle = (i / n) * 2 * Math.PI;
     const position = {
       x: args.radius * Math.sin(angle),
       z: args.radius * Math.cos(angle),
@@ -139,8 +153,11 @@ function buildConfigs(args: Args, runTag: string): FleetClientConfig[] {
     const performance = DANCE_STYLES[i % DANCE_STYLES.length] ?? 'basic';
 
     // Account name caps at 15 chars. ${prefix}${runTag}${i} should fit.
-    const account = `${args.prefix}${runTag}${i}`.slice(0, 15);
-    const characterName = `Dancer${runTag}${i}`;
+    const account = explicit
+      ? (args.accounts[i] ?? `${args.prefix}${runTag}${i}`.slice(0, 15))
+      : `${args.prefix}${runTag}${i}`.slice(0, 15);
+    const characterName =
+      args.characters[i] !== undefined ? args.characters[i]! : `Dancer${runTag}${i}`;
 
     cfgs.push({
       account,

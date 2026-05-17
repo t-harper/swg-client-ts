@@ -35,9 +35,23 @@ interface ScriptArgs {
   staggerMs: number;
   legsTotal: number;
   speed: number;
+  /** Optional explicit account list (overrides --count/--prefix). */
+  accounts: string[];
+  /** Optional explicit character-name list, 1:1 with --accounts. */
+  characters: string[];
 }
 
 function parseScriptArgs(extra: Map<string, string>, defaultPrefix: string): ScriptArgs {
+  const accountsRaw = extra.get('accounts') ?? '';
+  const accounts = accountsRaw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  const charsRaw = extra.get('characters') ?? '';
+  const characters = charsRaw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
   return {
     count: Number.parseInt(extra.get('count') ?? '4', 10),
     prefix: extra.get('prefix') ?? defaultPrefix,
@@ -47,6 +61,8 @@ function parseScriptArgs(extra: Map<string, string>, defaultPrefix: string): Scr
     staggerMs: Number.parseInt(extra.get('stagger-ms') ?? '500', 10),
     legsTotal: Number.parseInt(extra.get('legs') ?? '20', 10),
     speed: Number.parseFloat(extra.get('speed') ?? '5'),
+    accounts,
+    characters,
   };
 }
 
@@ -123,9 +139,14 @@ function buildConfigs(
   verbose: boolean,
 ): FleetClientConfig[] {
   const cfgs: FleetClientConfig[] = [];
-  for (let i = 0; i < args.count; i++) {
-    const account = unique15(`${args.prefix}${runTag}`, i);
-    const characterName = `Parade${runTag}${i}`;
+  const explicit = args.accounts.length > 0;
+  const n = explicit ? args.accounts.length : args.count;
+  for (let i = 0; i < n; i++) {
+    const account = explicit
+      ? (args.accounts[i] ?? unique15(`${args.prefix}${runTag}`, i))
+      : unique15(`${args.prefix}${runTag}`, i);
+    const characterName =
+      args.characters[i] !== undefined ? args.characters[i]! : `Parade${runTag}${i}`;
     cfgs.push({
       account,
       characterName,
@@ -152,6 +173,8 @@ async function main(): Promise<number> {
       '  --stagger-ms=N           per-follower startup lag in ms (default 500)',
       '  --legs=N                 total legs (default 20)',
       '  --speed=N                walk speed (default 5)',
+      '  --accounts=A,B,C         explicit account list (overrides --count + --prefix)',
+      '  --characters=A,B,C       explicit character list (pairs 1:1 with --accounts)',
     ]);
     return 0;
   }

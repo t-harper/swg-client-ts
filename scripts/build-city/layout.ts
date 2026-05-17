@@ -111,6 +111,18 @@ export interface CharacterSlot {
    * walks to enter the building before declareresidence. Hard-coded per template.
    */
   entryOffset?: { x: number; z: number };
+  /**
+   * For residents only (in fullLayout): the character name of the guildExtra
+   * who will later declare residence in this resident's house. The resident's
+   * scenario uses this at the end of Phase 3 to permission-add the guildExtra
+   * to its ENTRY+ADMIN list, so the guildExtra's Phase-4 declareresidence
+   * call doesn't bounce off the house's no-permission gate.
+   *
+   * Inverse mapping of `residenceOf` (which lives on the guildExtra slot
+   * pointing back to the resident). MVP layouts omit this — there are no
+   * guildExtra characters in MVP mode.
+   */
+  pairedGuildCharacter?: string;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -243,6 +255,9 @@ export function fullLayout(): CharacterSlot[] {
     const angle = (360 / 15) * i; // 24° spacing
     const pos = polar(angle, 400);
     const tmpl = houseTemplates[i]!;
+    // The first 7 residents host Guild02..Guild08 (i + 2 = 2..8). Inverse
+    // mapping of `residenceOf` on the guildExtra slots below.
+    const paired = i < 7 ? `Guild${pad2(i + 2)}` : undefined;
     slots.push({
       role: 'resident',
       account: `tscity${pad2(i + 8)}`, // tscity08..tscity22
@@ -252,6 +267,7 @@ export function fullLayout(): CharacterSlot[] {
       z: pos.z,
       rotation: facingCenter(angle),
       entryOffset: { x: 0, z: -5 },
+      ...(paired !== undefined ? { pairedGuildCharacter: paired } : {}),
     });
   }
 

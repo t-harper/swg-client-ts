@@ -13,6 +13,7 @@
 import type { ScenarioFn, ScriptContext } from '../../src/client/script/context.js';
 import type { NetworkId } from '../../src/types.js';
 import { adminGiveMoney, adminGodModeOn, adminPlanetWarp } from './admin.js';
+import { adminStructurePermissionAdd } from './admin-permissions.js';
 import type { CharacterSlot, DecorationSlot } from './layout.js';
 import { CITY_CENTER, CITY_NAME, CITY_PLANET, distance } from './layout.js';
 import { classifyDeedKind, declareResidence, placeDeed, walkInAndDeclareResidence } from './place.js';
@@ -214,16 +215,33 @@ export interface ResidentScenarioInputs {
   slot: CharacterSlot;
   /** Called after a successful house placement, with the persisted record. */
   onStructurePlaced?: StructurePlacedCallback;
+  /**
+   * NetworkId of the resident's structure, if a prior run already populated
+   * it on `state.structures[ownerAccount]`. When set, the post-declareresidence
+   * permission-grant uses `adminStructurePermissionAdd` for an idempotent add
+   * (queries the current list, only fires the toggle if the paired guild is
+   * absent). When unset, the grant falls back to `placeResult.structureOid`
+   * (this-run's freshly-placed building) and finally to a blind
+   * `permissionListModify` fire that relies on the player being physically
+   * inside the building (the server's `OnPermissionListModify` script
+   * resolves the target building via `getStructure(self)`, not the
+   * command's `target` arg).
+   */
+  structureOid?: NetworkId;
 }
 
 /**
  * Resident scenario — Phase 3.
+ *
  * 1. bootstrap
  * 2. walk to assigned slot
  * 3. spawn house deed
  * 4. placeStructure
  * 5. walk through door (entry offset)
  * 6. declareresidence
+ * 7. (fullLayout only) if `slot.pairedGuildCharacter` is set, grant the paired
+ *    guildExtra ENTRY+ADMIN permission on this house — otherwise Phase 4's
+ *    guildExtra declareresidence bounces off the server's no-permission gate.
  */
 export function residentScenario(inputs: ResidentScenarioInputs): ScenarioFn {
   const slot = inputs.slot;
@@ -231,6 +249,7 @@ export function residentScenario(inputs: ResidentScenarioInputs): ScenarioFn {
     throw new Error(`residentScenario: slot for ${slot.characterName} has no deedTemplate`);
   }
   const deedTemplate = slot.deedTemplate;
+  const pairedGuild = slot.pairedGuildCharacter;
 
   return async (ctx) => {
     await bootstrap(ctx);
@@ -264,6 +283,7 @@ export function residentScenario(inputs: ResidentScenarioInputs): ScenarioFn {
       ctx.fail(
         `resident ${slot.characterName}: declareresidence didn't confirm via chat (citizen count may still increase)`,
       );
+      // Don't bail — try the permission grant anyway since the building exists.
     }
 
     // Persist the placement (with isResidence=true only if declareresidence
@@ -280,7 +300,80 @@ export function residentScenario(inputs: ResidentScenarioInputs): ScenarioFn {
         isResidence: declared,
       }),
     );
+
+    // Phase 4 guildExtra prep — grant the paired guildExtra ENTRY+ADMIN on
+    // our just-placed house. Player is still inside the cell from the walk
+    // above, so the server's OnPermissionListModify script resolves the
+    // structure via `getStructure(self)` and the permission grant lands on
+    // this house even when we don't have its NetworkId yet.
+    if (pairedGuild !== undefined) {
+      // Prefer this-run's fresh OID from placeResult; fall back to caller-
+      // supplied (from state.json), then to undefined → blind fire path.
+      const oidToUse = placeResult.structureOid ?? inputs.structureOid;
+      await grantPairedGuildPermissions(ctx, slot, pairedGuild, oidToUse ?? undefined);
+    }
   };
+}
+
+/**
+ * Grant the resident's paired guildExtra ENTRY+ADMIN permission on the
+ * resident's just-placed house.
+ *
+ * Two paths depending on whether the structure OID is known:
+ *   - OID known (Feat #5 populated it via placeDeed): use
+ *     `adminStructurePermissionAdd` — queries the list first, only fires
+ *     the toggle if the paired guild isn't already on the list. Idempotent
+ *     across re-runs.
+ *   - OID unknown: fall back to firing the `permissionListModify`
+ *     command-queue command blindly. The server's command handler ignores
+ *     the `target` arg; the script trigger uses `getStructure(self)` to
+ *     resolve the building from the actor's current cell. As long as the
+ *     resident is inside their just-placed house (they are — declareresidence
+ *     walked them in), the grant lands on the right structure.
+ *
+ * Failures here are non-fatal — log via `ctx.fail()` (soft) so Phase 3 can
+ * still complete and Phase 4 sees the attempt was made.
+ */
+async function grantPairedGuildPermissions(
+  ctx: ScriptContext,
+  slot: CharacterSlot,
+  pairedGuild: string,
+  structureOid: NetworkId | undefined,
+): Promise<void> {
+  if (structureOid === undefined) {
+    // Punt path — structureOid not populated. Fall back to a blind useAbility
+    // fire that relies on the player being inside the building (the server-
+    // side script resolves the structure via getStructure(self)).
+    process.stderr.write(
+      `[residentScenario] ${slot.characterName}: structureOid not populated — ` +
+        'falling back to blind permissionListModify (script resolves structure ' +
+        "via player's current cell)\n",
+    );
+    ctx.useAbility(
+      'permissionListModify',
+      ctx.sceneStart.playerNetworkId,
+      `${pairedGuild} ENTRY add`,
+    );
+    await ctx.wait(250);
+    ctx.useAbility(
+      'permissionListModify',
+      ctx.sceneStart.playerNetworkId,
+      `${pairedGuild} ADMIN add`,
+    );
+    await ctx.wait(250);
+    return;
+  }
+
+  // Happy path — structureOid known. Use the idempotent helper.
+  try {
+    await adminStructurePermissionAdd(ctx, structureOid, 'entry', pairedGuild);
+    await adminStructurePermissionAdd(ctx, structureOid, 'admin', pairedGuild);
+  } catch (err) {
+    ctx.fail(
+      `resident ${slot.characterName}: failed to grant ${pairedGuild} permission: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────────────

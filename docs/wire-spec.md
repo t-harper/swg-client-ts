@@ -193,11 +193,34 @@ First fragment:    [00 0D][seq BE u16][totalLength BE u32][chunk bytes]
 Subsequent:        [00 0D][seq BE u16][chunk bytes]
 ```
 
+Every fragment on channel 0 uses the same `Fragment1` opcode (`0x0D`); the
+opcode does NOT change per-fragment. Each fragment is its own reliable
+packet that gets its own monotonically-increasing seq from
+`OutgoingSequence` and is independently encrypted + CRCd
+(UdpLibrary.cpp:3347-3351 builds the packet, then `PhysicalSend` line 2455
+applies the encryption pipeline). Fragmentation thus happens BEFORE
+encryption — the payload-data-per-fragment is sized so that the cooked
+datagram (with worst-case zlib expansion) still fits in `maxRawPacketSize`.
+
+`mMaxDataBytes` cap per-packet (UdpLibrary.cpp:2938):
+```
+maxDataBytes = maxRawPacketSize - 4 (reliable hdr) - crcBytes - encryptExpansionBytes
+```
+For SWG defaults (`maxRawPacketSize=496`, `crcBytes=2`, UserSupplied+Xor
+expansion=1) this is 489 bytes. The first fragment's data block is
+`maxDataBytes - 4` actual payload bytes (the 4-byte totalLength header eats
+the rest); subsequent fragments carry up to `maxDataBytes` payload bytes
+each.
+
 The receiver allocates a buffer of `totalLength` bytes, accumulates chunks
 in seq order, and delivers a single app payload once `totalLength` bytes
 have been received.
 
-Reference: `UdpLibrary.cpp:1697-1719`. Our impl: `src/soe/fragment.ts`.
+Reference: `UdpLibrary.cpp:1697-1719` (receive), `3173-3220` + `3347-3351`
+(send). Our impl: `src/soe/fragment.ts` (`FragmentBuffer` for receive,
+`buildFragmentPackets` for send). Wired into `SoeConnection.sendApp` —
+small sends take the single-packet fast path, anything bigger than
+`maxDataBytes` is auto-split.
 
 ### 1.8 Group (opcode 25)
 

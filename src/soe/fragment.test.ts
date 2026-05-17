@@ -113,4 +113,106 @@ describe('buildFragmentPackets', () => {
   it('throws on too-small chunkSize', () => {
     expect(() => buildFragmentPackets(0, new Uint8Array(10), () => 0, 4)).toThrow();
   });
+
+  it('splits a 2KB payload across 5 packets at chunkSize=489 (SWG default)', () => {
+    // 2048 bytes with chunkSize=489 → first carries (489-4)=485 + then 489+489+489+ = 1947 covered after 4 packets;
+    // 4th pkt overflows actually: 485 + 489 + 489 + 489 = 1952, +96 = 2048 → 5 packets total.
+    const payload = new Uint8Array(2048);
+    for (let i = 0; i < payload.length; i++) payload[i] = (i * 13 + 7) & 0xff;
+
+    let seq = 100;
+    const packets = buildFragmentPackets(0, payload, () => seq++, 489);
+    expect(packets.length).toBe(5);
+
+    // First packet: [00 0d][seq=100 BE][totalLen=2048 BE u32][485 data bytes]
+    const p0 = packets[0] ?? new Uint8Array();
+    expect(p0.length).toBe(4 + 4 + 485);
+    expect(p0[0]).toBe(0x00);
+    expect(p0[1]).toBe(0x0d);
+    expect(p0[2]).toBe(0x00);
+    expect(p0[3]).toBe(100);
+    expect(p0[4]).toBe(0x00);
+    expect(p0[5]).toBe(0x00);
+    expect(p0[6]).toBe(0x08);
+    expect(p0[7]).toBe(0x00);
+
+    // Subsequent packets all start [00 0d][seq][...] — no totalLen
+    for (let i = 1; i < packets.length; i++) {
+      const p = packets[i] ?? new Uint8Array();
+      expect(p[0]).toBe(0x00);
+      expect(p[1]).toBe(0x0d);
+    }
+
+    // Reassemble via FragmentBuffer and check we get the original payload
+    const buf = new FragmentBuffer();
+    let assembled: Uint8Array | null = null;
+    for (const p of packets) {
+      const parsed = parseReliablePacket(p);
+      const r = buf.addChunk(parsed.payload);
+      if (r !== null) assembled = r;
+    }
+    expect(assembled).toEqual(payload);
+  });
+
+  it('allocates strictly chained sequence numbers from the supplied allocator', () => {
+    const payload = new Uint8Array(1500);
+    let next = 42;
+    const seqs: number[] = [];
+    const packets = buildFragmentPackets(
+      0,
+      payload,
+      () => {
+        const s = next++;
+        seqs.push(s);
+        return s;
+      },
+      100,
+    );
+    // 1500 bytes / chunkSize=100 → first carries 96, then 100 each → ceil((1500-96)/100)=15 → 16 packets total
+    expect(packets.length).toBe(16);
+    expect(seqs).toEqual([42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57]);
+
+    // Verify each packet carries its own seq in [2..3] BE
+    for (let i = 0; i < packets.length; i++) {
+      const p = packets[i] ?? new Uint8Array();
+      const wireSeq = ((p[2] ?? 0) << 8) | (p[3] ?? 0);
+      expect(wireSeq).toBe(seqs[i] ?? -1);
+    }
+  });
+
+  it('the concatenation of all fragment data chunks equals the input', () => {
+    const payload = new Uint8Array(789);
+    for (let i = 0; i < payload.length; i++) payload[i] = i & 0xff;
+
+    const packets = buildFragmentPackets(
+      0,
+      payload,
+      (() => {
+        let s = 0;
+        return () => s++;
+      })(),
+      80,
+    );
+
+    // First packet's data starts at offset 8 (after [00 0d][seq][totalLen])
+    // Subsequent packets' data starts at offset 4
+    const chunks: number[] = [];
+    let firstSeen = false;
+    for (const p of packets) {
+      if (!firstSeen) {
+        for (let i = 8; i < p.length; i++) {
+          const b = p[i];
+          if (b !== undefined) chunks.push(b);
+        }
+        firstSeen = true;
+      } else {
+        for (let i = 4; i < p.length; i++) {
+          const b = p[i];
+          if (b !== undefined) chunks.push(b);
+        }
+      }
+    }
+    expect(chunks.length).toBe(payload.length);
+    for (let i = 0; i < payload.length; i++) expect(chunks[i]).toBe(payload[i]);
+  });
 });

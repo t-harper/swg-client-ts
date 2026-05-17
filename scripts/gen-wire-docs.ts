@@ -280,10 +280,25 @@ function main(): void {
   writeFileSync(OUT_FILE, out, 'utf8');
   process.stderr.write(`Wrote ${relPath(OUT_FILE)}\n`);
 
+  // ScriptContext is parsed once and fed to three doc renderers — the slim
+  // quickref landing page, the full views reference, and the full actions
+  // reference. The portal nav lists views + actions as top-level sections.
+  const members = parseScriptContextMembers();
+
   const quickref = renderScriptContextQuickref();
   const quickrefPath = join(REPO_ROOT, 'docs', 'scripting-quickref.md');
   writeFileSync(quickrefPath, quickref, 'utf8');
   process.stderr.write(`Wrote ${relPath(quickrefPath)}\n`);
+
+  const views = renderViewsReference(members);
+  const viewsPath = join(REPO_ROOT, 'docs', 'views-reference.md');
+  writeFileSync(viewsPath, views, 'utf8');
+  process.stderr.write(`Wrote ${relPath(viewsPath)}\n`);
+
+  const actions = renderActionsReference(members);
+  const actionsPath = join(REPO_ROOT, 'docs', 'actions-reference.md');
+  writeFileSync(actionsPath, actions, 'utf8');
+  process.stderr.write(`Wrote ${relPath(actionsPath)}\n`);
 
   const cookbook = renderScenariosCookbook();
   const cookbookPath = join(REPO_ROOT, 'docs', 'scripting-cookbook.md');
@@ -455,27 +470,112 @@ function extractInterfaceMembers(body: string): ParsedMember[] {
   return members;
 }
 
-function renderScriptContextQuickref(): string {
-  const members = parseScriptContextMembers();
-  // Group by category for the section headers.
-  const buckets = new Map<string, ParsedMember[]>();
-  for (const m of members) {
-    const bucket = buckets.get(m.category) ?? [];
-    bucket.push(m);
-    buckets.set(m.category, bucket);
-  }
-  const categoryOrder = Array.from(buckets.keys());
+/**
+ * Pull the member name out of a parsed interface signature.
+ *
+ *   `readonly world: WorldModel`         → `world`
+ *   `walkTo(target: { ... }, ...)`       → `walkTo`
+ *   `survey: SurveyCallable`             → `survey`
+ *   `expectWithin<T extends ...>(...)`   → `expectWithin`
+ *
+ * Returns the empty string if the signature can't be parsed (should never
+ * happen for a valid ScriptContext member).
+ */
+function memberName(sig: string): string {
+  const stripped = sig.replace(/^readonly\s+/, '');
+  const m = stripped.match(/^([A-Za-z_$][\w$]*)/);
+  return m?.[1] ?? '';
+}
 
+/**
+ * True if a member is a "sugar query" — a `findNearest` / `nearestHostile`
+ * / `findInContainer` / `playersInRange` style method that scripts treat as
+ * read-only world inspection (no wire send). These belong in the views
+ * reference even though they're declared as methods on the interface.
+ */
+function isWorldSugarQuery(name: string): boolean {
+  return (
+    name === 'findNearest' ||
+    name === 'nearestHostile' ||
+    name === 'findInContainer' ||
+    name === 'playersInRange' ||
+    name === 'position' ||
+    name === 'yaw' ||
+    name === 'cellPosition' ||
+    name === 'parentCell' ||
+    name === 'mountedSpeedCap'
+  );
+}
+
+/**
+ * Members that scripts treat as escape hatches / raw infra rather than
+ * always-on views. They show up at the bottom of the quickref + views page
+ * with a one-liner explaining the role.
+ */
+function isEscapeHatchField(name: string): boolean {
+  return name === 'dispatcher' || name === 'sceneStart' || name === 'signal';
+}
+
+interface MemberSplit {
+  views: ParsedMember[];
+  actions: ParsedMember[];
+  escapeHatches: ParsedMember[];
+}
+
+/**
+ * Split parsed ScriptContext members into views (field-style + the few
+ * read-only sugar methods), actions (everything that issues wire traffic
+ * or mutates state), and escape hatches (`dispatcher`, `sceneStart`,
+ * `signal`).
+ *
+ * The split is intentionally pragmatic — methods like `findNearest` are
+ * declared with parens but behave like view sugar, so they go in views.
+ * Methods that issue wire traffic always go in actions.
+ */
+function splitMembers(members: ParsedMember[]): MemberSplit {
+  const views: ParsedMember[] = [];
+  const actions: ParsedMember[] = [];
+  const escapeHatches: ParsedMember[] = [];
+  for (const m of members) {
+    const name = memberName(m.signature);
+    if (isEscapeHatchField(name)) {
+      escapeHatches.push(m);
+      continue;
+    }
+    if (m.isField || isWorldSugarQuery(name)) {
+      views.push(m);
+      continue;
+    }
+    actions.push(m);
+  }
+  return { views, actions, escapeHatches };
+}
+
+/**
+ * Render a member's JSDoc block as a markdown paragraph. Preserves blank-
+ * line paragraph breaks; collapses runs of intra-paragraph whitespace.
+ * Returns `_(no description)_` for undocumented members so the table still
+ * has a description cell.
+ */
+function memberDocBlock(doc: string): string {
+  if (doc === '') return '_(no description)_';
+  // The `cleanBlockComment` pass already joined lines with single spaces.
+  // Reflow the doc into ~80-char wrapped paragraphs split on `   - ` bullets
+  // since the source JSDoc inlines bullet lists with leading whitespace.
+  //
+  // For the markdown rendering we keep it simple: just return the cleaned
+  // single-paragraph text. The typed API site cross-link below the member
+  // table carries the full multi-paragraph doc for anyone who needs it.
+  return doc;
+}
+
+function renderScriptContextQuickref(): string {
   const lines: string[] = [];
   lines.push('---');
   lines.push('title: Scripting quickref');
   lines.push('---');
   lines.push('');
-  lines.push('# `ScriptContext` quickref');
-  lines.push('');
-  lines.push(
-    'Auto-generated from the `ScriptContext` interface in `src/client/script/context.ts`. Every method, sugar query, and always-on view a script can call during the zoned-in dwell. For the typed API (parameters, return types, `@example` blocks), see [ScriptContext](../interfaces/index.ScriptContext.html).',
-  );
+  lines.push('# Scripting quickref');
   lines.push('');
   lines.push(
     'A scenario is a plain async function: `(ctx: ScriptContext) => Promise<void>`. The orchestrator runs it in place of the `holdZonedInMs` sleep at `src/client/game-stage.ts`; the script may finish before the hold elapses or run until logout.',
@@ -485,9 +585,13 @@ function renderScriptContextQuickref(): string {
   lines.push("import { SwgClient, type ScenarioFn } from '@swg/ts-client';");
   lines.push('');
   lines.push('const myScenario: ScenarioFn = async (ctx) => {');
+  lines.push('  // Always-on views: read live state any time, no polling.');
+  lines.push('  if (ctx.character.health < 200) await ctx.logout();');
+  lines.push("  const target = ctx.nearestHostile({ maxRadiusM: 40 });");
+  lines.push('');
+  lines.push('  // Actions: drive wire traffic.');
   lines.push('  await ctx.walkTo({ x: -100, z: 50 }, { speed: 5 });');
-  lines.push('  ctx.openPlayerInventory();');
-  lines.push('  await ctx.wait(1_000);');
+  lines.push('  if (target) await ctx.combat.attackingNearest({ timeoutMs: 30_000 });');
   lines.push('  await ctx.logout();');
   lines.push('};');
   lines.push('');
@@ -499,55 +603,24 @@ function renderScriptContextQuickref(): string {
   lines.push('});');
   lines.push('```');
   lines.push('');
-  lines.push('## Always-on views');
+  lines.push('## Where to look');
   lines.push('');
   lines.push(
-    'Reactive snapshots kept current by the dispatcher loop — no polling, no transcript walking. Read them at any time inside a scenario:',
+    '- **[Always-on views](./views-reference.md)** — every `ctx.*` field a script can read at any time. Reactive snapshots kept current by the dispatcher loop; no polling required.',
+  );
+  lines.push(
+    '- **[Actions](./actions-reference.md)** — every method on `ScriptContext`, grouped by category (movement, combat, chat, crafting, survey, missions, vehicles, SUI, NPC, trade, bazaar).',
+  );
+  lines.push(
+    '- **[Scripting cookbook](./scripting-cookbook.md)** — every bundled scenario in `src/scenarios/` with its CLI name and full JSDoc.',
+  );
+  lines.push(
+    '- **[Wire-message reference](./wire-reference.md)** — every registered `GameNetworkMessage` + `ObjController` subtype, with CRCs and source paths.',
+  );
+  lines.push(
+    '- **[ScriptContext API](../interfaces/index.ScriptContext.html)** — the typed interface with parameters, return types, and any `@example` blocks.',
   );
   lines.push('');
-  lines.push('| View | Type | Purpose |');
-  lines.push('|---|---|---|');
-  lines.push(
-    '| `ctx.world` | [`WorldModel`](../classes/index.WorldModel.html) | Live `Map<NetworkId, WorldObject>` populated by the baseline flood; updated by deltas + transforms + containment changes + scene-destroy. |',
-  );
-  lines.push(
-    "| `ctx.character` | [`CharacterSheet`](../interfaces/index.CharacterSheet.html) | Live view of the player's CREO + PLAY baselines (HAM, posture, skills, cash, bank, group, level, etc.). |",
-  );
-  lines.push(
-    '| `ctx.inventory` | [`InventoryView`](../interfaces/index.InventoryView.html) | Auto-opened at zone-in. `items`, `findByTemplate(re)`, `findById(id)`, `ready`. |',
-  );
-  lines.push(
-    '| `ctx.datapad` | [`DatapadView`](../interfaces/index.DatapadView.html) | Auto-opened at zone-in. `vehicles()`, `pets()`, `waypoints()`, `missions()`. |',
-  );
-  lines.push(
-    '| `ctx.world` sugar — `findNearest(typeId, opts?)` | `WorldObject \\| undefined` | Nearest `WorldObject` matching the IFF tag; defaults to excluding self. |',
-  );
-  lines.push(
-    '| `ctx.world` sugar — `nearestHostile(opts?)` | `WorldObject \\| undefined` | Nearest CREO with `inCombat=true`. Auto-targeting for combat scripts. |',
-  );
-  lines.push(
-    '| `ctx.world` sugar — `findInContainer(id)` | `WorldObject[]` | Every object currently parented to `id`. |',
-  );
-  lines.push(
-    '| `ctx.world` sugar — `playersInRange(r)` | `WorldObject[]` | Sorted PLAY objects within `r` meters of the player. |',
-  );
-  lines.push('');
-
-  for (const category of categoryOrder) {
-    const bucket = buckets.get(category);
-    if (!bucket || bucket.length === 0) continue;
-    lines.push(`## ${category}`);
-    lines.push('');
-    lines.push('| Member | Description |');
-    lines.push('|---|---|');
-    for (const m of bucket) {
-      const sigCell = `\`${truncate(formatSignatureForTable(m.signature), 90)}\``;
-      const doc = summarizeDoc(m.doc, '');
-      lines.push(`| ${sigCell} | ${mdEscape(doc)} |`);
-    }
-    lines.push('');
-  }
-
   lines.push('## Escape hatches');
   lines.push('');
   lines.push(
@@ -561,14 +634,197 @@ function renderScriptContextQuickref(): string {
   return lines.join('\n');
 }
 
-function formatSignatureForTable(sig: string): string {
-  // Strip leading `readonly ` for compactness in the table.
-  return sig.replace(/^readonly\s+/, '');
+function renderViewsReference(members: ParsedMember[]): string {
+  const split = splitMembers(members);
+  const generatedAt = new Date().toISOString().slice(0, 10);
+  const lines: string[] = [];
+  lines.push('---');
+  lines.push('title: Always-on views');
+  lines.push('---');
+  lines.push('');
+  lines.push('# Always-on views');
+  lines.push('');
+  lines.push(
+    'Reactive snapshots kept current by the dispatcher loop — read at any time inside a scenario, no polling, no transcript walking. Pinned to the player at zone-in and auto-detached at logout.',
+  );
+  lines.push('');
+  lines.push(
+    'Auto-generated from the `readonly` fields and read-only sugar queries on the `ScriptContext` interface in `src/client/script/context.ts`. For the typed API (parameter shapes, return types, full JSDoc), see [ScriptContext](../interfaces/index.ScriptContext.html).',
+  );
+  lines.push('');
+  lines.push(`_Indexed at ${generatedAt}._`);
+  lines.push('');
+
+  // Render each view as a full subsection (name + signature + multi-paragraph
+  // doc) instead of cramming into a truncated table. Views are the most
+  // important surface; readers should see the full docs without clicking.
+  for (const m of split.views) {
+    const name = memberName(m.signature);
+    if (name === '') continue;
+    lines.push(`## ctx.${name}`);
+    lines.push('');
+    lines.push('```ts');
+    lines.push(formatSignatureForCodeBlock(m.signature));
+    lines.push('```');
+    lines.push('');
+    lines.push(memberDocBlock(m.doc));
+    lines.push('');
+  }
+
+  if (split.escapeHatches.length > 0) {
+    lines.push('## Escape hatches');
+    lines.push('');
+    lines.push(
+      'Raw infrastructure handles for scripts that need to bypass the high-level helpers.',
+    );
+    lines.push('');
+    for (const m of split.escapeHatches) {
+      const name = memberName(m.signature);
+      lines.push(`### ctx.${name}`);
+      lines.push('');
+      lines.push('```ts');
+      lines.push(formatSignatureForCodeBlock(m.signature));
+      lines.push('```');
+      lines.push('');
+      const doc = m.doc === '' ? defaultEscapeHatchDoc(name) : memberDocBlock(m.doc);
+      lines.push(doc);
+      lines.push('');
+    }
+  }
+
+  return lines.join('\n');
 }
 
-function truncate(text: string, max: number): string {
-  if (text.length <= max) return text;
-  return `${text.slice(0, max - 1)}…`;
+function defaultEscapeHatchDoc(name: string): string {
+  switch (name) {
+    case 'dispatcher':
+      return 'Raw `MessageDispatcher` for advanced wait-for-pattern flows. Subscribe to inbound messages directly, query the live transcript, or install custom handlers.';
+    case 'sceneStart':
+      return "Decoded `CmdStartScene` envelope for the current zone-in (player NetworkId, planet name, server epoch, etc.). Captured at zone-in; doesn't update mid-script.";
+    case 'signal':
+      return 'The `AbortSignal` the orchestrator fires on lifecycle teardown. Every async primitive checks it; pass it to your own `fetch` / `setTimeout` / etc. for cooperative cancellation.';
+    default:
+      return '_(no description)_';
+  }
+}
+
+function renderActionsReference(members: ParsedMember[]): string {
+  const split = splitMembers(members);
+  // Group actions by category (driven by the `// --- xxx ---` separators in
+  // context.ts) so the page is scannable.
+  const buckets = new Map<string, ParsedMember[]>();
+  for (const m of split.actions) {
+    const bucket = buckets.get(m.category) ?? [];
+    bucket.push(m);
+    buckets.set(m.category, bucket);
+  }
+  const generatedAt = new Date().toISOString().slice(0, 10);
+  const lines: string[] = [];
+  lines.push('---');
+  lines.push('title: Actions');
+  lines.push('---');
+  lines.push('');
+  lines.push('# Actions');
+  lines.push('');
+  lines.push(
+    'Every callable method on `ScriptContext` — movement, chat, combat, crafting, survey, missions, vehicles, SUI dialogs, NPC conversation, trade, and bazaar. Each action issues real wire traffic (or queues it via the command-queue subsystem); side-effects update the always-on views automatically.',
+  );
+  lines.push('');
+  lines.push(
+    'Auto-generated from the method declarations on the `ScriptContext` interface in `src/client/script/context.ts`. Category headings track the `// --- xxx ---` separators in the source. For the typed API (parameter shapes, return types, full JSDoc, `@example` blocks), see [ScriptContext](../interfaces/index.ScriptContext.html).',
+  );
+  lines.push('');
+  lines.push(`_Indexed at ${generatedAt}._`);
+  lines.push('');
+
+  // "Core" actions (the ones declared before the first `// --- ... ---`
+  // separator: send, wait, walkTo, walkCircle, walkToCell, navigate,
+  // openContainer, openPlayerInventory, closeContainer, logout, etc.) are
+  // the universal primitives and deserve to lead.
+  const coreOrder = ['Core'];
+  // Then the rest in declaration order.
+  const restOrder: string[] = [];
+  for (const cat of buckets.keys()) {
+    if (!coreOrder.includes(cat)) restOrder.push(cat);
+  }
+  const categoryOrder = [...coreOrder, ...restOrder];
+  for (const category of categoryOrder) {
+    const bucket = buckets.get(category);
+    if (!bucket || bucket.length === 0) continue;
+    lines.push(`## ${category}`);
+    lines.push('');
+    for (const m of bucket) {
+      const name = memberName(m.signature);
+      if (name === '') continue;
+      lines.push(`### ctx.${name}`);
+      lines.push('');
+      lines.push('```ts');
+      lines.push(formatSignatureForCodeBlock(m.signature));
+      lines.push('```');
+      lines.push('');
+      lines.push(memberDocBlock(m.doc));
+      lines.push('');
+    }
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Re-flow a compacted (single-line) ScriptContext member signature into a
+ * readable, line-wrapped form suitable for an inline ```ts code block.
+ * The parsed signatures are space-collapsed by `extractInterfaceMembers`;
+ * for tightly-wrapped multi-line method signatures we keep the parameter
+ * list intact but insert a break at each top-level comma when the line
+ * exceeds ~80 columns. Inline object-literal types stay on one line — they
+ * rarely need a break and breaking them up is harder than it's worth.
+ */
+function formatSignatureForCodeBlock(sig: string): string {
+  if (sig.length <= 90) return sig;
+  // Find the first top-level `(` ... matching `)` and try to wrap commas
+  // inside it.
+  const open = sig.indexOf('(');
+  if (open === -1) return sig;
+  let depth = 0;
+  let close = -1;
+  for (let i = open; i < sig.length; i++) {
+    const c = sig[i];
+    if (c === '(') depth++;
+    else if (c === ')') {
+      depth--;
+      if (depth === 0) {
+        close = i;
+        break;
+      }
+    }
+  }
+  if (close === -1) return sig;
+  const head = sig.slice(0, open + 1);
+  const tail = sig.slice(close);
+  const inner = sig.slice(open + 1, close);
+  // Split inner on commas at depth 0 (mirror the brace/paren tracker used
+  // in the interface body walker; angle brackets are too ambiguous so we
+  // skip them).
+  const parts: string[] = [];
+  let braceDepth = 0;
+  let parenDepth = 0;
+  let start = 0;
+  for (let i = 0; i < inner.length; i++) {
+    const c = inner[i];
+    if (c === '{') braceDepth++;
+    else if (c === '}') braceDepth--;
+    else if (c === '(') parenDepth++;
+    else if (c === ')') parenDepth--;
+    else if (c === ',' && braceDepth === 0 && parenDepth === 0) {
+      parts.push(inner.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  parts.push(inner.slice(start).trim());
+  // Strip empty parts (e.g. from a trailing comma in the source signature).
+  const filtered = parts.filter((p) => p !== '');
+  if (filtered.length <= 1) return sig;
+  return `${head}\n  ${filtered.join(',\n  ')},\n${tail}`;
 }
 
 function renderScenariosCookbook(): string {

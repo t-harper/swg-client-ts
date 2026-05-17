@@ -16,4 +16,6 @@ assets/terrain/*.trn
 docs-site/
 docs/wire-reference.md
 docs/scripting-quickref.md
+docs/views-reference.md
+docs/actions-reference.md
 docs/scripting-cookbook.md

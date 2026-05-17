@@ -36,6 +36,7 @@ import {
   didScriptLogout,
   runScript,
 } from './script/context.js';
+import { WorldModel } from './world-model.js';
 
 /** A summary of the baseline flood we observed during zone-in. */
 export interface BaselineSummary {
@@ -86,6 +87,12 @@ export interface GameStageResult {
   elapsedMs: number;
   /** Set if a script ran during the dwell. */
   scriptResult?: ScriptResult;
+  /**
+   * Live world view that absorbed the baseline flood + any deltas/transforms
+   * that arrived during the dwell. Detached from the dispatcher by the time
+   * this is returned (no further mutation), but the data is queryable.
+   */
+  world: WorldModel;
 }
 
 export async function runGameStage(opts: GameStageOptions): Promise<GameStageResult> {
@@ -99,6 +106,11 @@ export async function runGameStage(opts: GameStageOptions): Promise<GameStageRes
   if (opts.onTranscript !== undefined) {
     dispatcher.onAny(opts.onTranscript);
   }
+
+  // Construct the WorldModel BEFORE waiting for CmdStartScene so it captures
+  // every Scene*/Baseline*/Delta* message from the moment we start listening.
+  // playerId is pinned once CmdStartScene arrives.
+  const world = new WorldModel({ dispatcher });
 
   // Track baselines as they arrive — they typically start BEFORE we've fully
   // processed CmdStartScene, so set up the collectors now.
@@ -126,6 +138,7 @@ export async function runGameStage(opts: GameStageOptions): Promise<GameStageRes
     const startScene = await dispatcher.waitFor(CmdStartScene, {
       timeoutMs: startSceneTimeoutMs,
     });
+    world.setPlayerId(startScene.playerNetworkId);
     opts.onStateChange?.(ZoneState.ZoningIn);
 
     // 2 + 3. Wait for SceneEndBaselines.
@@ -166,6 +179,7 @@ export async function runGameStage(opts: GameStageOptions): Promise<GameStageRes
         dispatcher,
         sceneStart: startScene,
         signal: abortController.signal,
+        world,
       });
       scriptResult = await runScript(opts.script, scriptCtx);
       scriptLoggedOut = didScriptLogout(scriptCtx);
@@ -212,11 +226,13 @@ export async function runGameStage(opts: GameStageOptions): Promise<GameStageRes
       logoutAt,
       elapsedMs: Date.now() - t0,
       ...(scriptResult !== undefined ? { scriptResult } : {}),
+      world,
     };
   } finally {
     if (heartbeatTimer !== null) clearInterval(heartbeatTimer);
     unsubByCrc();
     unsubByName();
+    world.detach();
   }
 }
 

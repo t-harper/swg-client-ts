@@ -120,6 +120,7 @@ import {
 import type { GameNetworkMessage } from '../../messages/interface.js';
 import type { NetworkId, SceneStart, Vector3 } from '../../types.js';
 import type { MessageDispatcher } from '../dispatcher.js';
+import type { WorldModel } from '../world-model.js';
 import {
   type ExpectOptions,
   expectAbsent as expectAbsentImpl,
@@ -376,6 +377,25 @@ export interface ScriptContext {
   readonly dispatcher: MessageDispatcher;
   readonly sceneStart: SceneStart;
   readonly signal: AbortSignal;
+  /**
+   * Live in-memory view of every object the server has told us about —
+   * other players, NPCs, items, containers, buildings. Updated in place
+   * from the server's baseline flood, delta updates, transform broadcasts,
+   * containment changes, and scene-destroy messages.
+   *
+   * Common queries:
+   *   `ctx.world.get(npcId)`              — fetch one object by NetworkId
+   *   `ctx.world.nearby(20)`              — every object within 20m of the player
+   *   `ctx.world.byType(ObjectTypeTags.CREO)` — every creature
+   *   `ctx.world.filter(o => o.containerId === inventoryId)` — inventory contents
+   *
+   * Subscribe to live events:
+   *   `ctx.world.on(e => { if (e.kind === 'delta') ... })`
+   *
+   * The model never sends anything — it's purely reactive. Holding a
+   * reference to a `WorldObject` is safe: it's mutated in place.
+   */
+  readonly world: WorldModel;
   /** Live cursor — current best estimate of the player's position. */
   position(): Readonly<Vector3>;
   /** Live cursor — current best estimate of the player's heading (radians). */
@@ -1228,6 +1248,12 @@ export interface CreateScriptContextOptions {
   dispatcher: MessageDispatcher;
   sceneStart: SceneStart;
   signal: AbortSignal;
+  /**
+   * Live world view (objects + baselines + deltas + transforms). The
+   * orchestrator constructs one in `runGameStage` and passes it in so
+   * scripts can query `ctx.world.nearby(20)` etc.
+   */
+  world: WorldModel;
   /** Initial sequence number for UpdateTransformMessage. Default 1. */
   initialSequenceNumber?: number;
   /** Initial sequence number for command-queue messages. Default 1. */
@@ -1277,6 +1303,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     dispatcher: opts.dispatcher,
     sceneStart: opts.sceneStart,
     signal: opts.signal,
+    world: opts.world,
     _state: state,
 
     position(): Readonly<Vector3> {

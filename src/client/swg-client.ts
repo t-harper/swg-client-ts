@@ -58,7 +58,9 @@ import '../messages/game/missions/index.js';
 import '../messages/game/npc/index.js';
 import '../messages/game/scene-create-object-by-crc.js';
 import '../messages/game/scene-create-object-by-name.js';
+import '../messages/game/scene-destroy-object.js';
 import '../messages/game/scene-end-baselines.js';
+import '../messages/game/update-containment-message.js';
 import '../messages/game/sui/index.js';
 import '../messages/game/survey/index.js';
 import '../messages/game/trade/index.js';
@@ -80,6 +82,7 @@ import type { TranscriptEvent } from './dispatcher.js';
 import { runGameStage } from './game-stage.js';
 import { runLoginStage } from './login-stage.js';
 import type { ScenarioFn, ScriptResult } from './script/context.js';
+import type { WorldModel } from './world-model.js';
 
 /**
  * Options for raw-byte SOE capture across a full lifecycle. Because Stage 1
@@ -208,6 +211,13 @@ export interface LifecycleResult {
    * interval, default 45s).
    */
   latency: LifecycleLatency | null;
+  /**
+   * Live world view that absorbed the baseline flood + any deltas/transforms
+   * that arrived during the dwell. `null` if the game stage was skipped
+   * (`skipGameStage: true`). Detached from the dispatcher by the time this
+   * is returned — no further mutation, but all snapshots are queryable.
+   */
+  world: WorldModel | null;
 }
 
 export class SwgClient {
@@ -364,6 +374,7 @@ export class SwgClient {
       receivedErrorMessage,
       ...(game?.scriptResult !== undefined ? { scriptResult: game.scriptResult } : {}),
       latency,
+      world: game?.world ?? null,
     };
     return result;
   }
@@ -376,7 +387,13 @@ export class SwgClient {
  *   - Date → ISO string
  */
 export function lifecycleResultToJSON(result: LifecycleResult): unknown {
-  return normalize(result);
+  // `world` is a live class instance with a Map of WorldObjects (each
+  // holding back-references through the dispatcher's transcript) — recursive
+  // normalization would walk thousands of nodes and risk cycles. Strip it
+  // from the JSON view; callers wanting a serialized world should use a
+  // future `WorldModel.toJSON()` snapshot helper.
+  const { world: _world, ...rest } = result;
+  return normalize(rest);
 }
 
 function normalize(value: unknown): unknown {

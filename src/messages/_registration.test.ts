@@ -55,6 +55,7 @@ import { PopulateMissionBrowserMessage } from './game/missions/populate-mission-
 import { ObjControllerMessage } from './game/obj-controller-message.js';
 import { SceneCreateObjectByCrc } from './game/scene-create-object-by-crc.js';
 import { SceneCreateObjectByName } from './game/scene-create-object-by-name.js';
+import { SceneDestroyObject } from './game/scene-destroy-object.js';
 import { SceneEndBaselines } from './game/scene-end-baselines.js';
 import { SuiCreatePageMessage } from './game/sui/sui-create-page-message.js';
 import { SuiEventNotification } from './game/sui/sui-event-notification.js';
@@ -91,6 +92,7 @@ const ALL_DECODERS = [
   CmdStartScene,
   SceneCreateObjectByCrc,
   SceneCreateObjectByName,
+  SceneDestroyObject,
   SceneEndBaselines,
   CmdSceneReady,
   HeartBeat,
@@ -147,8 +149,8 @@ const ALL_DECODERS = [
 ];
 
 describe('message registration', () => {
-  it('exports 66 message classes', () => {
-    expect(ALL_DECODERS.length).toBe(66);
+  it('exports 67 message classes', () => {
+    expect(ALL_DECODERS.length).toBe(67);
   });
 
   it('every class has a non-empty messageName', () => {

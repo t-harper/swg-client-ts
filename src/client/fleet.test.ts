@@ -71,6 +71,7 @@ function makeLifecycle(opts: {
     stationId: 1,
     receivedErrorMessage: opts.receivedErrorMessage ?? false,
     latency: null,
+    world: null,
   };
 }
 

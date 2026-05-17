@@ -31,6 +31,13 @@ export {
 
 // High-level client API
 export { SwgClient, lifecycleResultToJSON } from './client/swg-client.js';
+export { WorldModel } from './client/world-model.js';
+export type {
+  WorldEvent,
+  WorldEventKind,
+  WorldModelOptions,
+  WorldObject,
+} from './client/world-model.js';
 export type {
   FullLifecycleOptions,
   FullLifecycleRawCaptureOptions,

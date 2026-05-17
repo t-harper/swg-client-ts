@@ -73,33 +73,20 @@ describe.skipIf(!LIVE)('live persistence soak (reconnectVerify harness)', () => 
       await ctx.wait(500);
     };
 
-    let result: Awaited<ReturnType<typeof reconnectVerify>>;
-    try {
-      result = await reconnectVerify({
-        loginServer: { host: HOST, port: PORT },
-        account: pair.account,
-        characterName: pair.characterName,
-        mutate,
-        // Generous settle — live clusters can hold a GameConnection for
-        // 10s+ after LogoutMessage before allowing the same character
-        // to re-attach.
-        postSettleMs: 12_000,
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      // Server cap on character creation reached — same graceful skip
-      // pattern as live-persistence.test.ts. Without `CI_USE_POOL=1`
-      // there's no fallback character; bail.
-      if (msg.includes('canCreateRegularCharacter=false')) {
-        console.warn(
-          '[live-persistence-soak] Server rejected character creation; skipping. ' +
-            'Either set CI_USE_POOL=1 with a pre-stocked pool, or wait for ' +
-            'the cluster admin to clear leaked test characters.',
-        );
-        return;
-      }
-      throw err;
-    }
+    // No cap-rejection soft-skip: poolCredentials falls back to the
+    // admin pool (tslive01..20 in stella_admin.tab) which is
+    // whitelisted for canCreateRegularCharacter=true via the
+    // clientIsInternal path. Any failure here is a real regression.
+    const result = await reconnectVerify({
+      loginServer: { host: HOST, port: PORT },
+      account: pair.account,
+      characterName: pair.characterName,
+      mutate,
+      // Generous settle — live clusters can hold a GameConnection for
+      // 10s+ after LogoutMessage before allowing the same character
+      // to re-attach.
+      postSettleMs: 12_000,
+    });
 
     console.log(
       `[live-persistence-soak] succeeded=${result.succeeded} ` +

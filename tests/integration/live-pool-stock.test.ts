@@ -60,13 +60,9 @@ describe.skipIf(!(LIVE && STOCK))('live pool stock (creates real characters on t
 
     const fleetResult = await fleet.run(configs, { staggerMs: 100 });
 
-    const blocked = fleetResult.summary.errorMessages.some((e) =>
-      e.includes('canCreateRegularCharacter=false'),
-    );
-    if (blocked) {
-      console.warn('[live-pool-stock] server has disabled character creation; skipping');
-      return;
-    }
+    // No cap-rejection soft-skip: if the server rejected character
+    // creation, the subsequent pool.add loop will produce zero entries
+    // and the final length assertion will fail loudly.
 
     for (let i = 0; i < count; i++) {
       const outcome = fleetResult.outcomes[i];

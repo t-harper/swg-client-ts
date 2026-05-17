@@ -32,36 +32,22 @@ const PORT = Number(process.env.SWG_LOGIN_PORT ?? 44453);
 
 describe.skipIf(!LIVE)('live persistence (snapshot before/after reconnect)', () => {
   it('character state survives a logout+login cycle', async () => {
-    const { account, characterName, reused } = await liveCredentials('per');
+    const { account, characterName } = await liveCredentials('per');
     const client = new SwgClient({ loginServer: { host: HOST, port: PORT } });
 
     // First lifecycle: zone in, dwell, log out. The server will persist
     // the post-zoned-in state during the logout/save pipeline.
     //
-    // Graceful skip if the server has disabled character creation
-    // (canCreateRegularCharacter=false — happens when the cluster hits
-    // its max-characters cap from accumulated test leakage). If we don't
-    // have a reused character to fall back to, the test can't run.
-    let first: Awaited<ReturnType<typeof client.fullLifecycle>>;
-    try {
-      first = await client.fullLifecycle({
-        account,
-        characterName,
-        planet: 'mos_eisley',
-        holdZonedInMs: 3_000,
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('canCreateRegularCharacter=false') && !reused) {
-        console.warn(
-          '[live-persistence] Server rejected character creation and ' +
-            'no CI_REUSE_* credentials set; skipping. Set ' +
-            'CI_REUSE_ACCOUNT + CI_REUSE_CHARACTER for a more useful run.',
-        );
-        return;
-      }
-      throw err;
-    }
+    // No cap-rejection soft-skip: the admin pool (tslive01..20 in
+    // stella_admin.tab) guarantees canCreateRegularCharacter=true via
+    // the clientIsInternal path. Any failure here is a real regression
+    // and should fail the test loudly.
+    const first = await client.fullLifecycle({
+      account,
+      characterName,
+      planet: 'mos_eisley',
+      holdZonedInMs: 3_000,
+    });
     expect(first.zonedInAt, 'first lifecycle zoned in').not.toBeNull();
     const snapA = snapshot(first);
 

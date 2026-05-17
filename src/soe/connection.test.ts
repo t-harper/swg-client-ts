@@ -365,6 +365,59 @@ describe('SoeConnection ClockSync / ClockReflect', () => {
     expect(rttCallbacks[0]).toBe(stats.samples[0]);
   });
 
+  it('addClockReflectListener delivers the full sample (rtt + server stamp + recv wall time)', () => {
+    const samples: Array<{ rttMs: number; serverSyncStampLong: number; clientRecvWallMs: number }> =
+      [];
+    const conn = new SoeConnection({
+      endpoint: { host: '127.0.0.1', port: 1 },
+      connectionCode: params.connectionCode,
+      clockSyncIntervalMs: 0,
+      onAppMessage: () => {
+        // no-op
+      },
+    });
+    conn.testSendOverride = () => {
+      /* swallow */
+    };
+    conn.testInjectSessionResponse(buildSynthConfirm(params));
+
+    const unsubscribe = conn.addClockReflectListener((s) => {
+      samples.push({ ...s });
+    });
+
+    const reflectedStamp = (Date.now() - 25) & 0xffff;
+    const serverStampLong = 0x12345678;
+    const fakeSync = {
+      zeroByte: 0,
+      packetType: 7,
+      timeStamp: reflectedStamp,
+      masterPingTime: 0,
+      averagePingTime: 0,
+      lowPingTime: 0,
+      highPingTime: 0,
+      lastPingTime: 0,
+      ourSent: 0n,
+      ourReceived: 0n,
+    };
+    const reflect = buildClockReflect(fakeSync, serverStampLong);
+    const beforeRecv = Date.now();
+    conn.testInjectDatagram(cookForWire(reflect));
+    const afterRecv = Date.now();
+
+    expect(samples.length).toBe(1);
+    const sample = samples[0]!;
+    expect(sample.serverSyncStampLong).toBe(serverStampLong);
+    expect(sample.clientRecvWallMs).toBeGreaterThanOrEqual(beforeRecv);
+    expect(sample.clientRecvWallMs).toBeLessThanOrEqual(afterRecv);
+    expect(sample.rttMs).toBeGreaterThanOrEqual(0);
+    expect(sample.rttMs).toBeLessThan(1000);
+
+    // Unsubscribe; the next reflect should NOT add another sample.
+    unsubscribe();
+    conn.testInjectDatagram(cookForWire(buildClockReflect(fakeSync, serverStampLong)));
+    expect(samples.length).toBe(1);
+  });
+
   it('sendClockSync produces a valid wire packet through the encryption pipeline', () => {
     const sent: Uint8Array[] = [];
     const conn = new SoeConnection({

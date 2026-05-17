@@ -33,6 +33,7 @@ import { appendCrc, verifyCrc } from '../crc/crc32.js';
 import { EncryptMethod } from '../types.js';
 import type { EncryptionParams } from '../types.js';
 import {
+  type ClockReflectListener,
   type LatencyStats,
   buildClockReflect,
   buildClockSync,
@@ -131,6 +132,16 @@ export class SoeConnection implements ISoeConnection {
 
   /** RTT samples in ms, in the order they were observed. */
   private readonly latencySamples: number[] = [];
+
+  /**
+   * Multi-subscriber listeners for ClockReflect samples. Distinct from the
+   * single `onClockSync` option callback (kept for back-compat); this list
+   * delivers the FULL parsed sample (RTT + the server's reflected stamp)
+   * so consumers like the script-context's `serverTime` view can compute
+   * the client→server clock offset, not just RTT. Set up via
+   * `addClockReflectListener`.
+   */
+  private readonly clockReflectListeners: ClockReflectListener[] = [];
 
   /**
    * Internal one-shot listeners (drained on next emit()). Used by connect().
@@ -766,6 +777,37 @@ export class SoeConnection implements ISoeConnection {
     } catch {
       // swallow listener errors
     }
+    if (this.clockReflectListeners.length > 0) {
+      const sample = {
+        rttMs: rtt,
+        serverSyncStampLong: reflect.serverSyncStampLong,
+        clientRecvWallMs: Date.now(),
+      };
+      for (const l of this.clockReflectListeners.slice()) {
+        try {
+          l(sample);
+        } catch {
+          // swallow listener errors
+        }
+      }
+    }
+  }
+
+  /**
+   * Subscribe to ClockReflect samples. The callback receives the full
+   * `ClockReflectSample` (RTT + the server's reflected `serverSyncStampLong`
+   * + local recv wall-time) so consumers can compute a client→server clock
+   * offset, not just RTT. Returns an unsubscribe function.
+   *
+   * Distinct from the constructor's `onClockSync` option, which is a single
+   * RTT-only callback retained for back-compat with existing call sites.
+   */
+  addClockReflectListener(listener: ClockReflectListener): () => void {
+    this.clockReflectListeners.push(listener);
+    return () => {
+      const idx = this.clockReflectListeners.indexOf(listener);
+      if (idx >= 0) this.clockReflectListeners.splice(idx, 1);
+    };
   }
 
   /**

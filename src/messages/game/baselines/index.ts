@@ -218,6 +218,15 @@ export {
   WaypointColor,
 } from './location.js';
 export {
+  type GroupMemberEntry,
+  type GroupObjectSharedNpBaseline,
+  type GroupPickupLocation,
+  type GroupPickupTimer,
+  type GroupShipFormationEntry,
+  GroupObjectSharedNpDecoder,
+  GroupObjectSharedNpKind,
+} from './group-object-baseline-6.js';
+export {
   type MissionObjectSharedBaseline,
   MissionObjectSharedDecoder,
   MissionObjectSharedKind,

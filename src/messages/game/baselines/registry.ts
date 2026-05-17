@@ -95,6 +95,10 @@ export const ObjectTypeTags = {
   RCNO: stringToTag('RCNO'),
   /** ServerMissionObjectTemplate — TAG(M,I,S,O). MissionObject extends IntangibleObject. */
   MISO: stringToTag('MISO'),
+  /** ServerGroupObjectTemplate — TAG(G,R,U,P). GroupObject extends UniverseObject. */
+  GRUP: stringToTag('GRUP'),
+  /** ServerGuildObjectTemplate — TAG(G,I,L,D). GuildObject extends UniverseObject. */
+  GILD: stringToTag('GILD'),
 } as const;
 
 /**

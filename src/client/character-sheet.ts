@@ -333,6 +333,13 @@ export interface CharacterSheet {
   /** GroupObject NetworkId (CREO p6 m_group). `null` if not in a group. */
   readonly groupId: NetworkId | null;
   /**
+   * Numeric guild id (CREO p6 m_guildId). `0` when the player isn't in a
+   * guild. (Surfaced as a plain number rather than `number | null`
+   * because the wire field is i32 with 0 = "no guild" — see GuildObject
+   * usage in GuildObject.cpp:getGuildId.)
+   */
+  readonly guildId: number;
+  /**
    * Lightweight group descriptor when in a group. `members[]` is empty until
    * GroupObject baselines get a typed decoder; for now consumers can use
    * `ctx.world.get(groupId)` to inspect the raw GroupObject baseline state.
@@ -404,6 +411,27 @@ export interface CharacterSheet {
    * before any baseline lands.
    */
   readonly factionDetails: CharacterFaction;
+  /**
+   * Computed heading (radians, atan2-style) derived from the player's most
+   * recent two `CM_netUpdateTransform` sends. Defaults to `0` when fewer than
+   * two transforms have been sent (idle character) or when the two transforms
+   * are at the same x/z (post-walk, character standing still).
+   *
+   * Sourced from the dispatcher's transcript — looks back at the last two
+   * outbound `ObjControllerMessage(CM_netUpdateTransform=113)` sends and
+   * computes `atan2(dx, dz)`. The cell-relative variant
+   * `CM_netUpdateTransformWithParent=241` is also considered.
+   */
+  readonly heading: number;
+  /**
+   * Sugar for `ctx.location.cell !== null` — true when the player is
+   * currently parented inside a cell (interior), false outdoors.
+   *
+   * Wired up via `CharacterSheetOptions.isInCell()`; when no callback is
+   * supplied this always reads `false` (the bare CharacterSheet doesn't
+   * know about cells on its own).
+   */
+  readonly inCell: boolean;
   /** Snapshot all readable fields as a plain JSON-safe object. */
   toJSON(): Record<string, unknown>;
 }
@@ -434,6 +462,24 @@ export interface CharacterSheetOptions {
   world?: WorldModel;
   /** Optional — captured at construction to seed `templateName`. */
   templateName?: string;
+  /**
+   * Optional callback consulted by `view.inCell` getter. Provided by the
+   * script-context factory so the character sheet can surface a sugar form
+   * of `ctx.location.cell !== null` without depending on `LocationView`
+   * (which lives in a higher-level module and would create an import cycle).
+   *
+   * Defaults to `() => false` when not supplied.
+   */
+  isInCell?: () => boolean;
+  /**
+   * Optional callback that returns the heading (radians, atan2-style)
+   * computed from the player's recent movement. Provided by the script
+   * context factory which has the orchestrator's pose history.
+   *
+   * Defaults to `() => 0` when not supplied (a bare character sheet has no
+   * movement history to compute from).
+   */
+  getHeading?: () => number;
 }
 
 /** Mutable backing store; getters on `CharacterSheet` read from this. */
@@ -457,6 +503,7 @@ interface SheetState {
   maxAttributesCreoP1: number[];
   currentWeapon: NetworkId;
   groupId: NetworkId;
+  guildId: number;
   groupInviter: PlayerAndShipPair | null;
   /** CREO p4 m_modMap (skill-mod table). Empty until p4 baseline lands. */
   skillMods: Map<string, { base: number; bonus: number }>;
@@ -502,6 +549,7 @@ function makeState(templateName: string | null): SheetState {
     maxAttributesCreoP1: [],
     currentWeapon: 0n,
     groupId: 0n,
+    guildId: 0,
     groupInviter: null,
     skillMods: new Map(),
     xp: new Map(),
@@ -538,6 +586,7 @@ export function createCharacterSheet(opts: CharacterSheetOptions): CharacterShee
     if (data.mood !== undefined) state.mood = data.mood;
     if (data.currentWeapon !== undefined) state.currentWeapon = data.currentWeapon;
     if (data.group !== undefined) state.groupId = data.group;
+    if (data.guildId !== undefined) state.guildId = data.guildId;
     if (data.groupInviter !== undefined) {
       // The server signals "no pending invite" by clearing `inviter` to 0n.
       state.groupInviter = data.groupInviter.inviter === 0n ? null : data.groupInviter;
@@ -816,6 +865,9 @@ export function createCharacterSheet(opts: CharacterSheetOptions): CharacterShee
     get groupId(): NetworkId | null {
       return state.groupId === 0n ? null : state.groupId;
     },
+    get guildId(): number {
+      return state.guildId;
+    },
     get group(): CharacterGroup | null {
       if (state.groupId === 0n) return null;
       // Members aren't decoded yet — the GroupObject baseline carries them
@@ -912,6 +964,12 @@ export function createCharacterSheet(opts: CharacterSheetOptions): CharacterShee
         pvpStatus: state.faction,
       };
     },
+    get heading(): number {
+      return opts.getHeading?.() ?? 0;
+    },
+    get inCell(): boolean {
+      return opts.isInCell?.() ?? false;
+    },
     toJSON(): Record<string, unknown> {
       const skillModsObj: Record<string, number> = {};
       for (const [name, total] of view.skillMods) skillModsObj[name] = total;
@@ -936,6 +994,7 @@ export function createCharacterSheet(opts: CharacterSheetOptions): CharacterShee
         mind: { current: view.mind.current, max: view.mind.max },
         currentWeapon: view.currentWeapon === null ? null : view.currentWeapon.toString(),
         groupId: view.groupId === null ? null : view.groupId.toString(),
+        guildId: view.guildId,
         groupInviter:
           view.groupInviter === null
             ? null
@@ -958,6 +1017,8 @@ export function createCharacterSheet(opts: CharacterSheetOptions): CharacterShee
               },
         roadmap: view.roadmap,
         factionDetails: { ...view.factionDetails },
+        heading: view.heading,
+        inCell: view.inCell,
       };
     },
   };

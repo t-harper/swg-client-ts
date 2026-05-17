@@ -50,7 +50,13 @@ export type {
 } from './client/swg-client.js';
 // SOE clock-sync / latency stats — surfaced so consumers can hook ClockSync
 // events directly on a custom SoeConnection or interpret LifecycleResult.latency.
-export type { ClockReflectPacket, ClockSyncPacket, LatencyStats } from './soe/clock-sync.js';
+export type {
+  ClockReflectListener,
+  ClockReflectPacket,
+  ClockReflectSample,
+  ClockSyncPacket,
+  LatencyStats,
+} from './soe/clock-sync.js';
 export {
   buildClockReflect,
   buildClockSync,
@@ -117,8 +123,93 @@ export type {
   HamBar,
   PostureName,
 } from './client/character-sheet.js';
+// Live group / guild / chat-handler views (exposed as `ctx.group`,
+// `ctx.guild`, `ctx.chat` during script runs). All three are derived from
+// the WorldModel + dispatcher subscriptions — no extra wire round-trips.
+export { createGroupView } from './client/group-view.js';
+export type {
+  CreateGroupViewOptions,
+  GroupMember,
+  GroupView,
+  GroupViewHandle,
+} from './client/group-view.js';
+export { createGuildView } from './client/guild-view.js';
+export type {
+  CreateGuildViewOptions,
+  GuildMemberInfo,
+  GuildView,
+  GuildViewHandle,
+} from './client/guild-view.js';
+export { createChatHandlers } from './client/chat-handlers.js';
+export type {
+  ChatHandler,
+  ChatHandlers,
+  ChatHandlersHandle,
+  ChatPredicate,
+  ChatSender,
+  CreateChatHandlersOptions,
+} from './client/chat-handlers.js';
+
+// Live timing views (exposed as `ctx.cooldowns`, `ctx.serverTime`,
+// `ctx.combat` during script runs). Cooldowns derived from
+// CM_commandTimer; serverTime seeded from CmdStartScene + refined by
+// ClockReflect samples; combat timer driven by CM_combatAction targeting
+// the player.
+export {
+  createCombatTimer,
+  createCooldownTracker,
+  createServerTimeTracker,
+} from './client/timing.js';
+export type {
+  CombatHitInfo,
+  CombatTimerHandle,
+  CombatTimerView,
+  CooldownEntry,
+  CooldownTrackerHandle,
+  CooldownView,
+  CreateCombatTimerOptions,
+  CreateServerTimeTrackerOptions,
+  ServerTimeTrackerHandle,
+  ServerTimeView,
+} from './client/timing.js';
+// Combat / safety helpers (exposed as `ctx.combat` and `ctx.safety` during
+// script runs). `ctx.combat` surfaces target tracking (`targets()`,
+// `engaged`), auto-loot (set `autoLoot=true`), and the
+// `attackingNearest()` one-liner sugar. `ctx.safety.fleeWhenHealthBelow()`
+// installs a watcher that breaks combat, calls/mounts a vehicle, and
+// walks to safe coords when health drops below the given ratio.
+export type {
+  AttackingNearestOptions,
+  CombatHelpersHandle,
+  CombatHostContext,
+  CombatTargetEntry,
+  CombatView,
+  FleeOptions,
+  SafetyView,
+} from './client/combat-helpers.js';
+export { attachCombatHelpers } from './client/combat-helpers.js';
 export type { WalkToOptions, CircleOptions, WalkToCellOptions } from './client/script/movement.js';
 export type { ExpectOptions } from './client/script/expectations.js';
+
+// Live location view + navigate planner — exposed on `ctx.location` and
+// `ctx.navigate(...)` during script runs.
+export type { LocationCell, LocationView, LocationViewOptions } from './client/location.js';
+export {
+  createLocationView,
+  findCellByName,
+  findFirstPublicCell,
+  normalizePlanetName,
+  resolvePlayerCell,
+} from './client/location.js';
+export type {
+  InteriorTarget,
+  NavigateOptions,
+  NavigatePlan,
+  NavigateStep,
+  NavigateTarget,
+  OutdoorTarget,
+} from './client/navigate.js';
+export { navigate, planNavigate, runPlan } from './client/navigate.js';
 export { groupTradeScenario, scenarios } from './scenarios/index.js';
 export type { ScenarioFactory } from './scenarios/index.js';
 
@@ -415,8 +506,19 @@ export type {
 // surface (e.g. typed test helpers, snapshot tooling). The instance lives on
 // `ScriptContext`, not on `LifecycleResult` (the script-context lifetime is
 // shorter than the lifecycle's).
-export type { DatapadItem, DatapadItemKind, DatapadView } from './client/script/datapad-view.js';
+export type {
+  DatapadItem,
+  DatapadItemKind,
+  DatapadView,
+  PetState,
+} from './client/script/datapad-view.js';
 export { classifyDatapadItem } from './client/script/datapad-view.js';
+
+// Bank view — `ctx.bank` types. Mirrors {@link InventoryView}; the bank
+// is auto-discovered from the player's `'bank'` slot child but its
+// contents only populate after `bank.use(terminalId)` is called.
+export { BankViewImpl } from './client/bank-view.js';
+export type { BankItem, BankView } from './client/bank-view.js';
 
 // Container inspection — walk the transcript and answer "what's inside the
 // inventory / backpack / bank / etc.?" Pair with extractInventoryContainerId
@@ -428,8 +530,32 @@ export type { ContainerItem } from './client/container-view.js';
 // player's inventory. Exposed on `ScriptContext.inventory`. Reads through
 // the live WorldModel so contents always reflect the latest server-pushed
 // containment / baseline / delta / scene-destroy traffic.
-export { InventoryViewImpl } from './client/inventory-view.js';
-export type { InventoryItem, InventoryView } from './client/inventory-view.js';
+export { DEFAULT_PLAYER_INVENTORY_VOLUME, InventoryViewImpl } from './client/inventory-view.js';
+export type {
+  InventoryItem,
+  InventoryResourceCrate,
+  InventoryView,
+} from './client/inventory-view.js';
+
+// Live caches exposed on ScriptContext — survey results, crafting session,
+// active missions. All auto-update from server-pushed wire traffic; no
+// polling needed.
+export { SurveyCacheImpl } from './client/survey-cache.js';
+export type {
+  BestKnownSample,
+  SurveyCacheView,
+  SurveyLastResults,
+} from './client/survey-cache.js';
+export { CraftingSessionCacheImpl } from './client/crafting-session.js';
+export type {
+  CraftingCacheView,
+  CraftingSessionSchematic,
+  CraftingSessionSlot,
+  CraftingSessionState,
+} from './client/crafting-session.js';
+export { missionTypeName, MissionsCacheImpl } from './client/missions-cache.js';
+export type { Mission, MissionsCacheView } from './client/missions-cache.js';
+export type { SurveyCallable } from './client/script/context.js';
 
 // Character snapshot + diff — hashable, deterministic projection of the
 // persisted character state from a LifecycleResult. Used by the reconnect
@@ -536,7 +662,13 @@ export type {
   StartNpcConversationData,
   StopNpcConversationData,
 } from './messages/game/npc/index.js';
-export type { NpcDialogPrompt } from './client/script/context.js';
+export type {
+  NpcContextNamespace,
+  NpcDialogPrompt,
+  SuiContextNamespace,
+} from './client/script/context.js';
+export type { LastNpcDialog } from './client/npc-converse.js';
+export type { SuiAutoHandler, SuiAutoResponse, SuiPage } from './client/sui-auto.js';
 
 // =============================================================================
 // SecureTrade handshake (Feature 2)

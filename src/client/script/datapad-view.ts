@@ -29,7 +29,13 @@
 
 import { extractDatapadContainerId } from '../baseline-helpers.js';
 import type { TranscriptEvent } from '../dispatcher.js';
-import type { WorldModel, WorldObject } from '../world-model.js';
+import type { WorldEvent, WorldModel, WorldObject } from '../world-model.js';
+import {
+  BaselinePackageIds,
+  type CreatureObjectSharedBaseline,
+  ObjectTypeTags,
+  type TangibleObjectSharedBaseline,
+} from '../../messages/game/baselines/index.js';
 import type { NetworkId } from '../../types.js';
 
 /** Discriminated `kind` derived from a datapad entry's `templateName`. */
@@ -41,6 +47,27 @@ export type DatapadItemKind =
   | 'ship'
   | 'manufacturing-schematic'
   | 'other';
+
+/**
+ * Lifecycle state of a pet / vehicle controlled by a PCD. Driven by the
+ * sequence of radial `PET_*` sends the script has issued plus observed
+ * world-creates for the linked creature.
+ *
+ *   - `'stored'` — the PCD has not been called, OR the live creature was
+ *     stored via `storeVehicle()` / `storePet()`. The creature is not
+ *     currently in the world.
+ *   - `'called'` — `callVehicle()` / `callPet()` was just sent; we're
+ *     waiting for the server to spawn the creature in the world.
+ *   - `'following'` — `petCommand(petId, 'follow')` was sent and the pet
+ *     is presumed to be following the player.
+ *   - `'staying'` — `petCommand(petId, 'stay')` was sent.
+ *   - `'attacking'` — `petCommand(petId, 'attack', targetId)` was sent.
+ *
+ * The state is "best effort" — it's derived from sends, not from server
+ * acknowledgements. A subsequent `petCommand` overrides the previous
+ * state; a `storePet` / `storeVehicle` resets to `'stored'`.
+ */
+export type PetState = 'stored' | 'called' | 'following' | 'staying' | 'attacking';
 
 /**
  * One entry in the datapad. Mirrors `WorldObject` but with the few fields
@@ -68,6 +95,30 @@ export interface DatapadItem {
   kind: DatapadItemKind;
   /** The datapad container that holds this item (== `view.containerId`). */
   containerId: NetworkId;
+  /**
+   * For `'vehicle-pcd'` and `'pet-pcd'` entries — the NetworkId of the
+   * currently-spawned live creature in the world that this PCD controls,
+   * or `null` if the creature is not currently called out. Discovered by
+   * watching CREO baselines for `masterId === playerNetworkId` after a
+   * `callVehicle()` / `callPet()` is issued.
+   */
+  linkedCreatureId: NetworkId | null;
+  /**
+   * For `'vehicle-pcd'` and `'pet-pcd'` entries with a live linked
+   * creature — current hit-point ratio in [0,1], computed as
+   * `(maxHitPoints - damageTaken) / maxHitPoints` from the live
+   * creature's TANO SHARED baseline. `null` if no linked creature is in
+   * the world or its baselines haven't arrived yet. `1` means full
+   * health; `0` means destroyed. For non-PCD kinds, always `null`.
+   */
+  condition: number | null;
+  /**
+   * For `'vehicle-pcd'` and `'pet-pcd'` entries — current pet state
+   * (`'stored'` / `'called'` / `'following'` / `'staying'` / `'attacking'`).
+   * Derived from observed PET_* radial sends issued through the script
+   * context. For non-PCD kinds, always `null`.
+   */
+  state: PetState | null;
 }
 
 /**
@@ -97,6 +148,15 @@ export interface DatapadView {
   findByTemplate(re: RegExp): DatapadItem[];
   /** Lookup by NetworkId; `undefined` if not in the datapad. */
   findById(id: NetworkId): DatapadItem | undefined;
+  /**
+   * Notify the view that the script just called/stored a vehicle or pet.
+   * Used to keep the per-PCD `state` field current. Called automatically
+   * by the script context's vehicle/pet primitives.
+   */
+  notifyPetAction(
+    pcdOrCreatureId: NetworkId,
+    action: 'call' | 'store' | 'follow' | 'stay' | 'attack' | 'guard' | 'patrol',
+  ): void;
 }
 
 /** Patterns matched against `templateName` to derive `kind`. */
@@ -194,17 +254,51 @@ function pickName(obj: WorldObject): string | null {
   return null;
 }
 
-function toItem(obj: WorldObject): DatapadItem {
+function toItem(
+  obj: WorldObject,
+  world: WorldModel,
+  pcdLinks: ReadonlyMap<NetworkId, NetworkId>,
+  pcdStates: ReadonlyMap<NetworkId, PetState>,
+): DatapadItem {
   const templateName = obj.templateName ?? null;
   const templateCrc = obj.templateCrc ?? null;
+  const kind = classifyDatapadItem(templateName, templateCrc);
+  const isPcd = kind === 'vehicle-pcd' || kind === 'pet-pcd';
+  const linkedCreatureId = isPcd ? (pcdLinks.get(obj.id) ?? null) : null;
   return {
     networkId: obj.id,
     templateName,
     templateCrc,
     name: pickName(obj),
-    kind: classifyDatapadItem(templateName, templateCrc),
+    kind,
     containerId: obj.containerId,
+    linkedCreatureId,
+    condition: linkedCreatureId !== null ? hpRatio(world.get(linkedCreatureId)) : null,
+    state: isPcd ? (pcdStates.get(obj.id) ?? 'stored') : null,
   };
+}
+
+/**
+ * Compute the HP ratio (0..1, inclusive) for a creature/tangible from its
+ * TANO SHARED baseline. Returns `null` if the object is missing or hasn't
+ * received its SHARED baseline yet, OR if `maxHitPoints` is <= 0 (invalid).
+ */
+function hpRatio(obj: WorldObject | undefined): number | null {
+  if (obj === undefined) return null;
+  const shared = obj.baselines.get(BaselinePackageIds.SHARED);
+  if (shared === undefined || shared instanceof Uint8Array) return null;
+  // TANO SHARED + CREO SHARED both expose `damageTaken` + `maxHitPoints`
+  // at the same offset (CREO extends TANO, ServerObject section first).
+  const tano = shared as Partial<TangibleObjectSharedBaseline>;
+  if (typeof tano.maxHitPoints !== 'number' || typeof tano.damageTaken !== 'number') {
+    return null;
+  }
+  if (tano.maxHitPoints <= 0) return null;
+  const current = tano.maxHitPoints - tano.damageTaken;
+  if (current <= 0) return 0;
+  const ratio = current / tano.maxHitPoints;
+  if (ratio > 1) return 1;
+  return ratio;
 }
 
 /**
@@ -216,15 +310,65 @@ function toItem(obj: WorldObject): DatapadItem {
 export class DatapadViewImpl implements DatapadView {
   private _containerId: NetworkId | null;
   private readonly world: WorldModel;
+  private readonly playerNetworkId: NetworkId;
+  /**
+   * Pending vehicle/pet `call` actions awaiting a matching CREO spawn.
+   * Recorded in insertion order so the next CREO whose `masterId ===
+   * playerNetworkId` arrives gets associated with the earliest pending
+   * PCD. Each entry: `{ pcdId, expiresAt }`. Pending entries expire
+   * after `CALL_TIMEOUT_MS` to avoid associating a random CREO that
+   * happened to spawn for an unrelated reason.
+   */
+  private readonly pendingCalls: { pcdId: NetworkId; expiresAt: number }[] = [];
+  /**
+   * Map of PCD NetworkId → live creature NetworkId. Populated when the
+   * server spawns a new CREO with `masterId === playerNetworkId` after
+   * `callVehicle()` / `callPet()` was invoked. Cleared on the matching
+   * `store*()` call.
+   */
+  private readonly pcdLinks = new Map<NetworkId, NetworkId>();
+  /** Inverse of `pcdLinks` — live-creature-id → PCD-id. */
+  private readonly creatureToPcd = new Map<NetworkId, NetworkId>();
+  /** Map of PCD NetworkId → current {@link PetState}. */
+  private readonly pcdStates = new Map<NetworkId, PetState>();
+  /** Unsubscribe handle for the world-events listener. */
+  private unsubscribe: (() => void) | null = null;
+  /**
+   * Auto-prune linkages when the server destroys the linked creature
+   * (vehicle dismount, pet store, killed by mob, etc.).
+   */
+  private static readonly CALL_TIMEOUT_MS = 10_000;
 
-  constructor(world: WorldModel, initialContainerId: NetworkId | null = null) {
+  constructor(
+    world: WorldModel,
+    initialContainerId: NetworkId | null = null,
+    playerNetworkId: NetworkId = 0n,
+  ) {
     this.world = world;
     this._containerId = initialContainerId;
+    this.playerNetworkId = playerNetworkId;
   }
 
   /** Set the datapad container id (called by the orchestrator when discovered). */
   setContainerId(id: NetworkId): void {
     this._containerId = id;
+  }
+
+  /**
+   * Subscribe to the WorldModel so that CREO baselines (which carry
+   * `m_masterId`) auto-associate freshly-spawned vehicles/pets with the
+   * PCD that called them. Idempotent. Call `detach()` at teardown.
+   */
+  attach(): void {
+    if (this.unsubscribe !== null) return;
+    this.unsubscribe = this.world.on((e) => this.onWorldEvent(e));
+  }
+
+  /** Unsubscribe from the WorldModel. Idempotent. */
+  detach(): void {
+    if (this.unsubscribe === null) return;
+    this.unsubscribe();
+    this.unsubscribe = null;
   }
 
   get containerId(): NetworkId | null {
@@ -234,7 +378,9 @@ export class DatapadViewImpl implements DatapadView {
   get items(): ReadonlyArray<DatapadItem> {
     if (this._containerId === null) return [];
     const id = this._containerId;
-    return this.world.filter((o) => o.containerId === id).map(toItem);
+    return this.world
+      .filter((o) => o.containerId === id)
+      .map((o) => toItem(o, this.world, this.pcdLinks, this.pcdStates));
   }
 
   get ready(): boolean {
@@ -263,6 +409,145 @@ export class DatapadViewImpl implements DatapadView {
 
   findById(id: NetworkId): DatapadItem | undefined {
     return this.items.find((it) => it.networkId === id);
+  }
+
+  notifyPetAction(
+    pcdOrCreatureId: NetworkId,
+    action: 'call' | 'store' | 'follow' | 'stay' | 'attack' | 'guard' | 'patrol',
+  ): void {
+    // Caller may pass the live creature id (for state-on-creature actions
+    // like petCommand) OR the PCD id (for call/store). Resolve to the
+    // PCD id by checking both maps.
+    let pcdId: NetworkId | null = null;
+    if (this.pcdStates.has(pcdOrCreatureId) || this.pendingCalls.some((p) => p.pcdId === pcdOrCreatureId)) {
+      pcdId = pcdOrCreatureId;
+    } else if (this.creatureToPcd.has(pcdOrCreatureId)) {
+      pcdId = this.creatureToPcd.get(pcdOrCreatureId) ?? null;
+    } else {
+      // First time we've seen this id — assume it's a PCD id.
+      pcdId = pcdOrCreatureId;
+    }
+
+    if (pcdId === null) return;
+
+    switch (action) {
+      case 'call': {
+        this.pcdStates.set(pcdId, 'called');
+        // Drop expired entries, then record this pending call.
+        const now = Date.now();
+        for (let i = this.pendingCalls.length - 1; i >= 0; i--) {
+          const entry = this.pendingCalls[i];
+          if (entry !== undefined && entry.expiresAt < now) this.pendingCalls.splice(i, 1);
+        }
+        this.pendingCalls.push({
+          pcdId,
+          expiresAt: now + DatapadViewImpl.CALL_TIMEOUT_MS,
+        });
+        break;
+      }
+      case 'store': {
+        this.pcdStates.set(pcdId, 'stored');
+        const linkedId = this.pcdLinks.get(pcdId);
+        if (linkedId !== undefined) {
+          this.creatureToPcd.delete(linkedId);
+        }
+        this.pcdLinks.delete(pcdId);
+        // Cancel any still-pending call for this PCD.
+        for (let i = this.pendingCalls.length - 1; i >= 0; i--) {
+          const entry = this.pendingCalls[i];
+          if (entry !== undefined && entry.pcdId === pcdId) this.pendingCalls.splice(i, 1);
+        }
+        break;
+      }
+      case 'follow':
+        this.pcdStates.set(pcdId, 'following');
+        break;
+      case 'stay':
+        this.pcdStates.set(pcdId, 'staying');
+        break;
+      case 'attack':
+      case 'guard':
+        this.pcdStates.set(pcdId, 'attacking');
+        break;
+      case 'patrol':
+        // No dedicated 'patrolling' literal in PetState; closest analog
+        // is 'following' (the pet is actively moving under master orders).
+        this.pcdStates.set(pcdId, 'following');
+        break;
+    }
+  }
+
+  /**
+   * Handle world events relevant to pet/vehicle linkage:
+   *   - CREO SHARED baseline with `masterId === playerNetworkId` →
+   *     associate with the earliest pending PCD call.
+   *   - SceneDestroyObject for a linked creature → clear the linkage and
+   *     reset the PCD's state to `'stored'`.
+   */
+  private onWorldEvent(e: WorldEvent): void {
+    switch (e.kind) {
+      case 'baseline': {
+        if (e.object.typeId !== ObjectTypeTags.CREO) return;
+        // Only CREO SHARED carries `masterId`. Other packages (p1/p6/etc.)
+        // can be ignored for linkage purposes.
+        if (e.decodedKind !== 'CreatureObjectShared') return;
+        if (this.creatureToPcd.has(e.object.id)) return; // already linked
+        const data = e.data as Partial<CreatureObjectSharedBaseline>;
+        if (data.masterId === undefined) return;
+        if (this.playerNetworkId === 0n || data.masterId !== this.playerNetworkId) return;
+        this.tryLinkCreature(e.object.id);
+        break;
+      }
+      case 'create':
+      case 'transform': {
+        // After CREO baseline, the next create/transform for the same
+        // object id may also bring it into our view if the original
+        // baseline came in earlier — check by scanning for masterId on
+        // the latest SHARED baseline.
+        if (e.object.typeId !== ObjectTypeTags.CREO) return;
+        if (this.creatureToPcd.has(e.object.id)) return;
+        const shared = e.object.baselines.get(BaselinePackageIds.SHARED);
+        if (shared === undefined || shared instanceof Uint8Array) return;
+        const data = shared as Partial<CreatureObjectSharedBaseline>;
+        if (data.masterId === undefined || this.playerNetworkId === 0n) return;
+        if (data.masterId !== this.playerNetworkId) return;
+        this.tryLinkCreature(e.object.id);
+        break;
+      }
+      case 'destroy': {
+        const pcdId = this.creatureToPcd.get(e.objectId);
+        if (pcdId === undefined) return;
+        this.creatureToPcd.delete(e.objectId);
+        this.pcdLinks.delete(pcdId);
+        this.pcdStates.set(pcdId, 'stored');
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  /**
+   * Associate `creatureId` with the earliest non-expired pending PCD
+   * call. Idempotent — if `creatureId` is already linked, no-op.
+   */
+  private tryLinkCreature(creatureId: NetworkId): void {
+    const now = Date.now();
+    // Drop expired entries.
+    for (let i = this.pendingCalls.length - 1; i >= 0; i--) {
+      const entry = this.pendingCalls[i];
+      if (entry !== undefined && entry.expiresAt < now) this.pendingCalls.splice(i, 1);
+    }
+    const next = this.pendingCalls.shift();
+    if (next === undefined) return;
+    this.pcdLinks.set(next.pcdId, creatureId);
+    this.creatureToPcd.set(creatureId, next.pcdId);
+    // The PCD is now spawned and live — update its state if it was
+    // still in the `'called'` transitional state.
+    const cur = this.pcdStates.get(next.pcdId);
+    if (cur === 'called' || cur === undefined) {
+      this.pcdStates.set(next.pcdId, 'following');
+    }
   }
 }
 

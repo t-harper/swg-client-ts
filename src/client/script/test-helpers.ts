@@ -45,12 +45,23 @@ export interface FakeContext {
    * responses for assertion helpers.
    */
   simulateRecv: (msg: GameNetworkMessage) => void;
+  /**
+   * Synthesize a ClockReflect sample being delivered to the SoeConnection.
+   * Use this in timing tests to drive `ctx.serverTime` without standing up
+   * a real connection — calls every listener registered via
+   * `addClockReflectListener`.
+   */
+  simulateClockReflect: (sample: import('../../soe/clock-sync.js').ClockReflectSample) => void;
 }
 
 interface FakeContextOptions {
   startPosition?: Vector3;
   startYaw?: number;
   playerNetworkId?: NetworkId;
+  /** Override SceneStart.serverTimeSeconds — server's GameTime, not Unix. Default 0n. */
+  serverTimeSeconds?: bigint;
+  /** Override SceneStart.serverEpoch — Unix epoch seconds, the seed for ctx.serverTime. Default 0. */
+  serverEpoch?: number;
 }
 
 type WaiterRecord = {
@@ -73,7 +84,29 @@ export function createFakeContext(opts: FakeContextOptions = {}): FakeContext {
   const listeners: ListenerRecord[] = [];
   const anyListeners: ((event: TranscriptEvent) => void)[] = [];
 
+  /**
+   * Test stub for SoeConnection — only the surface the timing trackers
+   * actually exercise (`addClockReflectListener` / `getLatencyStats`). Returns
+   * an unsubscribe function that removes the listener from `clockReflectListeners`.
+   */
+  const clockReflectListeners: Array<(s: import('../../soe/clock-sync.js').ClockReflectSample) => void> = [];
+  const fakeConnection = {
+    addClockReflectListener(
+      cb: (s: import('../../soe/clock-sync.js').ClockReflectSample) => void,
+    ): () => void {
+      clockReflectListeners.push(cb);
+      return () => {
+        const idx = clockReflectListeners.indexOf(cb);
+        if (idx >= 0) clockReflectListeners.splice(idx, 1);
+      };
+    },
+    getLatencyStats(): null {
+      return null;
+    },
+  };
+
   const fakeDispatcher = {
+    connection: fakeConnection,
     send(msg: GameNetworkMessage): void {
       sent.push(msg);
       sentBytes.push(encodeMessage(msg));
@@ -148,8 +181,8 @@ export function createFakeContext(opts: FakeContextOptions = {}): FakeContext {
     startPosition: opts.startPosition ?? { x: 0, y: 0, z: 0 },
     startYaw: opts.startYaw ?? 0,
     templateName: 'object/creature/player/human_male.iff',
-    serverTimeSeconds: 0n,
-    serverEpoch: 0,
+    serverTimeSeconds: opts.serverTimeSeconds ?? 0n,
+    serverEpoch: opts.serverEpoch ?? 0,
     disableWorldSnapshot: false,
   };
 
@@ -216,12 +249,25 @@ export function createFakeContext(opts: FakeContextOptions = {}): FakeContext {
     }
   };
 
+  const simulateClockReflect = (
+    sample: import('../../soe/clock-sync.js').ClockReflectSample,
+  ): void => {
+    for (const cb of clockReflectListeners.slice()) {
+      try {
+        cb(sample);
+      } catch {
+        // swallow
+      }
+    }
+  };
+
   return {
     ctx,
     sent,
     sentBytes,
     abort: () => abortController.abort(),
     simulateRecv,
+    simulateClockReflect,
   };
 }
 

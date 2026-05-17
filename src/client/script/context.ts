@@ -120,12 +120,19 @@ import {
 import type { GameNetworkMessage } from '../../messages/interface.js';
 import type { NetworkId, SceneStart, Vector3 } from '../../types.js';
 import type { MessageDispatcher } from '../dispatcher.js';
+import { SceneCreateObjectByCrc } from '../../messages/game/scene-create-object-by-crc.js';
+import { SceneCreateObjectByName } from '../../messages/game/scene-create-object-by-name.js';
 import type { WorldModel, WorldObject } from '../world-model.js';
+import {
+  PLAYER_DATAPAD_TEMPLATE_CRC,
+  extractDatapadContainerId,
+} from '../baseline-helpers.js';
 import {
   BaselinePackageIds,
   ObjectTypeTags,
 } from '../../messages/game/baselines/registry.js';
 import type { TangibleObjectSharedNpBaseline } from '../../messages/game/baselines/tangible-object-baseline-6.js';
+import { type DatapadView, DatapadViewImpl } from './datapad-view.js';
 import {
   type ExpectOptions,
   expectAbsent as expectAbsentImpl,
@@ -401,6 +408,22 @@ export interface ScriptContext {
    * reference to a `WorldObject` is safe: it's mutated in place.
    */
   readonly world: WorldModel;
+  /**
+   * Always-fresh view of the player's datapad — vehicle/pet PCDs,
+   * waypoints, missions, ship items, manufacturing schematics. Auto-opened
+   * by the game stage right after zone-in completes; entries are derived
+   * from `ctx.world` (no duplicate state) so they update as the server
+   * pushes baselines/deltas/containment changes.
+   *
+   *   ctx.datapad.vehicles()[0]?.networkId    // first vehicle PCD
+   *   ctx.datapad.waypoints()                 // every waypoint
+   *   ctx.datapad.findByTemplate(/swoop/)     // text-match by template
+   *
+   * `containerId` is `null` until the datapad's `SceneCreateObjectByName`
+   * arrives; `ready` flips to `true` once it does. For deterministic test
+   * code use `await ctx.wait(small)` after zone-in if `ready === false`.
+   */
+  readonly datapad: DatapadView;
   /**
    * Find the nearest `WorldObject` matching `typeId` (one of `ObjectTypeTags`),
    * sorted by 2D distance from the player. Excludes the player itself by
@@ -1283,6 +1306,8 @@ interface InternalContext extends ScriptContext {
     /** Per-player bazaar-browse request id. */
     bazaarRequestId: number;
     assertionFailures: string[];
+    /** Unsubscribe handle for the live datapad SceneCreateObjectByName listener. */
+    datapadCreateUnsubscribe: (() => void) | null;
   };
 }
 
@@ -1339,6 +1364,33 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     mountedSpeedCap: null as number | null,
     bazaarRequestId: opts.initialBazaarRequestId ?? 1,
     assertionFailures: [] as string[],
+    datapadCreateUnsubscribe: null as (() => void) | null,
+  };
+
+  // DatapadView — seeded from any datapad create event already in the
+  // transcript (typical case after zone-in), and kept fresh by live
+  // listeners for the case where the datapad's create event arrives after
+  // the script context is constructed (e.g. respawn / mid-script re-create).
+  // The live server sends the datapad via ByCrc (compact form); we
+  // subscribe to both ByName and ByCrc to cover any wire shape.
+  const datapadView = new DatapadViewImpl(opts.world);
+  const seedDatapadId = extractDatapadContainerId(opts.dispatcher.transcript);
+  if (seedDatapadId !== null) datapadView.setContainerId(seedDatapadId);
+  const datapadByNameUnsubscribe = opts.dispatcher.onMessage(SceneCreateObjectByName, (m) => {
+    if (datapadView.containerId !== null) return;
+    if (/(^|\/)(shared_)?character_datapad\.iff$/.test(m.templateName)) {
+      datapadView.setContainerId(m.networkId);
+    }
+  });
+  const datapadByCrcUnsubscribe = opts.dispatcher.onMessage(SceneCreateObjectByCrc, (m) => {
+    if (datapadView.containerId !== null) return;
+    if (m.templateCrc === PLAYER_DATAPAD_TEMPLATE_CRC) {
+      datapadView.setContainerId(m.networkId);
+    }
+  });
+  state.datapadCreateUnsubscribe = (): void => {
+    datapadByNameUnsubscribe();
+    datapadByCrcUnsubscribe();
   };
 
   const ctx: InternalContext = {
@@ -1346,6 +1398,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     sceneStart: opts.sceneStart,
     signal: opts.signal,
     world: opts.world,
+    datapad: datapadView,
     _state: state,
 
     findNearest(
@@ -2448,6 +2501,10 @@ export async function runScript(fn: ScenarioFn, ctx: ScriptContext): Promise<Scr
     if (internal._state.teleportListenerUnsubscribe !== null) {
       internal._state.teleportListenerUnsubscribe();
       internal._state.teleportListenerUnsubscribe = null;
+    }
+    if (internal._state.datapadCreateUnsubscribe !== null) {
+      internal._state.datapadCreateUnsubscribe();
+      internal._state.datapadCreateUnsubscribe = null;
     }
   }
   return {

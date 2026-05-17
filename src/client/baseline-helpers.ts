@@ -25,6 +25,7 @@ import {
   ObjectTypeTags,
   PlayerObjectSharedKind,
 } from '../messages/game/baselines/index.js';
+import { SceneCreateObjectByCrc } from '../messages/game/scene-create-object-by-crc.js';
 import { SceneCreateObjectByName } from '../messages/game/scene-create-object-by-name.js';
 import { UpdateContainmentMessage } from '../messages/game/update-containment-message.js';
 import type { NetworkId } from '../types.js';
@@ -32,6 +33,21 @@ import type { TranscriptEvent } from './dispatcher.js';
 
 /** Templates we recognize for in-character containers. */
 const PLAYER_INVENTORY_TEMPLATE_PATTERN = /(^|\/)(shared_)?character_inventory\.iff$/;
+const PLAYER_DATAPAD_TEMPLATE_PATTERN = /(^|\/)(shared_)?character_datapad\.iff$/;
+
+/**
+ * Template CRCs the server uses when sending containers via
+ * `SceneCreateObjectByCrc` rather than `SceneCreateObjectByName`.
+ *
+ * Computed from `Crc::calculate` over the IFF path (standard CRC-32 with
+ * the same polynomial table at `~/code/swg-main/.../Crc.cpp`). The CRC is
+ * an SOE convention; the same hash is used everywhere in the server for
+ * template lookups, so we can hardcode the known IFFs.
+ *
+ * Verified by sniffing live `SceneCreateObjectByCrc` events.
+ */
+export const PLAYER_INVENTORY_TEMPLATE_CRC = 0x3969e83b;
+export const PLAYER_DATAPAD_TEMPLATE_CRC = 0x73ba5001;
 
 /**
  * What we need from the transcript-bearing thing: either a `LifecycleResult`
@@ -134,9 +150,45 @@ export function extractInventoryContainerId(source: TranscriptSource): NetworkId
   for (const event of eventsOf(source)) {
     if (event.direction !== 'recv') continue;
     if (event.decoded === null) continue;
-    if (!(event.decoded instanceof SceneCreateObjectByName)) continue;
-    if (PLAYER_INVENTORY_TEMPLATE_PATTERN.test(event.decoded.templateName)) {
-      return event.decoded.networkId;
+    if (event.decoded instanceof SceneCreateObjectByName) {
+      if (PLAYER_INVENTORY_TEMPLATE_PATTERN.test(event.decoded.templateName)) {
+        return event.decoded.networkId;
+      }
+    } else if (event.decoded instanceof SceneCreateObjectByCrc) {
+      if (event.decoded.templateCrc === PLAYER_INVENTORY_TEMPLATE_CRC) {
+        return event.decoded.networkId;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Look for the player character's datapad container.
+ *
+ * The datapad is a per-player container (slot `'datapad'`) that holds
+ * vehicle/pet PCDs (PersistentControlDevices), waypoints, missions, ship
+ * items, and manufacturing schematics. Same wire shape as the inventory
+ * — a `SceneCreateObject{ByName,ByCrc}` whose template path ends in
+ * `(shared_)?character_datapad.iff` (CRC `0x73ba5001`).
+ *
+ * Returns the earliest matching NetworkId in the transcript, or `null`
+ * if the create event hasn't been observed. Live servers send the
+ * datapad via ByCrc (compact form, deterministic hash) — both wire
+ * shapes are handled here.
+ */
+export function extractDatapadContainerId(source: TranscriptSource): NetworkId | null {
+  for (const event of eventsOf(source)) {
+    if (event.direction !== 'recv') continue;
+    if (event.decoded === null) continue;
+    if (event.decoded instanceof SceneCreateObjectByName) {
+      if (PLAYER_DATAPAD_TEMPLATE_PATTERN.test(event.decoded.templateName)) {
+        return event.decoded.networkId;
+      }
+    } else if (event.decoded instanceof SceneCreateObjectByCrc) {
+      if (event.decoded.templateCrc === PLAYER_DATAPAD_TEMPLATE_CRC) {
+        return event.decoded.networkId;
+      }
     }
   }
   return null;

@@ -372,8 +372,8 @@ export const groupTradeScenario: ScenarioFactory = (args) => {
  *
  * The datapad PCD id is the persistent control device for the vehicle —
  * it's in the player's datapad container. When omitted, the scenario
- * auto-resolves by scanning `ctx.world` for an object whose `templateName`
- * matches `/vehicle_control_device|_pcd\.iff/`. Pass `datapadItemId`
+ * auto-resolves via `ctx.datapad.vehicles()[0]` (the always-fresh datapad
+ * view populated by the game-stage auto-open). Pass `datapadItemId`
  * explicitly to keep CI runs deterministic.
  *
  * Wire flow:
@@ -392,9 +392,8 @@ export const groupTradeScenario: ScenarioFactory = (args) => {
  *
  * Args:
  *   datapadItemId  (optional) hex/decimal NetworkId of the datapad PCD.
- *                  When omitted, auto-resolved by scanning `ctx.world` for
- *                  a vehicle_control_device / _pcd object. If none found,
- *                  soft-fails via `ctx.fail('no vehicle PCD found')`.
+ *                  When omitted, auto-resolved via `ctx.datapad.vehicles()[0]`.
+ *                  If none found, soft-fails via `ctx.fail(...)`.
  *   vehicleId      (optional) NetworkId of the spawned vehicle creature.
  *                  If omitted, the scenario tries to grab the most-recent
  *                  inbound CreateObjectByCrc that lands during `settleMs`;
@@ -424,14 +423,16 @@ export const rideVehicle: ScenarioFactory = (args) => {
   return async (ctx) => {
     let datapadItemId = datapadItemIdArg;
     if (datapadItemId === null) {
-      const found = ctx.world.filter((o) =>
-        /vehicle_control_device|_pcd\.iff/.test(o.templateName ?? ''),
-      )[0];
-      if (found === undefined) {
-        ctx.fail('no vehicle PCD found');
+      // Prefer the always-fresh datapad view — it's populated by the
+      // game-stage auto-open and only contains datapad children (PCDs etc.),
+      // so we don't catch stray world objects whose templates happen to
+      // match `_pcd.iff` (e.g. a nearby NPC's PCD).
+      const vehicle = ctx.datapad.vehicles()[0];
+      if (vehicle === undefined) {
+        ctx.fail('no vehicle PCD found in datapad');
         return;
       }
-      datapadItemId = found.id;
+      datapadItemId = vehicle.networkId;
     }
 
     ctx.callVehicle(datapadItemId);

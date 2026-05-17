@@ -142,6 +142,22 @@ export type {
   ServerTimeTrackerHandle,
   ServerTimeView,
 } from './client/timing.js';
+// Combat / safety helpers (exposed as `ctx.combat` and `ctx.safety` during
+// script runs). `ctx.combat` surfaces target tracking (`targets()`,
+// `engaged`), auto-loot (set `autoLoot=true`), and the
+// `attackingNearest()` one-liner sugar. `ctx.safety.fleeWhenHealthBelow()`
+// installs a watcher that breaks combat, calls/mounts a vehicle, and
+// walks to safe coords when health drops below the given ratio.
+export type {
+  AttackingNearestOptions,
+  CombatHelpersHandle,
+  CombatHostContext,
+  CombatTargetEntry,
+  CombatView,
+  FleeOptions,
+  SafetyView,
+} from './client/combat-helpers.js';
+export { attachCombatHelpers } from './client/combat-helpers.js';
 export type { WalkToOptions, CircleOptions, WalkToCellOptions } from './client/script/movement.js';
 export type { ExpectOptions } from './client/script/expectations.js';
 

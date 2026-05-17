@@ -147,23 +147,23 @@ describe('CooldownTracker (createScriptContext-wired)', () => {
 describe('CombatTimer', () => {
   it('reports POSITIVE_INFINITY and engaged=false when never hit', () => {
     const { ctx } = createFakeContext({ playerNetworkId: PLAYER_ID });
-    expect(ctx.combat.timeSinceLastHitMs).toBe(Number.POSITIVE_INFINITY);
-    expect(ctx.combat.engaged).toBe(false);
-    expect(ctx.combat.lastHit()).toBeNull();
+    expect(ctx.hitTimer.timeSinceLastHitMs).toBe(Number.POSITIVE_INFINITY);
+    expect(ctx.hitTimer.engaged).toBe(false);
+    expect(ctx.hitTimer.lastHit()).toBeNull();
   });
 
   it('updates timeSinceLastHitMs after a CombatAction targeting us', async () => {
     const { ctx, simulateRecv } = createFakeContext({ playerNetworkId: PLAYER_ID });
     simulateRecv(buildCombatAction(42));
-    expect(ctx.combat.timeSinceLastHitMs).toBeLessThan(50);
-    expect(ctx.combat.engaged).toBe(true);
-    const hit = ctx.combat.lastHit();
+    expect(ctx.hitTimer.timeSinceLastHitMs).toBeLessThan(50);
+    expect(ctx.hitTimer.engaged).toBe(true);
+    const hit = ctx.hitTimer.lastHit();
     expect(hit).not.toBeNull();
     expect(hit?.attackerId).toBe(ATTACKER_ID);
     expect(hit?.damageAmount).toBe(42);
     // Wait a beat, then re-read — the elapsed time should grow.
     await new Promise((r) => setTimeout(r, 30));
-    expect(ctx.combat.timeSinceLastHitMs).toBeGreaterThanOrEqual(30);
+    expect(ctx.hitTimer.timeSinceLastHitMs).toBeGreaterThanOrEqual(30);
   });
 
   it('ignores CombatActions where we are not in the defender list', () => {
@@ -206,8 +206,8 @@ describe('CombatTimer', () => {
         { kind: CombatActionDecoder.kind, data },
       ),
     );
-    expect(ctx.combat.timeSinceLastHitMs).toBe(Number.POSITIVE_INFINITY);
-    expect(ctx.combat.engaged).toBe(false);
+    expect(ctx.hitTimer.timeSinceLastHitMs).toBe(Number.POSITIVE_INFINITY);
+    expect(ctx.hitTimer.engaged).toBe(false);
   });
 
   it('engaged flips to false after the engagement window elapses', () => {
@@ -225,7 +225,7 @@ describe('CombatTimer', () => {
       damageAmount: 1,
       defense: 0,
     });
-    expect(ctx.combat.engaged).toBe(true);
+    expect(ctx.hitTimer.engaged).toBe(true);
     // Default window is 10s; we want to assert the WINDOW logic, not wait
     // 10 seconds. Force an old timestamp instead.
     internal._combatTimerHandle.testSetLastHit({
@@ -234,7 +234,7 @@ describe('CombatTimer', () => {
       damageAmount: 1,
       defense: 0,
     });
-    expect(ctx.combat.engaged).toBe(false);
+    expect(ctx.hitTimer.engaged).toBe(false);
   });
 
   it('honors a custom engagementWindowMs', async () => {

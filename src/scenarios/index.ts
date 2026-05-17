@@ -74,21 +74,22 @@ export const dwell: ScenarioFactory = (args) => {
 /**
  * Queue `attack` against a target every ~tickMs for durationMs.
  *
- * When `targetId` is omitted, the scenario auto-resolves a victim from the
- * live `WorldModel` via the Wave-A sugar API:
- *   - `mode=manual` (default) → `ctx.findNearest(CREO, { maxRadiusM: 40 })`
- *   - `mode=hostile`          → `ctx.nearestHostile({ maxRadiusM: 40 })`
- * If nothing matches, the scenario soft-fails via `ctx.fail('no target')`
- * and returns without sending any commands.
+ * When `targetId` is omitted and `mode=hostile`, delegates to the new
+ * `ctx.combat.attackingNearest()` sugar (which resolves via
+ * `nearestHostile`, attacks every tickMs, and exits cleanly once the
+ * target dies). For `mode=manual` or pinned `targetId`, the loop is
+ * unrolled inline for back-compat.
  *
  * Args:
  *   targetId   (optional) hex (0x...) or decimal NetworkId of the victim.
  *                         When omitted, auto-resolved from `ctx.world`.
  *   mode       (default 'manual') 'manual' picks any nearby CREO;
  *                                 'hostile' restricts to CREOs whose
- *                                 SHARED_NP `inCombat` flag is set.
+ *                                 SHARED_NP `inCombat` flag is set, and
+ *                                 routes through `ctx.combat.attackingNearest`.
  *   durationMs (default 5000) total attack window
  *   tickMs     (default 1000) cadence between enqueues
+ *   autoLoot   (default false) set `ctx.combat.autoLoot = true` for the run
  */
 export const combatAttack: ScenarioFactory = (args) => {
   const hasTargetId = args.targetId !== undefined && args.targetId !== '';
@@ -96,16 +97,25 @@ export const combatAttack: ScenarioFactory = (args) => {
   const mode = args.mode === 'hostile' ? 'hostile' : 'manual';
   const durationMs = numArg(args, 'durationMs', 5000);
   const tickMs = numArg(args, 'tickMs', 1000);
+  const autoLoot = args.autoLoot === '1' || args.autoLoot === 'true';
   if (tickMs <= 0) {
     throw new Error(`combat-attack: tickMs must be > 0 (got ${tickMs})`);
   }
   return async (ctx) => {
+    if (autoLoot) ctx.combat.autoLoot = true;
+    // Hostile auto-target path: use the new combat-helper sugar.
+    if (targetId === null && mode === 'hostile') {
+      await ctx.combat.attackingNearest({
+        maxRadiusM: 40,
+        tickMs,
+        timeoutMs: durationMs,
+      });
+      return;
+    }
+    // Manual / pinned path: legacy fixed-target loop.
     let victim = targetId;
     if (victim === null) {
-      const found =
-        mode === 'hostile'
-          ? ctx.nearestHostile({ maxRadiusM: 40 })
-          : ctx.findNearest(ObjectTypeTags.CREO, { maxRadiusM: 40 });
+      const found = ctx.findNearest(ObjectTypeTags.CREO, { maxRadiusM: 40 });
       if (found === undefined) {
         ctx.fail('no target');
         return;
@@ -113,7 +123,6 @@ export const combatAttack: ScenarioFactory = (args) => {
       victim = found.id;
     }
     const deadline = Date.now() + durationMs;
-    // Emit one immediately, then re-queue every tickMs until durationMs elapses.
     ctx.attackTarget(victim);
     while (Date.now() + tickMs <= deadline) {
       await ctx.wait(tickMs);

@@ -1,141 +1,85 @@
 #!/usr/bin/env node --import tsx
 /**
- * combat-then-flee.ts — attack a target for N seconds, then walk away K
- * metres, repeat.
+ * combat-then-flee.ts — attack the nearest hostile until it dies; when our
+ * health drops, break combat and walk to safe coords.
  *
- * Each cycle:
- *   1. Pick an engagement target (auto: `ctx.nearestHostile` →
- *      `ctx.findNearest(CREO)` fallback, both capped at 40 m). Override with
- *      `--target-id=` for a fixed NetworkId.
- *   2. Queue `attack` against that target every `--tick-ms` for `--combat-ms`
- *   3. Pick a random heading
- *   4. Walk `--flee-distance` metres in that direction
- *   5. Pause `--rest-ms`, then loop
+ * Driven entirely by `ctx.combat.attackingNearest()` + `ctx.combat.autoLoot`
+ * + `ctx.safety.fleeWhenHealthBelow()`. The flee watcher fires once when
+ * health drops, sends `peace`, optionally calls/mounts a vehicle, then
+ * walks. The main loop just churns hostile after hostile.
  *
  * Example:
- *   # Auto-pick the nearest in-combat creature (or any CREO if no hostiles
- *   # have flagged inCombat yet) and engage:
  *   pnpm exec tsx scripts/examples/combat-then-flee.ts \
  *     --host=10.254.0.253 --user=ci-test --character=TsTest \
- *     --combat-ms=4000 --flee-distance=15 --minutes=10
- *
- *   # Pin to a known NetworkId (back-compat):
- *   pnpm exec tsx scripts/examples/combat-then-flee.ts \
- *     --host=10.254.0.253 --user=ci-test --character=TsTest \
- *     --target-id=0x9999999 --combat-ms=4000 --flee-distance=15 --minutes=10
+ *     --health-bail=0.3 --flee-x=0 --flee-z=0 --minutes=10
  */
 
-import { type NetworkId, ObjectTypeTags, type ScenarioFn } from '../../src/index.js';
+import type { ScenarioFn } from '../../src/index.js';
 import { durationMs, formatJson, makeLogger, parseCommonArgs, runScenario, usage } from './_lib.js';
 
 const SCRIPT = 'scripts/examples/combat-then-flee.ts';
 const AUTO_PICK_RADIUS_M = 40;
 
 interface ScriptArgs {
-  /** `0n` = auto-pick each cycle via WorldModel sugar. */
-  targetId: NetworkId;
-  combatMs: number;
   tickMs: number;
-  fleeDistance: number;
-  restMs: number;
-  speed: number;
-  /**
-   * Cut the combat burst short if `ctx.character.health.current` drops below
-   * this fraction of `health.max` (default 0.25 = 25% HP). Set to 0 to
-   * disable the early-bail check.
-   */
   healthBailFraction: number;
+  fleeX: number;
+  fleeZ: number;
+  fleeSpeed: number;
+  restMs: number;
 }
 
 function parseScriptArgs(extra: Map<string, string>): ScriptArgs {
-  const raw = extra.get('target-id') ?? '0';
   return {
-    targetId: BigInt(raw) as NetworkId,
-    combatMs: Number.parseInt(extra.get('combat-ms') ?? '4000', 10),
     tickMs: Number.parseInt(extra.get('tick-ms') ?? '1500', 10),
-    fleeDistance: Number.parseFloat(extra.get('flee-distance') ?? '15'),
+    healthBailFraction: Number.parseFloat(extra.get('health-bail') ?? '0.3'),
+    fleeX: Number.parseFloat(extra.get('flee-x') ?? '0'),
+    fleeZ: Number.parseFloat(extra.get('flee-z') ?? '0'),
+    fleeSpeed: Number.parseFloat(extra.get('flee-speed') ?? '12'),
     restMs: Number.parseInt(extra.get('rest-ms') ?? '2000', 10),
-    speed: Number.parseFloat(extra.get('speed') ?? '5'),
-    healthBailFraction: Number.parseFloat(extra.get('health-bail') ?? '0.25'),
   };
 }
 
 function buildScenario(args: ScriptArgs, totalMs: number, verbose: boolean): ScenarioFn {
   return async (ctx) => {
     const log = makeLogger('flee', verbose);
-    const pinned = args.targetId !== 0n;
-    if (pinned) {
-      log(
-        `engage pinned 0x${args.targetId.toString(16)} for ${args.combatMs}ms, flee ${args.fleeDistance}m`,
-      );
-    } else {
-      log(
-        `auto-pick hostile within ${AUTO_PICK_RADIUS_M}m, engage ${args.combatMs}ms, flee ${args.fleeDistance}m`,
-      );
-    }
+    log(
+      `auto-engage nearest hostile within ${AUTO_PICK_RADIUS_M}m; flee at health<${args.healthBailFraction} → (${args.fleeX},${args.fleeZ})`,
+    );
+
+    ctx.combat.autoLoot = true;
+    let fled = false;
+    ctx.safety.fleeWhenHealthBelow(args.healthBailFraction, {
+      goTo: { x: args.fleeX, z: args.fleeZ },
+      usePeace: true,
+      useVehicle: true,
+      speed: args.fleeSpeed,
+      onTrigger: (info) => {
+        fled = true;
+        log(
+          `FLEE TRIGGERED: ratio=${info.healthRatio.toFixed(2)} hp=${info.health}/${info.healthMax} vehicle=${info.usingVehicle}`,
+        );
+      },
+    });
 
     const deadline = Date.now() + totalMs;
-    let cycle = 0;
-    let attacks = 0;
-    let skippedCycles = 0;
-    while (Date.now() < deadline) {
-      // 1. Pick a target for this cycle.
-      let targetId: NetworkId;
-      if (pinned) {
-        targetId = args.targetId;
-      } else {
-        const hostile =
-          ctx.nearestHostile({ maxRadiusM: AUTO_PICK_RADIUS_M }) ??
-          ctx.findNearest(ObjectTypeTags.CREO, { maxRadiusM: AUTO_PICK_RADIUS_M });
-        if (hostile === undefined) {
-          skippedCycles++;
-          log(`cycle ${cycle}: no CREO within ${AUTO_PICK_RADIUS_M}m, resting ${args.restMs}ms`);
-          await ctx.wait(args.restMs);
-          cycle++;
-          continue;
-        }
-        targetId = hostile.id;
-        const tplLabel = hostile.templateName ?? '(unknown template)';
-        log(`cycle ${cycle}: engaging 0x${targetId.toString(16)} — ${tplLabel}`);
+    let cycles = 0;
+    while (Date.now() < deadline && !fled) {
+      cycles++;
+      await ctx.combat.attackingNearest({
+        maxRadiusM: AUTO_PICK_RADIUS_M,
+        tickMs: args.tickMs,
+        timeoutMs: Math.min(60_000, Math.max(1_000, deadline - Date.now())),
+      });
+      if (cycles % 3 === 0) {
+        const h = ctx.character.health;
+        log(`cycle=${cycles} ham=${h.current}/${h.max} engaged=${ctx.combat.engaged}`);
       }
-
-      // 2. Attack burst (with optional early-bail when HP drops low)
-      const cbtDeadline = Math.min(Date.now() + args.combatMs, deadline);
-      let earlyBailed = false;
-      while (Date.now() < cbtDeadline) {
-        ctx.attackTarget(targetId);
-        attacks++;
-        await ctx.wait(args.tickMs);
-        // Live HAM check: bail early if health drops below threshold. The
-        // `ctx.character.health` view stays current via CREO p6 deltas the
-        // server pushes on every damage tick.
-        if (args.healthBailFraction > 0) {
-          const h = ctx.character.health;
-          if (h.max > 0 && h.current / h.max < args.healthBailFraction) {
-            log(
-              `cycle ${cycle}: bailing early — health ${h.current}/${h.max} < ${(args.healthBailFraction * 100).toFixed(0)}%`,
-            );
-            earlyBailed = true;
-            break;
-          }
-        }
+      if (args.restMs > 0) {
+        await ctx.wait(Math.min(args.restMs, Math.max(0, deadline - Date.now())));
       }
-      void earlyBailed;
-      if (Date.now() >= deadline) break;
-      // 3. Flee
-      const angle = Math.random() * 2 * Math.PI;
-      const cur = ctx.position();
-      const target = {
-        x: cur.x + Math.cos(angle) * args.fleeDistance,
-        z: cur.z + Math.sin(angle) * args.fleeDistance,
-      };
-      log(`cycle ${cycle}: fleeing to (${target.x.toFixed(1)}, ${target.z.toFixed(1)})`);
-      await ctx.walkTo(target, { speed: args.speed });
-      // 4. Rest
-      await ctx.wait(args.restMs);
-      cycle++;
     }
-    log(`done: ${cycle} cycles, ${attacks} attacks, ${skippedCycles} skipped (no target)`);
+    log(`done: cycles=${cycles} fled=${fled}`);
     await ctx.logout();
   };
 }
@@ -143,16 +87,14 @@ function buildScenario(args: ScriptArgs, totalMs: number, verbose: boolean): Sce
 async function main(): Promise<number> {
   const args = parseCommonArgs(process.argv.slice(2));
   if (args.help) {
-    usage(SCRIPT, 'Attack a target, then flee a short distance, then repeat.', [
-      '  --target-id=N            pin to NetworkId (decimal or 0x... hex);',
-      `                           omit to auto-pick via nearestHostile / nearest CREO within ${AUTO_PICK_RADIUS_M}m`,
-      '  --combat-ms=N            attack burst duration in ms (default 4000)',
+    usage(SCRIPT, 'Auto-attack the nearest hostile; flee with peace+vehicle when health drops.', [
       '  --tick-ms=N              ms between attacks during burst (default 1500)',
-      '  --flee-distance=N        flee distance in m (default 15)',
-      '  --rest-ms=N              rest after flee in ms (default 2000)',
-      '  --speed=N                walk speed (default 5)',
-      '  --health-bail=F          flee early when health.current / health.max',
-      '                           drops below this fraction (default 0.25)',
+      '  --rest-ms=N              rest after each kill (default 2000)',
+      '  --health-bail=F          flee when health.current/health.max drops below this',
+      '                           fraction (default 0.3)',
+      '  --flee-x=N               flee destination X (default 0)',
+      '  --flee-z=N               flee destination Z (default 0)',
+      '  --flee-speed=N           walk speed during flee (default 12, clamped by mounted cap)',
     ]);
     return 0;
   }
@@ -160,10 +102,7 @@ async function main(): Promise<number> {
   const totalMs = durationMs(args.minutes);
   const scenario = buildScenario(script, totalMs, args.verbose);
   const { summary } = await runScenario(args, scenario);
-  summary.extra = {
-    ...script,
-    targetId: script.targetId === 0n ? 'auto' : `0x${script.targetId.toString(16)}`,
-  };
+  summary.extra = { ...script };
   process.stdout.write(formatJson(summary, args.pretty));
   return summary.ok ? 0 : 1;
 }

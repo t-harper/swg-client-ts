@@ -69,8 +69,8 @@ describe.skipIf(!LIVE)('live ScriptContext timing views', () => {
       holdZonedInMs: 0,
       script: async (ctx) => {
         // Capture the initial state of each view right at script start.
-        observed.combatEngagedAtStart = ctx.combat.engaged;
-        observed.combatTimeSinceLastHitInitial = ctx.combat.timeSinceLastHitMs;
+        observed.combatEngagedAtStart = ctx.hitTimer.engaged;
+        observed.combatTimeSinceLastHitInitial = ctx.hitTimer.timeSinceLastHitMs;
         observed.hasSeed = ctx.serverTime.hasSeed;
         observed.serverTimeMsAtStart = ctx.serverTime.ms();
         observed.cooldownsBeforeStand = ctx.cooldowns.all().size;

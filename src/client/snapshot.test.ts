@@ -261,6 +261,7 @@ function buildResult(opts: SyntheticOptions = {}): LifecycleResult {
     transcript,
     stationId: 0,
     receivedErrorMessage: false,
+    latency: null,
   };
 }
 

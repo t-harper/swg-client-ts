@@ -37,11 +37,39 @@ export interface LiveCredentials {
   reused: boolean;
 }
 
+/**
+ * Pre-stocked admin-whitelisted accounts (tslive01..tslive20 in stella_admin.tab).
+ * These are guaranteed `canCreateRegularCharacter=true` because they bypass the
+ * cluster's player-limit/tutorial-limit checks via the `clientIsInternal` path
+ * (LoginServer.cpp:946-950). Set `LIVE_ADMIN_POOL=0` to disable and fall back
+ * to fresh timestamp-suffixed accounts.
+ */
+const ADMIN_POOL_PREFIX = 'tslive';
+const ADMIN_POOL_SIZE = 20;
+// Seed the cursor from PID so concurrent vitest worker processes don't all
+// race on tslive01 — each worker gets a different starting offset.
+let adminPoolCursor = process.pid % ADMIN_POOL_SIZE;
+
+function nextAdminPoolAccount(): string {
+  const idx = (adminPoolCursor++ % ADMIN_POOL_SIZE) + 1;
+  return `${ADMIN_POOL_PREFIX}${idx.toString().padStart(2, '0')}`;
+}
+
 export function liveCredentials(prefix: string): LiveCredentials {
   const reuseAcct = process.env.CI_REUSE_ACCOUNT;
   const reuseChar = process.env.CI_REUSE_CHARACTER;
   if (reuseAcct !== undefined && reuseAcct !== '' && reuseChar !== undefined && reuseChar !== '') {
     return { account: reuseAcct, characterName: reuseChar, reused: true };
+  }
+  // Default to the admin-whitelisted account pool — fresh per-run accounts
+  // would hit cluster player-limit gating which silently disables char creation.
+  if (process.env.LIVE_ADMIN_POOL !== '0') {
+    const account = nextAdminPoolAccount();
+    return {
+      account,
+      characterName: `Ts${prefix}${Date.now() % 1_000_000}`,
+      reused: false,
+    };
   }
   return {
     account: `${prefix}${(Date.now() % 100_000_000).toString(36)}`,
@@ -72,6 +100,8 @@ export async function sessionSettle(ms = 8_000): Promise<void> {
 export function liveAccount(prefix: string): string {
   const reuseAcct = process.env.CI_REUSE_ACCOUNT;
   if (reuseAcct !== undefined && reuseAcct !== '') return reuseAcct;
+  // Default to admin pool (see liveCredentials comment).
+  if (process.env.LIVE_ADMIN_POOL !== '0') return nextAdminPoolAccount();
   return `${prefix}${(Date.now() % 100_000_000).toString(36)}`;
 }
 

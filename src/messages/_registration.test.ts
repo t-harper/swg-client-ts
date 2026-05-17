@@ -22,6 +22,7 @@ import { StationIdHasJediSlot } from './connection/station-id-has-jedi-slot.js';
 import { AttributeListMessage } from './game/attribute-list-message.js';
 import { BaselinesMessage } from './game/baselines/baselines-message.js';
 import { BatchBaselinesMessage } from './game/baselines/batch-baselines-message.js';
+import { DeltasMessage } from './game/baselines/deltas-message.js';
 import { ChatInstantMessageToCharacter } from './game/chat/chat-instant-message-to-character.js';
 import { ChatInstantMessageToClient } from './game/chat/chat-instant-message-to-client.js';
 import { ChatPersistentMessageToServer } from './game/chat/chat-persistent-message-to-server.js';
@@ -101,6 +102,7 @@ const ALL_DECODERS = [
   AttributeListMessage,
   BaselinesMessage,
   BatchBaselinesMessage,
+  DeltasMessage,
   ChatInstantMessageToCharacter,
   ChatInstantMessageToClient,
   ChatRequestRoomList,
@@ -145,8 +147,8 @@ const ALL_DECODERS = [
 ];
 
 describe('message registration', () => {
-  it('exports 65 message classes', () => {
-    expect(ALL_DECODERS.length).toBe(65);
+  it('exports 66 message classes', () => {
+    expect(ALL_DECODERS.length).toBe(66);
   });
 
   it('every class has a non-empty messageName', () => {

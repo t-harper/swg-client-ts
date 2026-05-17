@@ -14,6 +14,19 @@
 
 export { BaselinesMessage, BaselinesMessageDecoder } from './baselines-message.js';
 export { BatchBaselinesMessage, BatchBaselinesMessageDecoder } from './batch-baselines-message.js';
+export { DeltasMessage, DeltasMessageDecoder } from './deltas-message.js';
+export {
+  type DecodedDelta,
+  type DeltaFieldCodec,
+  type DeltaPackageDecoder,
+  deltaRegistry,
+  registerDelta,
+  tryDecodeDelta,
+} from './delta-registry.js';
+export {
+  TangibleObjectClientServerDeltaDecoder,
+  TangibleObjectClientServerDeltaKind,
+} from './tangible-object-delta-1.js';
 export {
   type BuildingObjectSharedBaseline,
   BuildingObjectSharedDecoder,

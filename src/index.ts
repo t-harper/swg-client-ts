@@ -453,3 +453,17 @@ export type { TreAddOptions, TreBuildOptions, TreEntry } from './tre/index.js';
 // concentric-ring grid search for flat patches. See src/terrain/index.ts.
 // =============================================================================
 export * from './terrain/index.js';
+
+// =============================================================================
+// IFF (Interchange File Format) parser + writer for SWG data files.
+// See src/iff/index.ts for the full surface.
+//
+// NOTE: the iff module also exports `tagToString` / `tagFromString` — re-exported
+// here under the names `iffTagToString` / `iffTagFromString` to avoid colliding
+// with the same-named baseline helpers (different byte-order convention).
+// =============================================================================
+export { Iff, IffWriter, TAG_FORM, tag as iffTag } from './iff/index.js';
+export {
+  tagFromString as iffTagFromString,
+  tagToString as iffTagToString,
+} from './iff/index.js';

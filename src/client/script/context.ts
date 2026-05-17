@@ -65,6 +65,12 @@ import {
   type TeleportAckData,
   TeleportAckDecoder,
 } from '../../messages/game/obj-controller/index.js';
+import {
+  type DraftSchematicsData,
+  DraftSchematicsKind,
+  type ManufactureSchematicData,
+  ManufactureSchematicKind,
+} from '../../messages/game/crafting/index.js';
 import { ChatSystemMessage } from '../../messages/game/chat/index.js';
 import {
   ResourceListForSurveyMessage,
@@ -385,6 +391,21 @@ export interface ScriptContext {
    * Returns the command-queue sequenceId.
    */
   selectCraftingSchematic(schematicIndex: number): number;
+
+  /**
+   * Wait for the next `DraftSchematics` server response (the list of
+   * schematics offered by the current crafting tool/station combo).
+   * Default timeout 8_000ms.
+   */
+  waitForDraftSchematics(opts?: { timeoutMs?: number }): Promise<DraftSchematicsData>;
+
+  /**
+   * Wait for the next `ManufactureSchematic` / `DraftSlots` server response
+   * (the resource/component slot requirements for the previously-selected
+   * schematic, plus the in-flight `manfSchemId` and `prototypeId`). Default
+   * timeout 8_000ms.
+   */
+  waitForDraftSlots(opts?: { timeoutMs?: number }): Promise<ManufactureSchematicData>;
 
   /**
    * Assign an ingredient (item or resource container) to a schematic slot.
@@ -1039,6 +1060,32 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     selectCraftingSchematic(schematicIndex: number): number {
       // commandFuncSelectDraftSchematic parses params as the integer index.
       return ctx.useAbility('selectDraftSchematic', 0n, String(schematicIndex));
+    },
+
+    async waitForDraftSchematics(
+      waitOpts?: { timeoutMs?: number },
+    ): Promise<DraftSchematicsData> {
+      const timeoutMs = waitOpts?.timeoutMs ?? 8_000;
+      const msg = await opts.dispatcher.waitFor(ObjControllerMessage, {
+        timeoutMs,
+        predicate: (m) =>
+          m.message === ObjControllerSubtypeIds.CM_draftSchematicsMessage &&
+          m.decodedSubtype?.kind === DraftSchematicsKind,
+      });
+      return msg.decodedSubtype!.data as DraftSchematicsData;
+    },
+
+    async waitForDraftSlots(
+      waitOpts?: { timeoutMs?: number },
+    ): Promise<ManufactureSchematicData> {
+      const timeoutMs = waitOpts?.timeoutMs ?? 8_000;
+      const msg = await opts.dispatcher.waitFor(ObjControllerMessage, {
+        timeoutMs,
+        predicate: (m) =>
+          m.message === ObjControllerSubtypeIds.CM_draftSlotsMessage &&
+          m.decodedSubtype?.kind === ManufactureSchematicKind,
+      });
+      return msg.decodedSubtype!.data as ManufactureSchematicData;
     },
 
     assignCraftingSlot(

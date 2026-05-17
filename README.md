@@ -167,6 +167,23 @@ set `CI_REUSE_ACCOUNT` and `CI_REUSE_CHARACTER` to a pinned pair (live
 tests then run sequentially because the server allows one session per
 account — see `vitest.config.ts`).
 
+#### Live test admin account pool
+
+By default `liveCredentials` (and `liveAccount`) rotate through 20 pre-stocked
+admin-whitelisted accounts (`tslive01..tslive20` in
+`~/code/swg-main/dsrc/.../admin/stella_admin.tab`). These bypass the cluster's
+player/tutorial limit gating so `canCreateRegularCharacter` is always true.
+
+Vitest workers seed their cursor from `process.pid % 20` so concurrent test
+files distribute across the pool. To opt out and use legacy timestamp accounts,
+set `LIVE_ADMIN_POOL=0`. To pin a single account/char (forces serial mode), use
+`CI_REUSE_ACCOUNT=tslive10 CI_REUSE_CHARACTER=Tspers123456`.
+
+A handful of live tests under heavy parallel load can hit account-session
+collisions (the server rejects a 2nd login on an already-active account). If
+you see `Timed out waiting for CmdStartScene` or `canCreateRegularCharacter=false`
+on a re-run, re-run those tests serially: `LIVE=1 pnpm vitest run --no-file-parallelism tests/integration/<file>.test.ts`.
+
 ### Asset setup (optional, required for terrain-aware features)
 
 Some features — terrain sampling, player-city builder (`bin/build-city.ts`),

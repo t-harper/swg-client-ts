@@ -14,7 +14,7 @@
 import { ChatSystemMessage } from '../../src/messages/game/chat/index.js';
 import { ObjectMenuSelectMessage, RadialMenuTypes } from '../../src/messages/game/object-menu-select-message.js';
 import { SceneCreateObjectByName } from '../../src/messages/game/scene-create-object-by-name.js';
-import { SuiCreatePageMessage, SuiEventNotification } from '../../src/messages/game/sui/index.js';
+import type { SuiCreatePageMessage } from '../../src/messages/game/sui/index.js';
 import type { ScriptContext } from '../../src/client/script/context.js';
 import type { NetworkId } from '../../src/types.js';
 import { adminGetInventoryId, adminSpawnInto } from './admin.js';
@@ -217,14 +217,15 @@ export async function placeDeed(
 
   let suiSeen = 0;
   try {
-    // 4. Send radial USE — server opens the first SUI (if any)
+    // 4. Send radial USE — server opens the first SUI (if any).
+    //    Modernized to use `ctx.waitForSui` + `ctx.respondToSui` instead of
+    //    the raw `dispatcher.waitFor(SuiCreatePageMessage)` + `dispatcher.send(SuiEventNotification)`
+    //    primitives — same wire bytes, less plumbing.
     if (expectedSui === 0) {
       // No SUI expected — deed will be placed via direct queueCommand path
       ctx.send(new ObjectMenuSelectMessage(deedOid, RadialMenuTypes.ITEM_USE));
     } else {
-      const sui1P = ctx.dispatcher
-        .waitFor(SuiCreatePageMessage, { timeoutMs: suiTimeoutMs })
-        .catch(() => null);
+      const sui1P = ctx.waitForSui({ timeoutMs: suiTimeoutMs }).catch(() => null);
       ctx.send(new ObjectMenuSelectMessage(deedOid, RadialMenuTypes.ITEM_USE));
       const sui1 = await sui1P;
       if (sui1 !== null) {
@@ -234,10 +235,8 @@ export async function placeDeed(
         // 5. Respond to SUI 1 (confirm YES) — empty returnList means default OK button
         if (expectedSui >= 2) {
           // Cityhall: respond YES, then expect SUI 2 (inputbox for name)
-          const sui2P = ctx.dispatcher
-            .waitFor(SuiCreatePageMessage, { timeoutMs: suiTimeoutMs })
-            .catch(() => null);
-          ctx.send(new SuiEventNotification(pageId1, 0, []));
+          const sui2P = ctx.waitForSui({ timeoutMs: suiTimeoutMs }).catch(() => null);
+          ctx.respondToSui(pageId1, 0);
           const sui2 = await sui2P;
           if (sui2 !== null) {
             suiSeen++;
@@ -245,11 +244,11 @@ export async function placeDeed(
             // Inputbox response: returnList is positional values only — the server
             // maps them to subscribed widget properties (e.g. txtInput.LocalText) by
             // index. So just [`cityName`], NOT [`txtInput.LocalText=${cityName}`].
-            ctx.send(new SuiEventNotification(pageId2, 0, [cityName]));
+            ctx.respondToSui(pageId2, 0, [cityName]);
           }
         } else {
           // Single confirm SUI — just YES
-          ctx.send(new SuiEventNotification(pageId1, 0, []));
+          ctx.respondToSui(pageId1, 0);
         }
       }
     }
@@ -299,15 +298,54 @@ export async function declareResidence(
 
 /**
  * Convenience: walk to a slot's entry point and declare residence.
+ *
+ * When `buildingId` is supplied, uses `ctx.navigate({ buildingId, cellName: '' })`
+ * to step inside the building's first public cell — this is the new, simpler
+ * path that handles dismount + cell-entry automatically and lands the player
+ * inside the cell so `declareresidence` resolves to the right building via
+ * the server-side `getStructure(self)` script-trigger.
+ *
+ * When `buildingId` is `undefined`, falls back to the legacy outdoor-walk path
+ * (`walkTo` to the slot's entry offset) — relies on the server's lenient
+ * "near enough" resolution which works for small houses but has been known
+ * to land the wrong building on dense slot layouts.
  */
 export async function walkInAndDeclareResidence(
   ctx: ScriptContext,
   slot: { x: number; z: number; entryOffset?: { x: number; z: number } },
-  opts: { settleMs?: number; declareTimeoutMs?: number } = {},
+  opts: {
+    settleMs?: number;
+    declareTimeoutMs?: number;
+    /** Building NetworkId from placeDeed's structureOid — enables the cell-aware navigate path. */
+    buildingId?: NetworkId;
+  } = {},
 ): Promise<boolean> {
-  const entry = slot.entryOffset ?? { x: 0, z: -5 };
   const settleMs = opts.settleMs ?? 1500;
-  await ctx.walkTo({ x: slot.x + entry.x, z: slot.z + entry.z }, { speed: 4 });
+  if (opts.buildingId !== undefined) {
+    // navigate() handles: walk outdoors to building anchor → enter first
+    // public cell. No need for an entry-offset heuristic — the cell-relative
+    // walk lands us inside the cell, which is what declareresidence's
+    // getStructure(self) expects.
+    try {
+      await ctx.navigate(
+        { buildingId: opts.buildingId, cellName: '' },
+        { useMount: 'never', speed: 4 },
+      );
+    } catch (err) {
+      // Fall through to the legacy walkTo on navigation failure — likely the
+      // building's SCLT baselines didn't arrive in time. Same risk as the
+      // legacy path but at least we tried the precise route.
+      const reason = err instanceof Error ? err.message : String(err);
+      process.stderr.write(
+        `[walkInAndDeclareResidence] navigate failed (${reason}); falling back to outdoor walkTo\n`,
+      );
+      const entry = slot.entryOffset ?? { x: 0, z: -5 };
+      await ctx.walkTo({ x: slot.x + entry.x, z: slot.z + entry.z }, { speed: 4 });
+    }
+  } else {
+    const entry = slot.entryOffset ?? { x: 0, z: -5 };
+    await ctx.walkTo({ x: slot.x + entry.x, z: slot.z + entry.z }, { speed: 4 });
+  }
   await ctx.wait(settleMs);
   return declareResidence(ctx, { timeoutMs: opts.declareTimeoutMs });
 }

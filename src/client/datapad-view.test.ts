@@ -14,6 +14,7 @@ import { BaselinePackageIds, ObjectTypeTags } from '../messages/game/baselines/r
 import '../messages/game/baselines/index.js'; // side-effect: register decoders
 import { ClientOpenContainerMessage } from '../messages/game/client-open-container.js';
 import { SceneCreateObjectByName } from '../messages/game/scene-create-object-by-name.js';
+import { SceneDestroyObject } from '../messages/game/scene-destroy-object.js';
 import { UpdateContainmentMessage } from '../messages/game/update-containment-message.js';
 import type { GameNetworkMessage } from '../messages/interface.js';
 import type { MessageDispatcher, TranscriptEvent } from './dispatcher.js';
@@ -352,6 +353,362 @@ describe('findDatapadContainerId', () => {
 
   it('returns null when no matching event is present', () => {
     expect(findDatapadContainerId([])).toBeNull();
+  });
+});
+
+describe('PCD linkage + condition + state', () => {
+  const PLAYER_ID = 0xfeedn;
+  const DATAPAD_ID = 0xd47a9adn;
+  const PCD_ID = 0xbeefn;
+  const VEHICLE_CREATURE_ID = 0xc1c1n;
+
+  it('vehicles()[i].state defaults to "stored" when no PET_* actions have fired', () => {
+    const { dispatcher, recv } = makeFakeDispatcher();
+    const world = new WorldModel({ dispatcher });
+    const view = new DatapadViewImpl(world, DATAPAD_ID, PLAYER_ID);
+    view.attach();
+
+    recv(
+      new SceneCreateObjectByName(
+        PCD_ID,
+        IDENTITY_TRANSFORM,
+        'object/intangible/vehicle/vehicle_speeder_swoop_pcd.iff',
+        false,
+      ),
+    );
+    recv(new UpdateContainmentMessage(PCD_ID, DATAPAD_ID, -1));
+
+    const v = view.vehicles()[0]!;
+    expect(v.kind).toBe('vehicle-pcd');
+    expect(v.state).toBe('stored');
+    expect(v.linkedCreatureId).toBeNull();
+    expect(v.condition).toBeNull();
+  });
+
+  it('notifyPetAction("call") flips the PCD state to "called"', () => {
+    const { dispatcher, recv } = makeFakeDispatcher();
+    const world = new WorldModel({ dispatcher });
+    const view = new DatapadViewImpl(world, DATAPAD_ID, PLAYER_ID);
+    view.attach();
+
+    recv(
+      new SceneCreateObjectByName(
+        PCD_ID,
+        IDENTITY_TRANSFORM,
+        'object/intangible/vehicle/vehicle_speeder_swoop_pcd.iff',
+        false,
+      ),
+    );
+    recv(new UpdateContainmentMessage(PCD_ID, DATAPAD_ID, -1));
+
+    view.notifyPetAction(PCD_ID, 'call');
+    expect(view.vehicles()[0]!.state).toBe('called');
+  });
+
+  it('CREO baseline with masterId === playerId associates the next pending PCD', () => {
+    const { dispatcher, recv } = makeFakeDispatcher();
+    const world = new WorldModel({ dispatcher, playerId: PLAYER_ID });
+    const view = new DatapadViewImpl(world, DATAPAD_ID, PLAYER_ID);
+    view.attach();
+
+    recv(
+      new SceneCreateObjectByName(
+        PCD_ID,
+        IDENTITY_TRANSFORM,
+        'object/intangible/vehicle/vehicle_speeder_swoop_pcd.iff',
+        false,
+      ),
+    );
+    recv(new UpdateContainmentMessage(PCD_ID, DATAPAD_ID, -1));
+
+    view.notifyPetAction(PCD_ID, 'call');
+
+    // Server now spawns the vehicle creature with masterId === player.
+    recv(
+      new SceneCreateObjectByName(
+        VEHICLE_CREATURE_ID,
+        IDENTITY_TRANSFORM,
+        'object/mobile/vehicle/landspeeder_av21.iff',
+        false,
+      ),
+    );
+    recv(
+      new BaselinesMessage(
+        VEHICLE_CREATURE_ID,
+        ObjectTypeTags.CREO,
+        BaselinePackageIds.SHARED,
+        new Uint8Array(0),
+        {
+          kind: 'CreatureObjectShared',
+          data: {
+            complexity: 0,
+            nameStringId: { table: '', text: '' },
+            objectName: '',
+            volume: 1,
+            pvpFaction: 0,
+            pvpType: 0,
+            appearanceData: '',
+            components: [],
+            condition: 0,
+            count: 0,
+            damageTaken: 100,
+            maxHitPoints: 1000,
+            visible: true,
+            posture: 0,
+            rank: 0,
+            masterId: PLAYER_ID,
+            scaleFactor: 1,
+            shockWounds: 0,
+            states: 0n,
+          },
+        },
+      ),
+    );
+
+    const v = view.vehicles()[0]!;
+    expect(v.linkedCreatureId).toBe(VEHICLE_CREATURE_ID);
+    // condition = (1000 - 100) / 1000 = 0.9
+    expect(v.condition).toBeCloseTo(0.9, 5);
+    // notifyPetAction('call') + masterId link flipped us to 'following'
+    expect(v.state).toBe('following');
+  });
+
+  it('notifyPetAction("stay") flips a called pet to "staying"', () => {
+    const { dispatcher, recv } = makeFakeDispatcher();
+    const world = new WorldModel({ dispatcher, playerId: PLAYER_ID });
+    const view = new DatapadViewImpl(world, DATAPAD_ID, PLAYER_ID);
+    view.attach();
+    recv(
+      new SceneCreateObjectByName(
+        PCD_ID,
+        IDENTITY_TRANSFORM,
+        'object/intangible/pet/pet_rancor_pcd.iff',
+        false,
+      ),
+    );
+    recv(new UpdateContainmentMessage(PCD_ID, DATAPAD_ID, -1));
+    view.notifyPetAction(PCD_ID, 'call');
+    view.notifyPetAction(PCD_ID, 'stay');
+    expect(view.pets()[0]!.state).toBe('staying');
+  });
+
+  it('notifyPetAction("attack") flips state to "attacking"', () => {
+    const { dispatcher, recv } = makeFakeDispatcher();
+    const world = new WorldModel({ dispatcher, playerId: PLAYER_ID });
+    const view = new DatapadViewImpl(world, DATAPAD_ID, PLAYER_ID);
+    view.attach();
+    recv(
+      new SceneCreateObjectByName(
+        PCD_ID,
+        IDENTITY_TRANSFORM,
+        'object/intangible/pet/pet_rancor_pcd.iff',
+        false,
+      ),
+    );
+    recv(new UpdateContainmentMessage(PCD_ID, DATAPAD_ID, -1));
+    view.notifyPetAction(PCD_ID, 'attack');
+    expect(view.pets()[0]!.state).toBe('attacking');
+  });
+
+  it('notifyPetAction("store") clears the linkage and resets state to "stored"', () => {
+    const { dispatcher, recv } = makeFakeDispatcher();
+    const world = new WorldModel({ dispatcher, playerId: PLAYER_ID });
+    const view = new DatapadViewImpl(world, DATAPAD_ID, PLAYER_ID);
+    view.attach();
+
+    recv(
+      new SceneCreateObjectByName(
+        PCD_ID,
+        IDENTITY_TRANSFORM,
+        'object/intangible/vehicle/vehicle_speeder_swoop_pcd.iff',
+        false,
+      ),
+    );
+    recv(new UpdateContainmentMessage(PCD_ID, DATAPAD_ID, -1));
+    view.notifyPetAction(PCD_ID, 'call');
+    recv(
+      new SceneCreateObjectByName(
+        VEHICLE_CREATURE_ID,
+        IDENTITY_TRANSFORM,
+        'object/mobile/vehicle/landspeeder_av21.iff',
+        false,
+      ),
+    );
+    recv(
+      new BaselinesMessage(
+        VEHICLE_CREATURE_ID,
+        ObjectTypeTags.CREO,
+        BaselinePackageIds.SHARED,
+        new Uint8Array(0),
+        {
+          kind: 'CreatureObjectShared',
+          data: {
+            complexity: 0,
+            nameStringId: { table: '', text: '' },
+            objectName: '',
+            volume: 1,
+            pvpFaction: 0,
+            pvpType: 0,
+            appearanceData: '',
+            components: [],
+            condition: 0,
+            count: 0,
+            damageTaken: 0,
+            maxHitPoints: 1000,
+            visible: true,
+            posture: 0,
+            rank: 0,
+            masterId: PLAYER_ID,
+            scaleFactor: 1,
+            shockWounds: 0,
+            states: 0n,
+          },
+        },
+      ),
+    );
+
+    expect(view.vehicles()[0]!.linkedCreatureId).toBe(VEHICLE_CREATURE_ID);
+
+    // Store via the live creature id — view should resolve back to PCD.
+    view.notifyPetAction(VEHICLE_CREATURE_ID, 'store');
+    expect(view.vehicles()[0]!.state).toBe('stored');
+    expect(view.vehicles()[0]!.linkedCreatureId).toBeNull();
+  });
+
+  it('SceneDestroyObject on the linked creature clears the link and resets state', () => {
+    const { dispatcher, recv } = makeFakeDispatcher();
+    const world = new WorldModel({ dispatcher, playerId: PLAYER_ID });
+    const view = new DatapadViewImpl(world, DATAPAD_ID, PLAYER_ID);
+    view.attach();
+
+    recv(
+      new SceneCreateObjectByName(
+        PCD_ID,
+        IDENTITY_TRANSFORM,
+        'object/intangible/vehicle/vehicle_speeder_swoop_pcd.iff',
+        false,
+      ),
+    );
+    recv(new UpdateContainmentMessage(PCD_ID, DATAPAD_ID, -1));
+    view.notifyPetAction(PCD_ID, 'call');
+    recv(
+      new SceneCreateObjectByName(
+        VEHICLE_CREATURE_ID,
+        IDENTITY_TRANSFORM,
+        'object/mobile/vehicle/landspeeder_av21.iff',
+        false,
+      ),
+    );
+    recv(
+      new BaselinesMessage(
+        VEHICLE_CREATURE_ID,
+        ObjectTypeTags.CREO,
+        BaselinePackageIds.SHARED,
+        new Uint8Array(0),
+        {
+          kind: 'CreatureObjectShared',
+          data: {
+            complexity: 0,
+            nameStringId: { table: '', text: '' },
+            objectName: '',
+            volume: 1,
+            pvpFaction: 0,
+            pvpType: 0,
+            appearanceData: '',
+            components: [],
+            condition: 0,
+            count: 0,
+            damageTaken: 0,
+            maxHitPoints: 1000,
+            visible: true,
+            posture: 0,
+            rank: 0,
+            masterId: PLAYER_ID,
+            scaleFactor: 1,
+            shockWounds: 0,
+            states: 0n,
+          },
+        },
+      ),
+    );
+    expect(view.vehicles()[0]!.linkedCreatureId).toBe(VEHICLE_CREATURE_ID);
+
+    // Simulate the server destroying the vehicle creature.
+    recv(new SceneDestroyObject(VEHICLE_CREATURE_ID, false));
+
+    expect(view.vehicles()[0]!.linkedCreatureId).toBeNull();
+    expect(view.vehicles()[0]!.state).toBe('stored');
+  });
+
+  it('condition === 1 for a fully-healthy vehicle (damageTaken=0); === 0 when destroyed', () => {
+    const { dispatcher, recv } = makeFakeDispatcher();
+    const world = new WorldModel({ dispatcher, playerId: PLAYER_ID });
+    const view = new DatapadViewImpl(world, DATAPAD_ID, PLAYER_ID);
+    view.attach();
+    recv(
+      new SceneCreateObjectByName(
+        PCD_ID,
+        IDENTITY_TRANSFORM,
+        'object/intangible/vehicle/vehicle_speeder_swoop_pcd.iff',
+        false,
+      ),
+    );
+    recv(new UpdateContainmentMessage(PCD_ID, DATAPAD_ID, -1));
+    view.notifyPetAction(PCD_ID, 'call');
+
+    const fullHealthSpawn = (damageTaken: number, expected: number): void => {
+      // Reset state per spawn.
+      view.notifyPetAction(PCD_ID, 'store');
+      view.notifyPetAction(PCD_ID, 'call');
+      const creatureId = BigInt(0xa000 + damageTaken) as bigint;
+      recv(
+        new SceneCreateObjectByName(
+          creatureId,
+          IDENTITY_TRANSFORM,
+          'object/mobile/vehicle/landspeeder_av21.iff',
+          false,
+        ),
+      );
+      recv(
+        new BaselinesMessage(
+          creatureId,
+          ObjectTypeTags.CREO,
+          BaselinePackageIds.SHARED,
+          new Uint8Array(0),
+          {
+            kind: 'CreatureObjectShared',
+            data: {
+              complexity: 0,
+              nameStringId: { table: '', text: '' },
+              objectName: '',
+              volume: 1,
+              pvpFaction: 0,
+              pvpType: 0,
+              appearanceData: '',
+              components: [],
+              condition: 0,
+              count: 0,
+              damageTaken,
+              maxHitPoints: 1000,
+              visible: true,
+              posture: 0,
+              rank: 0,
+              masterId: PLAYER_ID,
+              scaleFactor: 1,
+              shockWounds: 0,
+              states: 0n,
+            },
+          },
+        ),
+      );
+      const v = view.vehicles()[0]!;
+      expect(v.condition).toBeCloseTo(expected, 5);
+    };
+
+    fullHealthSpawn(0, 1);
+    fullHealthSpawn(500, 0.5);
+    fullHealthSpawn(1000, 0);
+    fullHealthSpawn(2000, 0); // over-damaged clamps to 0
   });
 });
 

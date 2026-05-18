@@ -256,6 +256,25 @@ export {
   RadialMenuTypes,
 } from './messages/game/object-menu-select-message.js';
 
+// Scene lifecycle messages — exposed so scripts that handle re-zone events
+// (e.g. shuttle travel between planets) can wait for the second CmdStartScene
+// + SceneEndBaselines pair and ack with CmdSceneReady themselves.
+export { CmdStartScene, CmdStartSceneDecoder } from './messages/game/cmd-start-scene.js';
+export { CmdSceneReady, CmdSceneReadyDecoder } from './messages/game/cmd-scene-ready.js';
+export {
+  SceneEndBaselines,
+  SceneEndBaselinesDecoder,
+} from './messages/game/scene-end-baselines.js';
+
+// Admin / console command channel — for `swg*` and `tslive*` accounts with
+// god privileges. Lets scripts grant credits, spawn objects, or teleport
+// via the server console channel when the regular game wire can't reach
+// the state (test setup / fixture management).
+export {
+  ConGenericMessage,
+  ConGenericMessageDecoder,
+} from './messages/game/con-generic-message.js';
+
 // Mission message classes — the top-level browser-populate message plus the
 // ObjController subtype decoders that drive the request/response flow.
 export {

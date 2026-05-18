@@ -48,7 +48,7 @@ pnpm cli zone --host=10.254.0.253 --user=ci-test --character=TsTest
                                                    combat-attack, posture-cycle, survey,
                                                    group-trade, ride-vehicle, bazaar-snipe, dwell)
                         ↑
-                src/messages/                  ← 63+ top-level + 28+ ObjController subtypes
+                src/messages/                  ← 66+ top-level + 28+ ObjController subtypes
                   login/         (8)           ← LoginClientId, LoginEnumCluster, ...
                   connection/    (10)          ← ClientIdMsg, EnumerateCharacterId, ...
                   game/          (12)          ← CmdStartScene, LogoutMessage,
@@ -63,6 +63,7 @@ pnpm cli zone --host=10.254.0.253 --user=ci-test --character=TsTest
                   game/npc/      (5)           ← StartNpcConversation + Stop + Message + Responses + Select (all CM_npcConversation*)
                   game/trade/    (9)           ← SecureTrade handshake (BeginTrade / AddItem / RemoveItem / GiveMoney / AcceptTransaction / UnAccept / VerifyTrade / TradeComplete / AbortTrade)
                   game/commodities/ (17)       ← bazaar / auction-house (AuctionQueryHeaders + Response + Bid + Accept + Create + Cancel + Retrieve + GetAuctionDetails + IsVendorOwner)
+                  game/travel/   (3)           ← EnterTicketPurchaseModeMessage + PlanetTravelPointList Request/Response
                   game/obj-controller/ (30+)   ← combat, movement (CM=113/241), teleport-ack,
                                                   posture, mood, chat, crafting, menus,
                                                   group, trade, dance, tip, npc-conversation, ...
@@ -88,7 +89,7 @@ pnpm cli zone --host=10.254.0.253 --user=ci-test --character=TsTest
 
 The client started as just `SwgClient.fullLifecycle()` and is now a full programmatic SWG bot framework: full lifecycle orchestration (`SwgClient.fullLifecycle`), the scripting engine (`opts.script: ScenarioFn` → `ScriptContext`), multi-client load tests (`Fleet`), transcript capture + replay (`captureLifecycle` / `replay`), the reconnect-verification harness (`reconnectVerify`), and the persistent character pool (`CharacterPool`).
 
-**See [`docs/scripting-quickref.md`](docs/scripting-quickref.md) for the full `ScriptContext` API — every always-on view (`ctx.world` / `ctx.character` / `ctx.inventory` / `ctx.datapad` / `ctx.bank` / `ctx.group` / `ctx.guild` / `ctx.location` / `ctx.combat` / `ctx.safety` / `ctx.chat` / `ctx.cooldowns` / `ctx.serverTime` / `ctx.hitTimer` / `ctx.missions` / `ctx.crafting` / `ctx.sui` / `ctx.npc`) and every method (movement, combat, chat, crafting, survey, missions, vehicles, SUI, NPC, trade, bazaar) — auto-generated from JSDoc on the `ScriptContext` interface.** [`docs/views-reference.md`](docs/views-reference.md) and [`docs/actions-reference.md`](docs/actions-reference.md) are the typed deep-dives; [`docs/scripting-cookbook.md`](docs/scripting-cookbook.md) is every bundled scenario in `src/scenarios/`.
+**See [`docs/scripting-quickref.md`](docs/scripting-quickref.md) for the full `ScriptContext` API — every always-on view (`ctx.world` / `ctx.character` / `ctx.inventory` / `ctx.datapad` / `ctx.bank` / `ctx.group` / `ctx.guild` / `ctx.location` / `ctx.combat` / `ctx.safety` / `ctx.chat` / `ctx.cooldowns` / `ctx.serverTime` / `ctx.hitTimer` / `ctx.missions` / `ctx.crafting` / `ctx.sui` / `ctx.npc` / `ctx.travel`) and every method (movement, combat, chat, crafting, survey, missions, vehicles, SUI, NPC, trade, bazaar, shuttle travel) — auto-generated from JSDoc on the `ScriptContext` interface.** [`docs/views-reference.md`](docs/views-reference.md) and [`docs/actions-reference.md`](docs/actions-reference.md) are the typed deep-dives; [`docs/scripting-cookbook.md`](docs/scripting-cookbook.md) is every bundled scenario in `src/scenarios/`.
 
 ## Six wire-format gotchas (memorize)
 
@@ -250,7 +251,8 @@ Individual stage drivers and the `dispatcher` are also exported as types — use
 | Capture a wire transcript / replay it | `src/client/replay.ts` — `captureLifecycle()` / `replay()`; CLI `capture` / `replay` |
 | Debug a live test failure | `src/client/swg-client.ts` — `transcript` field captures every send/recv |
 | Add a new live test | `tests/integration/live-*.test.ts` as template (LIVE=1 gated) |
-| Find a working example for X | `scripts/examples/` — ~25 scripts covering walking, surveying, chat/mail bots, parade/dance, crafting soak, etc. |
+| Find a working example for X | `scripts/examples/` — 11 grandiose end-to-end scenarios (`hunter-crafter`, `surveyor-bazaar`, `mission-marathon`, `bazaar-arbitrage-fleet`, `group-hunt-expedition`, `cantina-troupe`, `resource-cartographer-fleet`, `city-recon-surveyor`, `reactive-bodyguard-fleet`, `shuttle-traveler`, `cross-planet-pilgrim`). All chain 2+ subsystems and emit JSON summaries. Helpers in `_lib.ts`. |
+| Travel between planets (shuttle / ticket) | `ctx.travel.findTicketVendor` / `buyTicket` / `useTicket` / `listDestinations` (see `src/client/script/travel.ts`). Wire flow: ObjectMenuSelect(terminal, ITEM_USE=21) → EnterTicketPurchaseModeMessage → N PlanetTravelPointListRequest/Response → `purchaseTicket` command → `boardShuttle` on collector → server fires fresh `CmdStartScene`. Example: `scripts/examples/shuttle-traveler.ts`. |
 | Reuse a character across CI runs | Set `CI_REUSE_ACCOUNT` + `CI_REUSE_CHARACTER` (`tests/integration/helpers.ts`) |
 | Use a check-out pool (multi-account tests) | `swg-ts-cli pool stock --count=N` once → set `CI_USE_POOL=1` → tests call `poolCredentials(prefix, count)`. See `src/client/character-pool.ts`. |
 | Inspect captured wire | `tests/fixtures/{session-response-17b,login-enum-cluster-223b}.hex` |
@@ -283,7 +285,7 @@ Individual stage drivers and the `dispatcher` are also exported as types — use
 2. If anything's red, check `git log --oneline` — most recent change is probably the culprit; revert it locally and retry.
 3. If you bumped `~/code/swg-main` submodules, the wire-format may have drifted. Run `LIVE=1 pnpm test tests/integration/live-login.test.ts` — if it fails with a `LoginIncorrectClientId` or `Archive::ReadException`-style error, the message struct shape changed server-side. Find the C++ commit that added/removed fields, update `varCount` + encode/decode here. For broader drift, replay a baseline NDJSON capture (`pnpm cli capture` once on green, then `pnpm cli replay --compare=count` after the bump).
 4. To do "more SWG protocol work" — read `docs/adding-a-message.md` and pick a message from `~/code/swg-main/src/engine/shared/library/sharedNetworkMessages/src/shared/`. The mechanical pattern handles itself. For ObjController subtypes (combat/movement/etc.) the recipe is the same but the file lives in `src/messages/game/obj-controller/` and registers via the subtype CRC instead of the top-level `messageRegistry`.
-5. To write a scenario script — start at `docs/scripting-quickref.md`, browse `docs/views-reference.md` / `docs/actions-reference.md` for the full `ScriptContext` API, copy a factory in `src/scenarios/index.ts`, and run with `pnpm cli zone --script=<name>`. For one-off in-world bots, look at `scripts/examples/` for ~25 working examples.
+5. To write a scenario script — start at `docs/scripting-quickref.md`, browse `docs/views-reference.md` / `docs/actions-reference.md` for the full `ScriptContext` API, copy a factory in `src/scenarios/index.ts`, and run with `pnpm cli zone --script=<name>`. For one-off in-world bots, look at `scripts/examples/` for 11 working end-to-end demos (combat+craft, survey+bazaar, mount+hunt+trade, shuttle, etc.).
 6. To survey resources at a location — `pnpm tsx scripts/check-resources-at-location.ts --host=... --user=... --character=... --x=... --z=...` does the full radial-Use → ResourceListForSurveyMessage → per-type survey → resource-stats fetch loop end-to-end.
 
 ## Don't

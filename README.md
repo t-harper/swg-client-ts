@@ -135,9 +135,25 @@ See `docs/scripting-quickref.md` for the `ScriptContext` landing page (with
 links to `docs/views-reference.md` for every always-on view and
 `docs/actions-reference.md` for every method — both auto-generated from JSDoc),
 `docs/wire-spec.md` for the byte-level reference, and `scripts/examples/` for
-30+ ready-to-run example scenarios (including the reactive WorldModel
-patterns added in release/0.1.1: `loot-on-death`, `flee-on-aggro`,
-`mirror-bot`, `spawn-detector`, `crowd-density`).
+end-to-end grandiose scenarios that chain subsystems:
+
+- **Solo:** `hunter-crafter` (combat → loot → craft), `surveyor-bazaar`
+  (survey → sample → list-for-sale), `mission-marathon` (terminal → N
+  missions → navigate → complete), `city-recon-surveyor` (terrain probe
+  + buildable-lot ranking), `shuttle-traveler` (minimal `ctx.travel`
+  demo), `cross-planet-pilgrim` (shuttle to another planet + mission
+  round-trip).
+- **Fleet:** `bazaar-arbitrage-fleet` (3-char scout/buyer/reseller),
+  `group-hunt-expedition` (4-char invite + mount + focus-fire + loot
+  share via SecureTrade), `cantina-troupe` (2 dancers + 2 spotters
+  broadcasting), `reactive-bodyguard-fleet` (VIP + protector
+  intercepts hostiles), `resource-cartographer-fleet` (10-char grid
+  survey → NDJSON heatmap).
+
+All examples use the shared helpers in `scripts/examples/_lib.ts`
+(`parseCommonArgs` / `runScenario` / `runFleet` / `findNearestByTemplate`
+/ `pollForNearestByTemplate` / `medianOf` / `dist2`) and emit a stable
+JSON summary on stdout.
 
 ## Quickstart
 
@@ -392,11 +408,11 @@ the full `ScriptContext` API and the ObjController subtype dispatch.
 | CRC | `src/crc/` | `Crc32` (with encryptCode seed scramble) + `constcrc` (custom CRC for message names — NOT standard CRC32) |
 | Archive | `src/archive/` | The wire serialization library: `ByteStream`, `ReadIterator`, primitives, `std::string`, `Unicode::String`, `NetworkId`, `Transform`, `AutoArray<T>`, `AutoVariable<T>` |
 | SOE | `src/soe/` | UDP transport: SessionRequest/Response, XOR encrypt, UserSupplied (zlib) encrypt, CRC32, reliable channel, multipacket, fragment reassembly |
-| Messages | `src/messages/` | 35+ top-level GameNetworkMessages (login/connection/game/chat/command-queue/survey) + 25+ ObjController subtype decoders (combat, movement, posture, mood, chat, crafting, missions, groups, menus, etc.) |
+| Messages | `src/messages/` | 38+ top-level GameNetworkMessages (login/connection/game/chat/command-queue/survey/travel) + 25+ ObjController subtype decoders (combat, movement, posture, mood, chat, crafting, missions, groups, menus, etc.) |
 | Client | `src/client/` | Orchestrator (`swg-client.ts`), dispatcher, per-stage drivers (`login-stage`, `connection-stage`, `game-stage`), `fleet.ts`, `transcript-io.ts`, `replay.ts`, `character-pool.ts` |
-| Script | `src/client/script/` | `ScriptContext` interface + primitives (`movement.ts` — `walkTo`/`walkCircle`/`walkToCell` over `CM_netUpdateTransform=113` with auto teleport-ack; survey/sample helpers; crafting; chat; combat; missions; groups; expectations) |
-| Scenarios | `src/scenarios/` | CLI-loadable scenario factories (`walk-line`, `walk-circle`, `open-inventory`, `combat-attack`, `posture-cycle`, `survey`, `group-trade`, `dwell`) |
-| Examples | `scripts/examples/` | 30+ ready-to-run example scripts: walking patterns, surveying loops, chat bots, parade/dance, crafting soak, mail-blast, combat-then-flee, plus the reactive WorldModel patterns from release/0.1.1 (loot-on-death, flee-on-aggro, mirror-bot, spawn-detector, crowd-density). World-aware modernization means combat / vehicle / bazaar / group-trade examples no longer require hardcoded NetworkId args — `ctx.findNearest` + friends auto-resolve. |
+| Script | `src/client/script/` | `ScriptContext` interface + primitives (`movement.ts` — `walkTo`/`walkCircle`/`walkToCell` over `CM_netUpdateTransform=113` with auto teleport-ack; survey/sample helpers; crafting; chat; combat; missions; groups; travel; expectations) |
+| Scenarios | `src/scenarios/` | CLI-loadable scenario factories (`walk-line`, `walk-circle`, `open-inventory`, `combat-attack`, `posture-cycle`, `survey`, `group-trade`, `ride-vehicle`, `bazaar-snipe`, `dwell`) |
+| Examples | `scripts/examples/` | 11 end-to-end grandiose scenarios — `hunter-crafter`, `surveyor-bazaar`, `mission-marathon`, `bazaar-arbitrage-fleet`, `group-hunt-expedition`, `cantina-troupe`, `resource-cartographer-fleet`, `city-recon-surveyor`, `reactive-bodyguard-fleet`, `shuttle-traveler`, `cross-planet-pilgrim`. Each chains 2+ subsystems (combat+craft, survey+bazaar, mount+hunt+trade, etc.) and emits a stable JSON summary. Shared helpers live in `_lib.ts` (`runScenario` / `runFleet` / `findNearestByTemplate` / `medianOf` / `dist2`). |
 
 ## Reference
 

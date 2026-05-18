@@ -39,6 +39,8 @@ import type { PlayerObjectFirstParentClientServerBaseline } from '../messages/ga
 import { PlayerObjectFirstParentClientServerKind } from '../messages/game/baselines/player-object-baseline-8.js';
 import { PlayerObjectClientServerKind } from '../messages/game/baselines/player-object-baseline-1.js';
 import type { PlayerObjectSharedBaseline } from '../messages/game/baselines/player-object-baseline-3.js';
+import type { PlayerObjectSharedNpBaseline } from '../messages/game/baselines/player-object-baseline-6.js';
+import { PlayerObjectSharedNpKind } from '../messages/game/baselines/player-object-baseline-6.js';
 import { BaselinePackageIds, ObjectTypeTags } from '../messages/game/baselines/registry.js';
 import { ObjControllerMessage } from '../messages/game/obj-controller-message.js';
 import {
@@ -228,6 +230,31 @@ function makePlayObjectSharedBaseline(
   };
 }
 
+function makePlayObjectSharedNpBaseline(
+  partial: Partial<PlayerObjectSharedNpBaseline> = {},
+): PlayerObjectSharedNpBaseline {
+  return {
+    authServerProcessId: 0,
+    descriptionStringId: EMPTY_STRING_ID,
+    privledgedTitle: 0,
+    currentGcwRank: 0,
+    currentGcwRankProgress: 0,
+    maxGcwImperialRank: 0,
+    maxGcwRebelRank: 0,
+    gcwRatingActualCalcTime: 0,
+    citizenshipCity: '',
+    citizenshipType: 0,
+    cityGcwDefenderRegion: { region: '', qualifiesForBonus: false, qualifiesForTitle: false },
+    guildGcwDefenderRegion: { region: '', qualifiesForBonus: false, qualifiesForTitle: false },
+    squelchedById: 0n,
+    squelchedByName: '',
+    squelchExpireTime: 0,
+    environmentFlags: 0,
+    defaultAttackOverride: '',
+    ...partial,
+  };
+}
+
 function creoSharedBaseline(target: bigint, data: CreatureObjectSharedBaseline): BaselinesMessage {
   return new BaselinesMessage(
     target,
@@ -271,6 +298,19 @@ function playSharedBaseline(target: bigint, data: PlayerObjectSharedBaseline): B
     BaselinePackageIds.SHARED,
     new Uint8Array(0),
     { kind: PlayerObjectSharedKind, data },
+  );
+}
+
+function playSharedNpBaseline(
+  target: bigint,
+  data: PlayerObjectSharedNpBaseline,
+): BaselinesMessage {
+  return new BaselinesMessage(
+    target,
+    ObjectTypeTags.PLAY,
+    BaselinePackageIds.SHARED_NP,
+    new Uint8Array(0),
+    { kind: PlayerObjectSharedNpKind, data },
   );
 }
 
@@ -720,6 +760,74 @@ describe('CharacterSheet', () => {
         }),
       );
       expect(handle.view.playedTime).toBe(200);
+    });
+  });
+
+  describe('citizenship (PLAY p6 m_citizenshipCity / m_citizenshipType)', () => {
+    it('starts null/0 before any PLAY p6 baseline lands', () => {
+      setup();
+      expect(handle.view.cityName).toBeNull();
+      expect(handle.view.citizenType).toBe(0);
+    });
+
+    it('reads cityName + citizenType from a PLAY p6 baseline', () => {
+      setup();
+      recv(
+        playSharedNpBaseline(
+          PLAYER_ID,
+          makePlayObjectSharedNpBaseline({
+            citizenshipCity: 'TsHarbor50661',
+            citizenshipType: 1,
+          }),
+        ),
+      );
+      expect(handle.view.cityName).toBe('TsHarbor50661');
+      expect(handle.view.citizenType).toBe(1);
+    });
+
+    it('treats empty citizenshipCity as null', () => {
+      setup();
+      recv(
+        playSharedNpBaseline(
+          PLAYER_ID,
+          makePlayObjectSharedNpBaseline({ citizenshipCity: '', citizenshipType: 0 }),
+        ),
+      );
+      expect(handle.view.cityName).toBeNull();
+      expect(handle.view.citizenType).toBe(0);
+    });
+
+    it('updates from a PLAY p6 delta (declareresidence path)', () => {
+      setup();
+      // Start with no citizenship.
+      recv(playSharedNpBaseline(PLAYER_ID, makePlayObjectSharedNpBaseline()));
+      expect(handle.view.cityName).toBeNull();
+      // Server pushes a delta after city.addCitizen fires.
+      recv(
+        makeDelta(PLAYER_ID, ObjectTypeTags.PLAY, BaselinePackageIds.SHARED_NP, {
+          citizenshipCity: 'TsHarbor50661',
+          citizenshipType: 1,
+        }),
+      );
+      expect(handle.view.cityName).toBe('TsHarbor50661');
+      expect(handle.view.citizenType).toBe(1);
+    });
+
+    it('a PLAY SHARED_NP delta on a different package does NOT clobber citizenship', () => {
+      setup();
+      recv(
+        playSharedNpBaseline(
+          PLAYER_ID,
+          makePlayObjectSharedNpBaseline({ citizenshipCity: 'TsHarbor50661' }),
+        ),
+      );
+      // PLAY p3 (skillTitle) delta should not touch citizenship.
+      recv(
+        makeDelta(PLAYER_ID, ObjectTypeTags.PLAY, BaselinePackageIds.SHARED, {
+          skillTitle: 'master_brawler',
+        }),
+      );
+      expect(handle.view.cityName).toBe('TsHarbor50661');
     });
   });
 

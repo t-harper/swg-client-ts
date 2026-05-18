@@ -80,8 +80,13 @@ function makeStructurePersistCallback(
     state.structures[key] = rec;
     try {
       saveState(state);
-    } catch {
-      // Disk write failure shouldn't abort the in-flight scenario.
+    } catch (err) {
+      // Disk write failure shouldn't abort the in-flight scenario, but it
+      // MUST be visible — silent swallow was the cause of an empty
+      // state.structures despite successful placements in a previous run.
+      process.stderr.write(
+        `[build-city] WARN saveState failed during structure persist for ${key}: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
     }
   };
 }

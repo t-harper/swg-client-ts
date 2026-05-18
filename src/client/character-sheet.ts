@@ -54,6 +54,8 @@ import type { PlayerObjectClientServerBaseline } from '../messages/game/baseline
 import { PlayerObjectClientServerKind } from '../messages/game/baselines/player-object-baseline-1.js';
 import type { PlayerObjectSharedBaseline } from '../messages/game/baselines/player-object-baseline-3.js';
 import { PlayerObjectSharedKind } from '../messages/game/baselines/player-object-baseline-3.js';
+import type { PlayerObjectSharedNpBaseline } from '../messages/game/baselines/player-object-baseline-6.js';
+import { PlayerObjectSharedNpKind } from '../messages/game/baselines/player-object-baseline-6.js';
 import type { PlayerObjectFirstParentClientServerBaseline } from '../messages/game/baselines/player-object-baseline-8.js';
 import { PlayerObjectFirstParentClientServerKind } from '../messages/game/baselines/player-object-baseline-8.js';
 import type { WeaponObjectSharedBaseline } from '../messages/game/baselines/weapon-object-baseline-3.js';
@@ -340,6 +342,23 @@ export interface CharacterSheet {
    */
   readonly guildId: number;
   /**
+   * Name of the city the player is a citizen of (PLAY p6 m_citizenshipCity).
+   * `null` when the player is not a citizen of any city. Updated by the
+   * server's `city.addCitizen` path — which is what
+   * `useAbility('declareresidence')` triggers via `city.setCityResidence`
+   * (`~/code/swg-main/dsrc/sku.0/sys.server/compiled/game/script/library/city.java:620`
+   * and `player_building.java:2583`). The deterministic typed signal that
+   * declare-residence actually took effect server-side.
+   */
+  readonly cityName: string | null;
+  /**
+   * Citizenship type enum (PLAY p6 m_citizenshipType — `CityDataCitizenType`).
+   * `0` when not a citizen. Useful for distinguishing mayor / militia / etc.
+   * from a plain resident; see the `CityDataCitizenType` enum in
+   * `~/code/swg-main/src/engine/shared/library/sharedGame/`.
+   */
+  readonly citizenType: number;
+  /**
    * Lightweight group descriptor when in a group. `members[]` is empty until
    * GroupObject baselines get a typed decoder; for now consumers can use
    * `ctx.world.get(groupId)` to inspect the raw GroupObject baseline state.
@@ -504,6 +523,10 @@ interface SheetState {
   currentWeapon: NetworkId;
   groupId: NetworkId;
   guildId: number;
+  /** PLAY p6 m_citizenshipCity (string; `''` when no citizenship). */
+  citizenshipCity: string;
+  /** PLAY p6 m_citizenshipType (i8 CityDataCitizenType enum; `0` when none). */
+  citizenshipType: number;
   groupInviter: PlayerAndShipPair | null;
   /** CREO p4 m_modMap (skill-mod table). Empty until p4 baseline lands. */
   skillMods: Map<string, { base: number; bonus: number }>;
@@ -550,6 +573,8 @@ function makeState(templateName: string | null): SheetState {
     currentWeapon: 0n,
     groupId: 0n,
     guildId: 0,
+    citizenshipCity: '',
+    citizenshipType: 0,
     groupInviter: null,
     skillMods: new Map(),
     xp: new Map(),
@@ -658,6 +683,11 @@ export function createCharacterSheet(opts: CharacterSheetOptions): CharacterShee
     }
   }
 
+  function applyPlaySharedNp(data: Partial<PlayerObjectSharedNpBaseline>): void {
+    if (data.citizenshipCity !== undefined) state.citizenshipCity = data.citizenshipCity;
+    if (data.citizenshipType !== undefined) state.citizenshipType = data.citizenshipType;
+  }
+
   function applyPlayClientServer(data: Partial<PlayerObjectClientServerBaseline>): void {
     if (data.bankBalance !== undefined) state.bankBalancePlay = data.bankBalance;
     if (data.cashBalance !== undefined) state.cashBalancePlay = data.cashBalance;
@@ -694,6 +724,9 @@ export function createCharacterSheet(opts: CharacterSheetOptions): CharacterShee
       case PlayerObjectSharedKind:
         applyPlayShared(decoded.data as PlayerObjectSharedBaseline);
         break;
+      case PlayerObjectSharedNpKind:
+        applyPlaySharedNp(decoded.data as PlayerObjectSharedNpBaseline);
+        break;
       case PlayerObjectClientServerKind:
         applyPlayClientServer(decoded.data as PlayerObjectClientServerBaseline);
         break;
@@ -703,7 +736,7 @@ export function createCharacterSheet(opts: CharacterSheetOptions): CharacterShee
         );
         break;
       default:
-        // Unrelated baseline (e.g. PLAY SHARED_NP) — ignore for now.
+        // Unrelated baseline kind — ignore.
         break;
     }
   }
@@ -739,6 +772,9 @@ export function createCharacterSheet(opts: CharacterSheetOptions): CharacterShee
       switch (m.packageId) {
         case BaselinePackageIds.SHARED:
           applyPlayShared(data as Partial<PlayerObjectSharedBaseline>);
+          break;
+        case BaselinePackageIds.SHARED_NP:
+          applyPlaySharedNp(data as Partial<PlayerObjectSharedNpBaseline>);
           break;
         case BaselinePackageIds.CLIENT_SERVER:
           applyPlayClientServer(data as Partial<PlayerObjectClientServerBaseline>);
@@ -868,6 +904,12 @@ export function createCharacterSheet(opts: CharacterSheetOptions): CharacterShee
     get guildId(): number {
       return state.guildId;
     },
+    get cityName(): string | null {
+      return state.citizenshipCity === '' ? null : state.citizenshipCity;
+    },
+    get citizenType(): number {
+      return state.citizenshipType;
+    },
     get group(): CharacterGroup | null {
       if (state.groupId === 0n) return null;
       // Members aren't decoded yet — the GroupObject baseline carries them
@@ -995,6 +1037,8 @@ export function createCharacterSheet(opts: CharacterSheetOptions): CharacterShee
         currentWeapon: view.currentWeapon === null ? null : view.currentWeapon.toString(),
         groupId: view.groupId === null ? null : view.groupId.toString(),
         guildId: view.guildId,
+        cityName: view.cityName,
+        citizenType: view.citizenType,
         groupInviter:
           view.groupInviter === null
             ? null

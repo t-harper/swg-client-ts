@@ -12,6 +12,7 @@
  */
 
 import { ChatSystemMessage } from '../../src/messages/game/chat/index.js';
+import { ObjectTypeTags } from '../../src/messages/game/baselines/registry.js';
 import { ObjectMenuSelectMessage, RadialMenuTypes } from '../../src/messages/game/object-menu-select-message.js';
 import { SceneCreateObjectByName } from '../../src/messages/game/scene-create-object-by-name.js';
 import type { SuiCreatePageMessage } from '../../src/messages/game/sui/index.js';
@@ -54,10 +55,32 @@ export interface PlaceDeedOptions {
   inventoryOid?: NetworkId;
   /** SUI wait timeout. Default 8000ms. */
   suiTimeoutMs?: number;
-  /** Post-placement settle delay. Default 5000ms. */
+  /** Post-placement settle delay. Default 10000ms. */
   settleMs?: number;
   /** Number of SUI dialogs to expect; auto-detected from template if unset. */
   expectedSuiCount?: number;
+  /**
+   * After locating the placed structure's BUIO, wait up to this many ms for
+   * at least one SCLT (cell) child to appear in the WorldModel. Required
+   * for downstream `navigate({ buildingId })` to find an interior cell.
+   * Default 10000ms; set to 0 to skip the wait (tests typically pass 0).
+   */
+  cellWaitMs?: number;
+  /**
+   * World coordinate where the structure should be placed. For non-cityhall
+   * deeds (the 0-SUI path), the orchestrator skips the client-side
+   * placement-preview UI and sends `placeStructure <deedOid> <x> <z> <rot>`
+   * directly via the command queue. Defaults to `ctx.position()`.
+   *
+   * Wire reference:
+   * `~/code/swg-main/src/engine/server/library/serverGame/src/shared/command/CommandCppFuncs.cpp:5302`
+   * (`commandFuncPlaceStructure` — parses `<deedOid> <x> <z> <rot>` and
+   * triggers `TRIG_PLACE_STRUCTURE` → `OnPlaceStructure` in
+   * `player_building.java:106`).
+   */
+  placementPosition?: { x: number; z: number };
+  /** Rotation in degrees (server expects 0/90/180/270). Default 0. */
+  placementRotation?: number;
 }
 
 export interface PlaceDeedResult {
@@ -177,7 +200,13 @@ export async function placeDeed(
   opts: PlaceDeedOptions = {},
 ): Promise<PlaceDeedResult> {
   const suiTimeoutMs = opts.suiTimeoutMs ?? 8000;
-  const settleMs = opts.settleMs ?? 5000;
+  // Bumped from 5s → 10s so the BUIO baseline for the just-placed building
+  // reliably lands in the WorldModel under parallel-Fleet load. With the
+  // template-name heuristic broken for player-house deeds (basename
+  // mismatch between `naboo_house_small_deed` and
+  // `shared_player_house_naboo_small`), the fallback proximity scan needs
+  // the BUIO present to return a non-null structureOid.
+  const settleMs = opts.settleMs ?? 10_000;
   const cityName = opts.cityName ?? 'NewCity';
   const isCityhall = sharedTemplate.includes('cityhall');
   const expectedSui = opts.expectedSuiCount ?? (isCityhall ? 2 : 0);
@@ -188,12 +217,32 @@ export async function placeDeed(
   // 2. Spawn deed
   const deedOid = await adminSpawnInto(ctx, sharedTemplate, inventoryOid);
 
-  // 3. Collect chat errors throughout placement
+  // 3. Collect chat errors throughout placement.
+  // Decode the `outOfBand` field's packed-bytes-in-UTF16 encoding so STF
+  // tokens like `player_structure:must_be_in_building` surface as plain
+  // ASCII rather than the Unicode::String mojibake the wire format
+  // produces.
+  const decodeOob = (oob: string): string => {
+    let s = '';
+    for (let i = 0; i < oob.length; i++) {
+      const cu = oob.charCodeAt(i);
+      const lo = cu & 0xff;
+      const hi = (cu >> 8) & 0xff;
+      for (const b of [lo, hi]) {
+        if (b >= 0x20 && b < 0x7f) s += String.fromCharCode(b);
+      }
+    }
+    return s;
+  };
   const chatErrors: string[] = [];
   const unsubChat = ctx.dispatcher.onMessage(ChatSystemMessage, (m) => {
-    const text = m.message + ' ' + m.outOfBand;
-    if (/obscene|cannot_use|no_room|not_unique|already_mayor|max_cities|too_close|no_rights|not_permitted/i.test(text)) {
-      chatErrors.push(text.slice(0, 120).trim());
+    const text = m.message + ' | OOB:' + decodeOob(m.outOfBand);
+    if (
+      /obscene|cannot_use|no_room|not_unique|already_mayor|max_cities|too_close|no_rights|not_permitted|player_structure|structure_failed|structure_too|invalid|cannot_place|cant_be_/i.test(
+        text,
+      )
+    ) {
+      chatErrors.push(text.slice(0, 200).trim());
     }
   });
 
@@ -217,13 +266,34 @@ export async function placeDeed(
 
   let suiSeen = 0;
   try {
-    // 4. Send radial USE — server opens the first SUI (if any).
+    // 4. Send the placement command.
     //    Modernized to use `ctx.waitForSui` + `ctx.respondToSui` instead of
     //    the raw `dispatcher.waitFor(SuiCreatePageMessage)` + `dispatcher.send(SuiEventNotification)`
     //    primitives — same wire bytes, less plumbing.
     if (expectedSui === 0) {
-      // No SUI expected — deed will be placed via direct queueCommand path
-      ctx.send(new ObjectMenuSelectMessage(deedOid, RadialMenuTypes.ITEM_USE));
+      // No SUI expected — bypass the client-side placement-preview UI and
+      // send the placeStructure command directly. The server-side
+      // commandFuncPlaceStructure (CommandCppFuncs.cpp:5302) parses
+      // "<deedOid> <x> <z> <rot>" and fires the OnPlaceStructure trigger
+      // (player_building.java:106) which validates and creates the BUIO.
+      // ObjectMenuSelectMessage(deedOid, ITEM_USE) alone only opens placement
+      // mode client-side — without the client clicking-to-place, no
+      // placeStructure command ever reaches the server and the deed
+      // silently never places. We saw this firsthand in the prior MVP runs
+      // (0/4 residents placed, no chat error, totalBuios stayed constant).
+      const here = opts.placementPosition ?? ctx.position();
+      const rotDegrees = opts.placementRotation ?? 0;
+      // Server expects RotationType enum 0/1/2/3 (0/90/180/270 degrees),
+      // NOT raw degrees. ScriptMethodsTerrain.cpp:441 rejects anything > 3
+      // with -9998 → "internal script error: OnPlaceStructure". Convert
+      // any degree value (0, 90, 180, 270, also negative or > 360) into
+      // 0..3.
+      const rotQuad = ((((Math.round(rotDegrees / 90) % 4) + 4) % 4) | 0);
+      ctx.useAbility(
+        'placeStructure',
+        undefined,
+        `${deedOid.toString()} ${here.x.toFixed(2)} ${here.z.toFixed(2)} ${rotQuad}`,
+      );
     } else {
       const sui1P = ctx.waitForSui({ timeoutMs: suiTimeoutMs }).catch(() => null);
       ctx.send(new ObjectMenuSelectMessage(deedOid, RadialMenuTypes.ITEM_USE));
@@ -241,10 +311,14 @@ export async function placeDeed(
           if (sui2 !== null) {
             suiSeen++;
             const pageId2 = suiPageId(sui2);
-            // Inputbox response: returnList is positional values only — the server
-            // maps them to subscribed widget properties (e.g. txtInput.LocalText) by
-            // index. So just [`cityName`], NOT [`txtInput.LocalText=${cityName}`].
-            ctx.respondToSui(pageId2, 0, [cityName]);
+            // Inputbox response: returnList is positional values mapped to
+            // subscribed widget properties. SWG's `sui.inputbox` subscribes
+            // to TWO properties (sui.java:790-791): txtInput.LocalText AND
+            // cmbOptions.SelectedText. We must send 2 entries so the
+            // server's positional mapping puts our cityName in slot 0
+            // (txtInput.LocalText), where `getInputBoxText` reads it. Send
+            // empty string for the unused combo slot.
+            ctx.respondToSui(pageId2, 0, [cityName, '']);
           }
         } else {
           // Single confirm SUI — just YES
@@ -261,7 +335,57 @@ export async function placeDeed(
   }
 
   // 7. Pick the first matching structure (server emits in placement order).
-  const firstStructure = structureCandidates[0];
+  // If the template-name heuristic missed (common for player-house deeds
+  // where the deed basename `naboo_house_small` doesn't match the structure
+  // basename `shared_player_house_naboo_small`), fall back to a WorldModel
+  // proximity scan: after settle, the new BUIO is in `ctx.world` and lies
+  // within a few metres of the player's current position. Pick the nearest
+  // BUIO within 20m as the placed structure.
+  let firstStructure: { oid: NetworkId; template: string } | undefined =
+    structureCandidates[0];
+  if (firstStructure === undefined) {
+    const here = ctx.position();
+    let bestDist = Number.POSITIVE_INFINITY;
+    let bestObj:
+      | { id: NetworkId; templateName?: string; position: { x: number; z: number } }
+      | undefined;
+    for (const o of ctx.world.nearby(20, here)) {
+      if (o.typeId !== ObjectTypeTags.BUIO) continue;
+      // Skip the deed itself (defensive — deeds are TANO not BUIO, but in
+      // case the server tags one BUIO for some reason).
+      if (o.id === deedOid) continue;
+      const dx = o.position.x - here.x;
+      const dz = o.position.z - here.z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 < bestDist) {
+        bestDist = d2;
+        bestObj = o;
+      }
+    }
+    if (bestObj !== undefined) {
+      firstStructure = { oid: bestObj.id, template: bestObj.templateName ?? '' };
+    }
+  }
+
+  // 8. If we have a building, wait for at least one SCLT (cell) child to
+  // appear in the WorldModel before returning. The cell baselines arrive
+  // shortly after the BUIO; if the caller immediately calls navigate() to
+  // step inside, navigate throws if no SCLT children are visible
+  // ("building X has no cell matching '(first public)' — SCLT baselines
+  // haven't arrived yet"). Pure observational — no extra sends. Default
+  // 10s; tests pass `cellWaitMs: 0` to skip.
+  const cellWaitMs = opts.cellWaitMs ?? 10_000;
+  if (firstStructure !== undefined && cellWaitMs > 0) {
+    const buildingId = firstStructure.oid;
+    const cellDeadline = Date.now() + cellWaitMs;
+    while (Date.now() < cellDeadline) {
+      const hasCell = ctx.world
+        .toArray()
+        .some((o) => o.containerId === buildingId && o.typeId === ObjectTypeTags.SCLT);
+      if (hasCell) break;
+      await ctx.wait(200);
+    }
+  }
   return {
     deedOid,
     structureOid: firstStructure?.oid ?? null,
@@ -276,24 +400,68 @@ export async function placeDeed(
  * Issue `declareresidence` for the building the player is currently inside.
  * Caller must have walked into the building's cell first.
  *
- * Returns true if a confirming ChatSystemMessage arrives within `timeoutMs`
- * containing a residence-related token, false otherwise.
+ * Returns true if the server registers the player as a citizen of a city
+ * within `timeoutMs`, false otherwise. Detection is via the typed
+ * `ctx.character.cityName` field (PLAY p6 `m_citizenshipCity`), which the
+ * server populates from the same call path that `declareresidence` invokes:
+ *
+ *   useAbility('declareresidence')
+ *     → player_building.java:2511 declareResidence
+ *     → player_building.java:2583 city.setCityResidence(self, structure)
+ *     → city.java:620 setCityResidence → addCitizen(citizen, newresidence)
+ *     → server updates m_citizenshipCity on the player's PlayerObject
+ *     → DeltasMessage on PLAY package SHARED_NP (decoded into ctx.character)
+ *
+ * Was previously a chat-regex match on `ChatSystemMessage`, which suffered
+ * from both false positives (`already_residence` / `change_residence_time`
+ * also matched `/resid/`) and false negatives (the STF token packed into
+ * `outOfBand` doesn't always carry the literal substring). The typed
+ * citizenship watch is server-authoritative and deterministic.
  */
 export async function declareResidence(
   ctx: ScriptContext,
-  opts: { timeoutMs?: number } = {},
+  opts: { timeoutMs?: number; pollMs?: number; debugLabel?: string } = {},
 ): Promise<boolean> {
-  const timeoutMs = opts.timeoutMs ?? 8000;
-  const confirmedP = ctx.dispatcher
-    .waitFor(ChatSystemMessage, {
-      timeoutMs,
-      predicate: (m) => /resid|change_residence|new_home|primary/i.test(m.outOfBand + m.message),
-    })
-    .catch(() => null);
+  const timeoutMs = opts.timeoutMs ?? 10_000;
+  const pollMs = opts.pollMs ?? 200;
+  const before = ctx.character.cityName;
+  const label = opts.debugLabel ?? 'declareResidence';
+
+  // Temporary diagnostic: capture every ChatSystemMessage during the wait so
+  // failed declareresidences surface the actual server-side reason
+  // (`must_be_in_building`, `declare_must_be_owner`, `already_residence`,
+  // etc.). Remove once MVP is reliably green.
+  const captured: string[] = [];
+  const unsubChat = ctx.dispatcher.onMessage(ChatSystemMessage, (m) => {
+    const text = (m.message + ' ' + m.outOfBand).slice(0, 200).trim();
+    if (text !== '') captured.push(text);
+  });
 
   ctx.useAbility('declareresidence', undefined, '');
-  const result = await confirmedP;
-  return result !== null;
+
+  const deadline = Date.now() + timeoutMs;
+  try {
+    while (Date.now() < deadline) {
+      const now = ctx.character.cityName;
+      // Success: transitioned from "no citizenship" or "different city" to a
+      // non-null city name. Filter out null-only transitions (e.g. city
+      // destruction) so we only resolve on actual citizenship grants.
+      if (now !== null && now !== before) {
+        process.stderr.write(
+          `[${label}] OK cityName ${before ?? 'null'} → ${now}\n`,
+        );
+        return true;
+      }
+      await ctx.wait(pollMs);
+    }
+    process.stderr.write(
+      `[${label}] TIMEOUT after ${timeoutMs}ms; cityName stayed at ${before ?? 'null'}; ` +
+        `chat=${JSON.stringify(captured.slice(0, 5))}\n`,
+    );
+    return false;
+  } finally {
+    unsubChat();
+  }
 }
 
 /**
@@ -318,9 +486,12 @@ export async function walkInAndDeclareResidence(
     declareTimeoutMs?: number;
     /** Building NetworkId from placeDeed's structureOid — enables the cell-aware navigate path. */
     buildingId?: NetworkId;
+    /** Optional label for diagnostic stderr output. */
+    debugLabel?: string;
   } = {},
 ): Promise<boolean> {
   const settleMs = opts.settleMs ?? 1500;
+  const label = opts.debugLabel ?? 'walkInAndDeclareResidence';
   if (opts.buildingId !== undefined) {
     // navigate() handles: walk outdoors to building anchor → enter first
     // public cell. No need for an entry-offset heuristic — the cell-relative
@@ -331,21 +502,28 @@ export async function walkInAndDeclareResidence(
         { buildingId: opts.buildingId, cellName: '' },
         { useMount: 'never' },
       );
+      process.stderr.write(`[${label}] navigated into cell of ${opts.buildingId.toString()}\n`);
     } catch (err) {
       // Fall through to the legacy walkTo on navigation failure — likely the
       // building's SCLT baselines didn't arrive in time. Same risk as the
       // legacy path but at least we tried the precise route.
       const reason = err instanceof Error ? err.message : String(err);
       process.stderr.write(
-        `[walkInAndDeclareResidence] navigate failed (${reason}); falling back to outdoor walkTo\n`,
+        `[${label}] navigate failed (${reason}); falling back to outdoor walkTo\n`,
       );
       const entry = slot.entryOffset ?? { x: 0, z: -5 };
       await ctx.walkTo({ x: slot.x + entry.x, z: slot.z + entry.z });
     }
   } else {
     const entry = slot.entryOffset ?? { x: 0, z: -5 };
+    process.stderr.write(
+      `[${label}] no buildingId — outdoor walkTo (${slot.x + entry.x}, ${slot.z + entry.z})\n`,
+    );
     await ctx.walkTo({ x: slot.x + entry.x, z: slot.z + entry.z });
   }
   await ctx.wait(settleMs);
-  return declareResidence(ctx, { timeoutMs: opts.declareTimeoutMs });
+  return declareResidence(ctx, {
+    timeoutMs: opts.declareTimeoutMs,
+    debugLabel: label,
+  });
 }

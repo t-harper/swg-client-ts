@@ -4,6 +4,15 @@ import { ConGenericMessage } from '../../src/messages/game/con-generic-message.j
 import { ObjectMenuSelectMessage } from '../../src/messages/game/object-menu-select-message.js';
 import { SceneCreateObjectByName } from '../../src/messages/game/scene-create-object-by-name.js';
 import { SuiCreatePageMessage, SuiEventNotification } from '../../src/messages/game/sui/index.js';
+import { BaselinesMessage } from '../../src/messages/game/baselines/baselines-message.js';
+import {
+  EMPTY_STRING_ID,
+  PlayerObjectSharedNpKind,
+} from '../../src/messages/game/baselines/index.js';
+import type { PlayerObjectSharedNpBaseline } from '../../src/messages/game/baselines/player-object-baseline-6.js';
+import { BaselinePackageIds, ObjectTypeTags } from '../../src/messages/game/baselines/registry.js';
+import { CM_COMMAND_QUEUE_ENQUEUE } from '../../src/messages/game/command-queue/index.js';
+import { ObjControllerMessage } from '../../src/messages/game/obj-controller-message.js';
 import { createFakeContext } from '../../src/client/script/test-helpers.js';
 import {
   classifyDeedKind,
@@ -41,6 +50,45 @@ function autoReply(fake: ReturnType<typeof createFakeContext>, replyFor: (cmd: s
   }, 1);
   interval.unref?.();
   return { sentCommands };
+}
+
+/**
+ * Synthesize a PLAY p6 (SHARED_NP) baseline carrying citizenship fields.
+ * Targets the fake context's default player NetworkId (0x1234n) — the
+ * `CharacterSheet`'s PLAY-routing accepts any PLAY baseline in scene
+ * regardless of target (player has exactly one PlayerObject).
+ */
+function makeCitizenshipBaseline(
+  cityName: string,
+  citizenType = 1,
+  target: bigint = 0x1234n,
+): BaselinesMessage {
+  const data: PlayerObjectSharedNpBaseline = {
+    authServerProcessId: 0,
+    descriptionStringId: EMPTY_STRING_ID,
+    privledgedTitle: 0,
+    currentGcwRank: 0,
+    currentGcwRankProgress: 0,
+    maxGcwImperialRank: 0,
+    maxGcwRebelRank: 0,
+    gcwRatingActualCalcTime: 0,
+    citizenshipCity: cityName,
+    citizenshipType: citizenType,
+    cityGcwDefenderRegion: { region: '', qualifiesForBonus: false, qualifiesForTitle: false },
+    guildGcwDefenderRegion: { region: '', qualifiesForBonus: false, qualifiesForTitle: false },
+    squelchedById: 0n,
+    squelchedByName: '',
+    squelchExpireTime: 0,
+    environmentFlags: 0,
+    defaultAttackOverride: '',
+  };
+  return new BaselinesMessage(
+    target,
+    ObjectTypeTags.PLAY,
+    BaselinePackageIds.SHARED_NP,
+    new Uint8Array(0),
+    { kind: PlayerObjectSharedNpKind, data },
+  );
 }
 
 function makeSuiPage(pageId: number, label = 'page'): SuiCreatePageMessage {
@@ -96,6 +144,7 @@ describe('placeDeed (cityhall = 2 SUI roundtrips)', () => {
       expectedSuiCount: 2,
       settleMs: 10,
       suiTimeoutMs: 3000,
+      cellWaitMs: 0,
     });
 
     expect(result.deedOid).toBe(999n);
@@ -113,7 +162,10 @@ describe('placeDeed (cityhall = 2 SUI roundtrips)', () => {
     expect(suiResponses[0]!.returnList).toEqual([]); // confirm = empty returnList
     expect(suiResponses[1]!.pageId).toBe(22);
     // returnList is positional VALUES only — server maps to widget props by subscription order
-    expect(suiResponses[1]!.returnList).toEqual(['TsHarbor']);
+    // Inputbox response sends 2 positional values — slot 0 maps to
+    // `txtInput.LocalText` (the cityName), slot 1 is the unused combo
+    // (`cmbOptions.SelectedText`). See sui.java:790-791.
+    expect(suiResponses[1]!.returnList).toEqual(['TsHarbor', '']);
   });
 
   it('reports rejected=true when an obscene/no_room chat arrives during placement', async () => {
@@ -133,6 +185,7 @@ describe('placeDeed (cityhall = 2 SUI roundtrips)', () => {
       expectedSuiCount: 2,
       settleMs: 600,
       suiTimeoutMs: 1500,
+      cellWaitMs: 0,
     });
 
     expect(result.rejected).toBe(true);
@@ -141,8 +194,11 @@ describe('placeDeed (cityhall = 2 SUI roundtrips)', () => {
 });
 
 describe('placeDeed (reclaim-able = 0 SUI)', () => {
-  it('just sends ITEM_USE; no SUI responses', async () => {
-    const fake = createFakeContext({ playerNetworkId: 100n });
+  it('sends placeStructure command; no SUI responses, no radial ITEM_USE', async () => {
+    const fake = createFakeContext({
+      playerNetworkId: 100n,
+      startPosition: { x: 2800, y: 0, z: -2700 },
+    });
     autoReply(fake, (cmd) => {
       if (cmd.startsWith('object getInventoryId')) return '101\nSUCCESS';
       if (cmd.startsWith('object createIn')) return 'NetworkId: 42\nSUCCESS';
@@ -152,31 +208,73 @@ describe('placeDeed (reclaim-able = 0 SUI)', () => {
     const result = await placeDeed(fake.ctx, 'object/tangible/deed/player_house_deed/naboo_house_small_deed.iff', {
       expectedSuiCount: 0,
       settleMs: 50,
+      cellWaitMs: 0,
+      placementPosition: { x: 2800, z: -2700 },
+      placementRotation: 180,
     });
 
     expect(result.deedOid).toBe(42n);
     expect(result.suiSeen).toBe(0);
     expect(result.rejected).toBe(false);
+    // No ObjectMenuSelectMessage — we skip the client placement-preview UI.
     const radials = fake.sent.filter((m): m is ObjectMenuSelectMessage => m instanceof ObjectMenuSelectMessage);
-    expect(radials.length).toBe(1);
+    expect(radials.length).toBe(0);
     const suiResponses = fake.sent.filter((m): m is SuiEventNotification => m instanceof SuiEventNotification);
     expect(suiResponses.length).toBe(0);
+    // Should have sent a CM_commandQueueEnqueue wrapping `placeStructure 42 2800 -2700 180`.
+    // Outbound ObjControllerMessages don't pre-populate decodedSubtype, so
+    // assert on the wire-level shape (message id + trailer bytes containing
+    // the params string).
+    const queueSends = fake.sent.filter(
+      (m): m is ObjControllerMessage =>
+        m instanceof ObjControllerMessage && m.message === CM_COMMAND_QUEUE_ENQUEUE,
+    );
+    expect(queueSends.length).toBe(1);
+    // The params Unicode::String "42 2800.00 -2700.00 180" appears in the
+    // trailer bytes as UTF-16LE; decoding back to a string is exact.
+    const trailer = queueSends[0]!.data;
+    let trailerStr = '';
+    for (let i = 0; i + 1 < trailer.length; i += 2) {
+      const cu = trailer[i]! | (trailer[i + 1]! << 8);
+      if (cu === 0) continue;
+      trailerStr += String.fromCharCode(cu);
+    }
+    // Rotation 180° → RotationType 2 (server enum: 0/1/2/3 = 0/90/180/270).
+    expect(trailerStr).toContain('42 2800.00 -2700.00 2');
   });
 });
 
 describe('declareResidence', () => {
-  it('returns true when a residence-related ChatSystemMessage arrives', async () => {
+  it('returns true when ctx.character.cityName transitions to a new value', async () => {
     const fake = createFakeContext();
+    // Simulate the server's PLAY p6 delta arriving shortly after the
+    // declareresidence command is sent — emulates the chain
+    // `useAbility('declareresidence')` → `city.setCityResidence` →
+    // `city.addCitizen` → PLAY p6 m_citizenshipCity delta.
     setTimeout(() => {
-      fake.simulateRecv(new ChatSystemMessage(0, 'You have changed your residence to TsHome.', ''));
+      fake.simulateRecv(makeCitizenshipBaseline('TsHarborTest'));
     }, 50);
-    const ok = await declareResidence(fake.ctx, { timeoutMs: 500 });
+    const ok = await declareResidence(fake.ctx, { timeoutMs: 1000, pollMs: 20 });
     expect(ok).toBe(true);
+    expect(fake.ctx.character.cityName).toBe('TsHarborTest');
   });
 
-  it('returns false on timeout', async () => {
+  it('returns false on timeout when citizenship never updates', async () => {
     const fake = createFakeContext();
-    const ok = await declareResidence(fake.ctx, { timeoutMs: 100 });
+    const ok = await declareResidence(fake.ctx, { timeoutMs: 200, pollMs: 20 });
+    expect(ok).toBe(false);
+  });
+
+  it('returns false when cityName stays the same (e.g. already a resident)', async () => {
+    const fake = createFakeContext();
+    // Seed pre-existing citizenship before the command.
+    fake.simulateRecv(makeCitizenshipBaseline('TsHarborExisting'));
+    expect(fake.ctx.character.cityName).toBe('TsHarborExisting');
+    // The same value arriving again should NOT register as a transition.
+    setTimeout(() => {
+      fake.simulateRecv(makeCitizenshipBaseline('TsHarborExisting'));
+    }, 50);
+    const ok = await declareResidence(fake.ctx, { timeoutMs: 200, pollMs: 20 });
     expect(ok).toBe(false);
   });
 });
@@ -184,20 +282,26 @@ describe('declareResidence', () => {
 describe('walkInAndDeclareResidence', () => {
   it('walks to slot.x + entryOffset then declares residence', async () => {
     const fake = createFakeContext({ startPosition: { x: 100, y: 0, z: 50 } });
-    const chatTicker = setInterval(() => {
-      fake.simulateRecv(new ChatSystemMessage(0, 'change_residence ok', ''));
-    }, 100);
-    chatTicker.unref?.();
+    // Fire the citizenship transition ONCE, ~2 s in — well after `walkTo`
+    // (which uses real-time pacing at 7.3 m/s and takes ~700 ms for this
+    // ~5 m hop) has completed AND after declareResidence has captured the
+    // `before` baseline of `null`. Firing earlier would pre-populate
+    // `before`, leaving no transition for the poll to detect.
+    const fireAt = setTimeout(() => {
+      fake.simulateRecv(makeCitizenshipBaseline('TsHarborTest'));
+    }, 2000);
+    fireAt.unref?.();
 
     try {
       const ok = await walkInAndDeclareResidence(
         fake.ctx,
         { x: 102, z: 47, entryOffset: { x: 0, z: -2 } },
-        { settleMs: 50, declareTimeoutMs: 3000 },
+        { settleMs: 50, declareTimeoutMs: 4000 },
       );
       expect(ok).toBe(true);
+      expect(fake.ctx.character.cityName).toBe('TsHarborTest');
     } finally {
-      clearInterval(chatTicker);
+      clearTimeout(fireAt);
     }
   }, 15000);
 });
@@ -390,7 +494,7 @@ describe('placeDeed structure-OID capture', () => {
     const result = await placeDeed(
       fake.ctx,
       'object/tangible/deed/player_house_deed/naboo_house_small_deed.iff',
-      { expectedSuiCount: 0, settleMs: 200 },
+      { expectedSuiCount: 0, settleMs: 200, cellWaitMs: 0 },
     );
 
     expect(result.deedOid).toBe(42n);
@@ -410,7 +514,7 @@ describe('placeDeed structure-OID capture', () => {
     const result = await placeDeed(
       fake.ctx,
       'object/tangible/deed/player_house_deed/naboo_house_small_deed.iff',
-      { expectedSuiCount: 0, settleMs: 50 },
+      { expectedSuiCount: 0, settleMs: 50, cellWaitMs: 0 },
     );
 
     expect(result.deedOid).toBe(42n);
@@ -439,7 +543,7 @@ describe('placeDeed structure-OID capture', () => {
     const result = await placeDeed(
       fake.ctx,
       'object/tangible/deed/player_house_deed/naboo_house_small_deed.iff',
-      { expectedSuiCount: 0, settleMs: 200 },
+      { expectedSuiCount: 0, settleMs: 200, cellWaitMs: 0 },
     );
 
     expect(result.structureOid).toBe(7777n);
@@ -464,7 +568,7 @@ describe('placeDeed structure-OID capture', () => {
     const result = await placeDeed(
       fake.ctx,
       'object/tangible/deed/city_deed/cityhall_naboo_deed.iff',
-      { cityName: 'TsHarbor', expectedSuiCount: 2, settleMs: 400, suiTimeoutMs: 3000 },
+      { cityName: 'TsHarbor', expectedSuiCount: 2, settleMs: 400, suiTimeoutMs: 3000, cellWaitMs: 0 },
     );
 
     expect(result.suiSeen).toBe(2);
@@ -492,7 +596,7 @@ describe('placeDeed structure-OID capture', () => {
     const result = await placeDeed(
       fake.ctx,
       'object/tangible/deed/player_house_deed/naboo_house_small_deed.iff',
-      { expectedSuiCount: 0, settleMs: 200 },
+      { expectedSuiCount: 0, settleMs: 200, cellWaitMs: 0 },
     );
 
     expect(result.structureOid).toBe(7777n);

@@ -164,9 +164,13 @@ export function mvpLayout(): CharacterSlot[] {
     },
   ];
 
-  // 4 residents at cardinal positions, 300m from center (well inside Rank-1 150m won't fit,
-  // but the city's effective radius starts at Rank 1 and grows; we use 300m so the residences
-  // are visible spread but inside Rank-3 zone once city promotes).
+  // 4 residents at cardinal positions, 100m from center. The fresh city is
+  // rank 1 (150m radius); houses MUST be inside the radius or
+  // `city.setCityResidence` (city.java:620) returns early without calling
+  // `addCitizen` — which is the typed signal `ctx.character.cityName` watches
+  // for in `declareResidence()`. 100m leaves a 50m buffer inside the rank-1
+  // radius; cardinal spacing means adjacent houses are ~141m apart, plenty
+  // for small (~16m) houses.
   const cardinals: { name: string; angle: number; tmpl: string }[] = [
     { name: 'Resident01', angle: 0, tmpl: TEMPLATES.houseSmall }, // N
     { name: 'Resident02', angle: 90, tmpl: TEMPLATES.houseSmallWindow }, // E
@@ -175,7 +179,7 @@ export function mvpLayout(): CharacterSlot[] {
   ];
   for (let i = 0; i < cardinals.length; i++) {
     const c = cardinals[i]!;
-    const pos = polar(c.angle, 300);
+    const pos = polar(c.angle, 100);
     slots.push({
       role: 'resident',
       account: `tscity0${i + 2}`,

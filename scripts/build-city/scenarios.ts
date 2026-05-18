@@ -258,10 +258,16 @@ export function residentScenario(inputs: ResidentScenarioInputs): ScenarioFn {
     await walkIfFar(ctx, slot, 8);
     await ctx.wait(500);
 
-    // Place house (reclaim-able deeds → 0 SUI roundtrips, fires queueCommand directly)
+    // Place house. Houses skip the client-side placement-preview UI
+    // (`expectedSuiCount: 0`); placeDeed sends the placeStructure command
+    // directly with the slot's coords + rotation, server creates the BUIO.
     let placeResult: PlaceDeedResult;
     try {
-      placeResult = await placeDeed(ctx, deedTemplate, { expectedSuiCount: 0 });
+      placeResult = await placeDeed(ctx, deedTemplate, {
+        expectedSuiCount: 0,
+        placementPosition: { x: slot.x, z: slot.z },
+        placementRotation: slot.rotation,
+      });
     } catch (err) {
       ctx.fail(
         `resident ${slot.characterName}: placeDeed failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -280,7 +286,8 @@ export function residentScenario(inputs: ResidentScenarioInputs): ScenarioFn {
     // (rare — placement succeeded but the create event was missed).
     const buildOpts: Parameters<typeof walkInAndDeclareResidence>[2] = {
       settleMs: 2000,
-      declareTimeoutMs: 8000,
+      declareTimeoutMs: 10000,
+      debugLabel: `${slot.account}/${slot.characterName}`,
     };
     if (placeResult.structureOid !== null) {
       buildOpts.buildingId = placeResult.structureOid;

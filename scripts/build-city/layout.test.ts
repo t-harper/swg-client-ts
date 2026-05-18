@@ -55,9 +55,12 @@ describe('mvpLayout', () => {
     }
   });
 
-  it('all residents within rank-3 radius (300m)', () => {
+  it('all residents within rank-1 radius (150m) — required for citizenship on fresh cities', () => {
+    // City starts at rank 1 (150m); houses outside the radius mean
+    // `city.setCityResidence` (city.java:620) returns early without calling
+    // `addCitizen`, and the citizenship-watch in declareResidence times out.
     for (const s of mvpLayout().filter((s) => s.role === 'resident')) {
-      expect(distanceToCenter(s)).toBeLessThanOrEqual(CITY_RANK_RADIUS.rank3 + 1);
+      expect(distanceToCenter(s)).toBeLessThanOrEqual(CITY_RANK_RADIUS.rank1 + 1);
     }
   });
 });

@@ -420,6 +420,7 @@ the full `ScriptContext` API and the ObjController subtype dispatch.
 - `docs/views-reference.md` — every always-on view (auto-generated)
 - `docs/actions-reference.md` — every method (auto-generated)
 - `docs/scripting-cookbook.md` — every bundled scenario in `src/scenarios/` (auto-generated)
+- `docs/examples-walkthrough.md` — annotated reading-guide for the 11 grandiose `scripts/examples/` scenarios (purpose, flow, code map, soft-fails, CLI)
 - `docs/wire-reference.md` — every registered message + ObjController subtype (auto-generated)
 - `docs/wire-spec.md` — distilled byte-level spec
 - `docs/lifecycle.md` — 4-stage state diagram (with script hook)

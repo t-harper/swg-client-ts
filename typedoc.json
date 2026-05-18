@@ -12,6 +12,7 @@
     "docs/actions-reference.md",
     "docs/wire-reference.md",
     "docs/scripting-cookbook.md",
+    "docs/examples-walkthrough.md",
     "docs/lifecycle.md",
     "docs/wire-spec.md",
     "docs/adding-a-message.md"
@@ -27,6 +28,7 @@
   "sidebarLinks": {
     "Wire reference": "documents/Wire-message_reference.html",
     "Scripting cookbook": "documents/Scripting_cookbook.html",
+    "Examples walkthrough": "documents/Examples_walkthrough.html",
     "Lifecycle (internals)": "documents/lifecycle.html",
     "Wire spec (internals)": "documents/wire-spec.html",
     "Adding a message (internals)": "documents/adding-a-message.html"

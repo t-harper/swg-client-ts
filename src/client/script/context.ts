@@ -204,6 +204,18 @@ import {
   walkToCell as walkToCellImpl,
   walkTo as walkToImpl,
 } from './movement.js';
+import {
+  type BuyTicketOptions,
+  type ListDestinationsOptions,
+  type TravelHostContext,
+  type TravelView,
+  type UseTicketOptions,
+  type UseTicketResult,
+  buyTicket as buyTicketImpl,
+  createTravelView,
+  listDestinations as listDestinationsImpl,
+  useTicket as useTicketImpl,
+} from './travel.js';
 
 /**
  * Posture command names recognised by `changePosture()`. These map to
@@ -726,6 +738,46 @@ export interface ScriptContext {
    *   ctx.bank.findByTemplate(/credit/i)   // pattern-match
    */
   readonly bank: BankView;
+  /**
+   * Travel helpers — `findTicketVendor` / `findTicketCollector` /
+   * `currentTickets()`. Paired with the action methods
+   * `buyTicket` / `useTicket` / `listDestinations` for end-to-end shuttle
+   * travel (vendor → SUI → ticket → board → CmdStartScene).
+   *
+   * Stateless / live: each call reads from `world` + `inventory` directly.
+   */
+  readonly travel: TravelView;
+  /**
+   * Buy a shuttle ticket. Talks to the ticket vendor (or finds the nearest
+   * if no `vendorId` is supplied), enumerates available destinations across
+   * every reachable planet, picks the one matching `opts.destination`, then
+   * fires the `purchaseTicket` command and waits for the ticket item to
+   * appear in inventory. Returns the new ticket's NetworkId.
+   *
+   * Throws if no vendor is in range, the destination isn't offered, or the
+   * server doesn't create a ticket within `opts.timeoutMs` (default 15s —
+   * e.g. when the player is short on credits / banned from the city).
+   */
+  buyTicket(opts: BuyTicketOptions): Promise<NetworkId>;
+  /**
+   * Use a ticket: send `boardShuttle(collectorId, ticketId)` and wait for
+   * the inbound `CmdStartScene` that marks the actual scene transition.
+   * Returns the new (planet, position).
+   *
+   * Both `ticketId` and `collectorId` default to "first ticket in inventory"
+   * and "nearest ticket collector / shuttle in range" respectively. Throws
+   * if either resolution fails or the server doesn't fire `CmdStartScene`
+   * within `opts.timeoutMs` (default 30s).
+   */
+  useTicket(opts?: UseTicketOptions): Promise<UseTicketResult>;
+  /**
+   * Open the ticket vendor's UI without buying — returns the union of every
+   * `"<planet>/<point>"` pair the server reports across every known planet.
+   * Useful for surveying available destinations before committing to a
+   * `buyTicket` call. Throws if no vendor is in range or the server replies
+   * with nothing within `opts.timeoutMs` (default 10s).
+   */
+  listDestinations(opts?: ListDestinationsOptions): Promise<string[]>;
   /**
    * Find the nearest `WorldObject` matching `typeId` (one of `ObjectTypeTags`),
    * sorted by 2D distance from the player. Excludes the player itself by
@@ -2016,6 +2068,11 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     /* no-op until the helpers attach below */
   };
 
+  // Travel view + action helpers — constructed AFTER `ctx` exists since the
+  // action helpers need `ctx.send` / `ctx.nextCommandSequence`. Placeholder
+  // until they're wired in below.
+  const travelPlaceholder = undefined as unknown as TravelView;
+
   const ctx: InternalContext = {
     dispatcher: opts.dispatcher,
     sceneStart: opts.sceneStart,
@@ -2056,6 +2113,17 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     combat: combatPlaceholder,
     safety: safetyPlaceholder,
     _combatHelpersDetach: (): void => combatHelpersDetachImpl(),
+    travel: travelPlaceholder,
+
+    async buyTicket(travelOpts: BuyTicketOptions): Promise<NetworkId> {
+      return buyTicketImpl(ctx as unknown as TravelHostContext, ctx.travel, travelOpts);
+    },
+    async useTicket(travelOpts?: UseTicketOptions): Promise<UseTicketResult> {
+      return useTicketImpl(ctx as unknown as TravelHostContext, ctx.travel, travelOpts);
+    },
+    async listDestinations(travelOpts?: ListDestinationsOptions): Promise<string[]> {
+      return listDestinationsImpl(ctx as unknown as TravelHostContext, ctx.travel, travelOpts);
+    },
 
     findNearest(
       typeId: number,
@@ -3183,6 +3251,17 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     return seq;
   }) as typeof ctx.useAbility;
   ctx.attackTarget = ((targetId: NetworkId): number => ctx.useAbility('attack', targetId)) as typeof ctx.attackTarget;
+
+  // Travel view — pure-derived state over world + inventory + position.
+  // Constructed after ctx so the action methods (buyTicket/useTicket) can
+  // close over ctx and find this view via `ctx.travel`.
+  const travelView = createTravelView(ctx as unknown as TravelHostContext);
+  Object.defineProperty(ctx, 'travel', {
+    value: travelView,
+    enumerable: true,
+    writable: false,
+    configurable: true,
+  });
 
   return ctx;
 }

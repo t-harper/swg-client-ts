@@ -66,7 +66,6 @@ interface ScriptArgs {
   rows: number;
   maxTypesPerCell: number;
   surveyTimeoutMs: number;
-  walkSpeed: number;
   staggerMs: number;
   planet: string;
   outputNdjson: string;
@@ -88,7 +87,6 @@ function parseScriptArgs(extra: Map<string, string>): ScriptArgs {
     rows,
     maxTypesPerCell: Number.parseInt(extra.get('max-types') ?? '3', 10),
     surveyTimeoutMs: Number.parseInt(extra.get('survey-timeout-ms') ?? '8000', 10),
-    walkSpeed: Number.parseFloat(extra.get('walk-speed') ?? '12'),
     staggerMs: Number.parseInt(extra.get('stagger-ms') ?? '750', 10),
     planet: extra.get('planet') ?? 'mos_eisley',
     outputNdjson: extra.get('output-ndjson') ?? defaultPath,
@@ -191,7 +189,7 @@ function makeScenario(
       // Some assigned cells may be hundreds of metres from the spawn — use a
       // generous walk speed so we don't burn most of --minutes just walking.
       try {
-        await ctx.walkTo({ x: cell.centerX, z: cell.centerZ }, { speed: args.walkSpeed });
+        await ctx.walkTo({ x: cell.centerX, z: cell.centerZ });
       } catch (err) {
         status.status = 'walk-failed';
         status.reason = err instanceof Error ? err.message : String(err);
@@ -342,7 +340,6 @@ async function main(): Promise<number> {
       '  --rows=N                 grid rows (default 3)',
       '  --max-types=N            cap resource types surveyed per cell (default 3)',
       '  --survey-timeout-ms=N    per-survey response timeout (default 8000)',
-      '  --walk-speed=N           m/s for walkTo (default 12)',
       '  --stagger-ms=N           ms between successive client launches (default 750)',
       '  --planet=CITY            starting_locations.iff key (default mos_eisley)',
       '  --output-ndjson=PATH     heatmap output file (default /tmp/cartography-<ts>.ndjson)',

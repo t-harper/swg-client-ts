@@ -9,6 +9,7 @@
  */
 
 import { encodeMessage } from '../../messages/base.js';
+import { ObjControllerMessage } from '../../messages/game/obj-controller-message.js';
 import {
   type NetUpdateTransformData,
   NetUpdateTransformKind,
@@ -18,7 +19,6 @@ import {
   type TeleportAckData,
   TeleportAckKind,
 } from '../../messages/game/obj-controller/index.js';
-import { ObjControllerMessage } from '../../messages/game/obj-controller-message.js';
 import type { GameNetworkMessage } from '../../messages/interface.js';
 import type { NetworkId, SceneStart, Vector3 } from '../../types.js';
 import type { MessageDispatcher, TranscriptEvent } from '../dispatcher.js';
@@ -89,7 +89,9 @@ export function createFakeContext(opts: FakeContextOptions = {}): FakeContext {
    * actually exercise (`addClockReflectListener` / `getLatencyStats`). Returns
    * an unsubscribe function that removes the listener from `clockReflectListeners`.
    */
-  const clockReflectListeners: Array<(s: import('../../soe/clock-sync.js').ClockReflectSample) => void> = [];
+  const clockReflectListeners: Array<
+    (s: import('../../soe/clock-sync.js').ClockReflectSample) => void
+  > = [];
   const fakeConnection = {
     addClockReflectListener(
       cb: (s: import('../../soe/clock-sync.js').ClockReflectSample) => void,

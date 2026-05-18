@@ -688,7 +688,6 @@ async function phase6_verify(
             centerZ: state.cityCenter.z,
             radius,
             durationMs: 45_000,
-            speed: 8,
           });
         } catch (err) {
           // Non-fatal — visual pass is informational only.

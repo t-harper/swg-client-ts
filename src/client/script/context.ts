@@ -6,7 +6,7 @@
  * Scenarios are plain async functions:
  *
  *   const myScenario: ScenarioFn = async (ctx) => {
- *     await ctx.walkTo({ x: -100, z: 50 }, { speed: 5 });
+ *     await ctx.walkTo({ x: -100, z: 50 });
  *     await ctx.walkCircle({ centerX: -100, centerZ: 50, radius: 10, durationMs: 5_000 });
  *     ctx.openPlayerInventory();
  *     await ctx.wait(1_000);
@@ -102,18 +102,10 @@ import {
   ObjectMenuSelectMessage,
   RadialMenuTypes,
 } from '../../messages/game/object-menu-select-message.js';
+import { SceneCreateObjectByCrc } from '../../messages/game/scene-create-object-by-crc.js';
+import { SceneCreateObjectByName } from '../../messages/game/scene-create-object-by-name.js';
 import { SuiCreatePageMessage, SuiEventNotification } from '../../messages/game/sui/index.js';
 import type { SuiPageData } from '../../messages/game/sui/sui-page-data.js';
-import {
-  type LastNpcDialog,
-  NpcConverseTracker,
-  runNpcConversation,
-} from '../npc-converse.js';
-import {
-  type SuiAutoResponse,
-  type SuiPage,
-  SuiAutoResponder,
-} from '../sui-auto.js';
 import {
   ResourceListForSurveyMessage,
   type ResourceListItem,
@@ -132,15 +124,35 @@ import {
 } from '../../messages/game/trade/index.js';
 import type { GameNetworkMessage } from '../../messages/interface.js';
 import type { NetworkId, SceneStart, Vector3 } from '../../types.js';
+import { type BankView, BankViewImpl } from '../bank-view.js';
+import { PLAYER_DATAPAD_TEMPLATE_CRC, extractDatapadContainerId } from '../baseline-helpers.js';
 import type { CharacterSheet } from '../character-sheet.js';
 import { createCharacterSheet } from '../character-sheet.js';
 import type { ChatHandlers } from '../chat-handlers.js';
 import { createChatHandlers } from '../chat-handlers.js';
+import {
+  type CombatHelpersHandle,
+  type CombatView,
+  type SafetyView,
+  attachCombatHelpers,
+} from '../combat-helpers.js';
+import { type CraftingCacheView, CraftingSessionCacheImpl } from '../crafting-session.js';
 import type { MessageDispatcher } from '../dispatcher.js';
 import type { GroupView } from '../group-view.js';
 import { createGroupView } from '../group-view.js';
 import type { GuildView } from '../guild-view.js';
 import { createGuildView } from '../guild-view.js';
+import { type InventoryView, InventoryViewImpl } from '../inventory-view.js';
+import { type LocationView, createLocationView } from '../location.js';
+import { MissionsCacheImpl, type MissionsCacheView } from '../missions-cache.js';
+import {
+  type NavigateOptions,
+  type NavigateTarget,
+  navigate as navigateImpl,
+} from '../navigate.js';
+import { type LastNpcDialog, NpcConverseTracker, runNpcConversation } from '../npc-converse.js';
+import { SuiAutoResponder, type SuiAutoResponse, type SuiPage } from '../sui-auto.js';
+import { type BestKnownSample, SurveyCacheImpl, type SurveyLastResults } from '../survey-cache.js';
 import {
   type CombatTimerHandle,
   type CombatTimerView,
@@ -152,44 +164,8 @@ import {
   createCooldownTracker,
   createServerTimeTracker,
 } from '../timing.js';
-import { type LocationView, createLocationView } from '../location.js';
-import {
-  type NavigateOptions,
-  type NavigateTarget,
-  navigate as navigateImpl,
-} from '../navigate.js';
-import { SceneCreateObjectByCrc } from '../../messages/game/scene-create-object-by-crc.js';
-import { SceneCreateObjectByName } from '../../messages/game/scene-create-object-by-name.js';
-import {
-  InventoryViewImpl,
-  type InventoryView,
-} from '../inventory-view.js';
-import {
-  type CombatHelpersHandle,
-  type CombatView,
-  type SafetyView,
-  attachCombatHelpers,
-} from '../combat-helpers.js';
-import { BankViewImpl, type BankView } from '../bank-view.js';
 import type { WorldModel, WorldObject } from '../world-model.js';
-import {
-  PLAYER_DATAPAD_TEMPLATE_CRC,
-  extractDatapadContainerId,
-} from '../baseline-helpers.js';
 import { type DatapadView, DatapadViewImpl } from './datapad-view.js';
-import {
-  type CraftingCacheView,
-  CraftingSessionCacheImpl,
-} from '../crafting-session.js';
-import {
-  type MissionsCacheView,
-  MissionsCacheImpl,
-} from '../missions-cache.js';
-import {
-  type BestKnownSample,
-  type SurveyLastResults,
-  SurveyCacheImpl,
-} from '../survey-cache.js';
 import {
   type ExpectOptions,
   expectAbsent as expectAbsentImpl,
@@ -326,10 +302,7 @@ export interface SuiContextNamespace {
    *
    *   ctx.sui.autoRespond((p) => p.pageName === 'Script.areYouSure', 'ok');
    */
-  autoRespond(
-    predicate: (page: SuiPageData) => boolean,
-    response: SuiAutoResponse,
-  ): () => void;
+  autoRespond(predicate: (page: SuiPageData) => boolean, response: SuiAutoResponse): () => void;
 
   /**
    * Live, read-only list of every currently-displayed SUI page (i.e. pages
@@ -1847,11 +1820,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
   }
 
   // Bank view — owned by the script context, attached now.
-  const bankView = new BankViewImpl(
-    opts.world,
-    opts.dispatcher,
-    opts.sceneStart.playerNetworkId,
-  );
+  const bankView = new BankViewImpl(opts.world, opts.dispatcher, opts.sceneStart.playerNetworkId);
   bankView.attach();
 
   const state = {
@@ -1990,8 +1959,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
   const surveyCallable = Object.defineProperties(surveyFn, {
     lastResults: { get: () => surveyCache.lastResults, enumerable: true },
     bestKnown: {
-      value: (resourceType: string): BestKnownSample | null =>
-        surveyCache.bestKnown(resourceType),
+      value: (resourceType: string): BestKnownSample | null => surveyCache.bestKnown(resourceType),
       enumerable: true,
     },
   }) as SurveyCallable;
@@ -2687,9 +2655,8 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
       // next tick (~30s later) clean up. We don't wait for the cancel chat
       // here — that's the caller's choice.
       const cur = ctx.position();
-      // Use walkTo with a 2m offset; default tickMs/speed give us a quick send.
       const { walkTo: walkToImplLocal } = await import('./movement.js');
-      await walkToImplLocal(ctx, { x: cur.x + 2.5, z: cur.z + 2.5 }, { speed: 4, tickMs: 500 });
+      await walkToImplLocal(ctx, { x: cur.x + 2.5, z: cur.z + 2.5 }, { tickMs: 500 });
     },
 
     async waitForSampleEvent(sampleOpts?: {
@@ -3250,7 +3217,8 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     }
     return seq;
   }) as typeof ctx.useAbility;
-  ctx.attackTarget = ((targetId: NetworkId): number => ctx.useAbility('attack', targetId)) as typeof ctx.attackTarget;
+  ctx.attackTarget = ((targetId: NetworkId): number =>
+    ctx.useAbility('attack', targetId)) as typeof ctx.attackTarget;
 
   // Travel view — pure-derived state over world + inventory + position.
   // Constructed after ctx so the action methods (buyTicket/useTicket) can
@@ -3276,9 +3244,11 @@ function isCombatVerb(commandName: string): boolean {
   const c = commandName.toLowerCase();
   if (c === 'attack' || c === 'fire' || c === 'shoot' || c === 'duel') return true;
   // Ability families: most combat specials start with these prefixes.
-  if (/^(melee|ranged|kinetic|energy|bleed|burst|berserk|charge|disarm|dizzy|knock|kick|punch|strike|stab|slash|cleave|grapple|sweep|throw|whirlwind|sniper)/i.test(
+  if (
+    /^(melee|ranged|kinetic|energy|bleed|burst|berserk|charge|disarm|dizzy|knock|kick|punch|strike|stab|slash|cleave|grapple|sweep|throw|whirlwind|sniper)/i.test(
       c,
-    )) {
+    )
+  ) {
     return true;
   }
   // Many trooper/jedi/etc. abilities are explicitly named — anything with

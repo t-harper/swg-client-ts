@@ -45,9 +45,7 @@ interface SpawnResult {
 function runCli(args: string[]): Promise<SpawnResult> {
   // Locate the CLI relative to this test file — robust to where the worktree
   // lives on disk.
-  const cliPath = resolve(
-    fileURLToPath(new URL('../../bin/swg-ts-cli.ts', import.meta.url)),
-  );
+  const cliPath = resolve(fileURLToPath(new URL('../../bin/swg-ts-cli.ts', import.meta.url)));
   return new Promise((resolveResult) => {
     const child = spawn('node', ['--import', 'tsx', cliPath, ...args], {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -129,69 +127,48 @@ describe('CLI: decode-raw smoke test', () => {
     await rm(tmp, { recursive: true, force: true });
   });
 
-  it(
-    'decodes the synthetic capture and exits 0',
-    async () => {
-      const result = await runCli(['decode-raw', `--input=${captureFile}`]);
-      if (result.code !== 0) {
-        throw new Error(
-          `CLI exited ${result.code}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
-        );
-      }
-      expect(result.code).toBe(0);
+  it('decodes the synthetic capture and exits 0', async () => {
+    const result = await runCli(['decode-raw', `--input=${captureFile}`]);
+    if (result.code !== 0) {
+      throw new Error(
+        `CLI exited ${result.code}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+      );
+    }
+    expect(result.code).toBe(0);
 
-      // SessionRequest, SessionResponse, then the reliable packet
-      expect(result.stdout).toMatch(/SessionRequest/);
-      expect(result.stdout).toMatch(/SessionResponse/);
-      // The reliable packet contains LoginEnumCluster among others
-      expect(result.stdout).toMatch(/LoginEnumCluster/);
-    },
-    30_000,
-  );
+    // SessionRequest, SessionResponse, then the reliable packet
+    expect(result.stdout).toMatch(/SessionRequest/);
+    expect(result.stdout).toMatch(/SessionResponse/);
+    // The reliable packet contains LoginEnumCluster among others
+    expect(result.stdout).toMatch(/LoginEnumCluster/);
+  }, 30_000);
 
-  it(
-    'honors --from and --limit',
-    async () => {
-      // Skip the first 2 frames, decode 1
-      const result = await runCli([
-        'decode-raw',
-        `--input=${captureFile}`,
-        '--from=2',
-        '--limit=1',
-      ]);
-      expect(result.code).toBe(0);
-      // Should NOT contain SessionRequest (frame 0) or SessionResponse (frame 1)
-      expect(result.stdout).not.toMatch(/SessionRequest/);
-      expect(result.stdout).not.toMatch(/SessionResponse/);
-      // SHOULD contain the reliable packet's decoded names
-      expect(result.stdout).toMatch(/LoginEnumCluster/);
-    },
-    30_000,
-  );
+  it('honors --from and --limit', async () => {
+    // Skip the first 2 frames, decode 1
+    const result = await runCli(['decode-raw', `--input=${captureFile}`, '--from=2', '--limit=1']);
+    expect(result.code).toBe(0);
+    // Should NOT contain SessionRequest (frame 0) or SessionResponse (frame 1)
+    expect(result.stdout).not.toMatch(/SessionRequest/);
+    expect(result.stdout).not.toMatch(/SessionResponse/);
+    // SHOULD contain the reliable packet's decoded names
+    expect(result.stdout).toMatch(/LoginEnumCluster/);
+  }, 30_000);
 
-  it(
-    '--verbose prints payload hex',
-    async () => {
-      const result = await runCli([
-        'decode-raw',
-        `--input=${captureFile}`,
-        '--from=2',
-        '--limit=1',
-        '--verbose',
-      ]);
-      expect(result.code).toBe(0);
-      expect(result.stdout).toMatch(/payload:/);
-    },
-    30_000,
-  );
+  it('--verbose prints payload hex', async () => {
+    const result = await runCli([
+      'decode-raw',
+      `--input=${captureFile}`,
+      '--from=2',
+      '--limit=1',
+      '--verbose',
+    ]);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toMatch(/payload:/);
+  }, 30_000);
 
-  it(
-    'returns 2 if --input is missing',
-    async () => {
-      const result = await runCli(['decode-raw']);
-      expect(result.code).toBe(2);
-      expect(result.stderr).toMatch(/--input/);
-    },
-    30_000,
-  );
+  it('returns 2 if --input is missing', async () => {
+    const result = await runCli(['decode-raw']);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toMatch(/--input/);
+  }, 30_000);
 });

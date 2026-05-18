@@ -22,8 +22,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { SwgClient } from '../../src/client/swg-client.js';
-import { ConGenericMessage } from '../../src/messages/game/con-generic-message.js';
 import { ObjectTypeTags } from '../../src/messages/game/baselines/index.js';
+import { ConGenericMessage } from '../../src/messages/game/con-generic-message.js';
 import { ResourceListForSurveyMessage } from '../../src/messages/game/survey/index.js';
 import type { NetworkId } from '../../src/types.js';
 import { liveCredentials, sessionSettle } from './helpers.js';
@@ -109,7 +109,9 @@ describe.skipIf(!LIVE)('live ScriptContext caches: survey + missions + crafting'
         const unsubSpawn = ctx.dispatcher.onMessage(ConGenericMessage, (m) => {
           spawnResponses.push(m.msg);
         });
-        ctx.send(new ConGenericMessage(`object createIn ${SURVEY_TOOL_TEMPLATE} ${invId.toString()}`, 200));
+        ctx.send(
+          new ConGenericMessage(`object createIn ${SURVEY_TOOL_TEMPLATE} ${invId.toString()}`, 200),
+        );
         await ctx.wait(3_000);
         unsubSpawn();
         observed.surveyToolSpawnResponses = spawnResponses.slice(0, 6);
@@ -206,10 +208,7 @@ describe.skipIf(!LIVE)('live ScriptContext caches: survey + missions + crafting'
             //    what actually causes the SurveyMessage to come back.
             ctx.survey(spawnedToolId, pickedResourceName);
             ctx.send(
-              new ConGenericMessage(
-                `resource survey mineral ${pickedResourceName} 64 5`,
-                204,
-              ),
+              new ConGenericMessage(`resource survey mineral ${pickedResourceName} 64 5`, 204),
             );
             // Wait up to 15s for SurveyMessage to arrive.
             const surveyDeadline = Date.now() + 15_000;

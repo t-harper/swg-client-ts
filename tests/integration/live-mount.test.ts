@@ -100,7 +100,7 @@ describe.skipIf(!LIVE)('live vehicle / mount (admin-spawn → mount → walk →
         // Brief mounted walk so we emit at least one CM_netUpdateTransform.
         const start = ctx.position();
         try {
-          await ctx.walkTo({ x: start.x + 12, z: start.z + 12 }, { speed: 12, tickMs: 250 });
+          await ctx.walkTo({ x: start.x + 12, z: start.z + 12 }, { tickMs: 250 });
         } catch (err) {
           console.warn(
             `[live-mount] walkTo during mount threw: ${err instanceof Error ? err.message : String(err)}`,
@@ -113,9 +113,7 @@ describe.skipIf(!LIVE)('live vehicle / mount (admin-spawn → mount → walk →
 
         // Cleanup: destroy the admin-spawned vehicle so it doesn't litter
         // the world. /object destroy <oid> is the standard tear-down.
-        ctx.send(
-          new ConGenericMessage(`object destroy ${observed.vehicleId.toString()}`, 101),
-        );
+        ctx.send(new ConGenericMessage(`object destroy ${observed.vehicleId.toString()}`, 101));
         await ctx.wait(500);
         observed.ranMountFlow = true;
       },

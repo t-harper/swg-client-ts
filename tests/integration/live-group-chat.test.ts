@@ -251,8 +251,14 @@ describe.skipIf(!LIVE)('live group + chat (2 clients, ctx.group + ctx.chat)', ()
         const d = decodeGroupDelta(e.decoded);
         return d !== null && d.groupId !== 0n;
       });
-    expect(sawGroupAccept(leaderLr, leaderId), 'leader received m_group delta with non-zero groupId').toBe(true);
-    expect(sawGroupAccept(inviteeLr, inviteeId), 'invitee received m_group delta with non-zero groupId').toBe(true);
+    expect(
+      sawGroupAccept(leaderLr, leaderId),
+      'leader received m_group delta with non-zero groupId',
+    ).toBe(true);
+    expect(
+      sawGroupAccept(inviteeLr, inviteeId),
+      'invitee received m_group delta with non-zero groupId',
+    ).toBe(true);
 
     // `ctx.group` was populated for the invitee while the group was live.
     expect(inviteeGroupId, 'ctx.group.id populated on invitee').not.toBeNull();

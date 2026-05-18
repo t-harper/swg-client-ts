@@ -69,7 +69,7 @@ describe.skipIf(!LIVE)('live ctx.location + ctx.navigate', () => {
             // modest so the test doesn't take forever (default 4 m/s → ~10s).
             const dest = { x: start.x + 30, z: start.z + 30 };
             try {
-              await ctx.navigate(dest, { useMount: 'never', speed: 6 });
+              await ctx.navigate(dest, { useMount: 'never' });
             } catch (err) {
               observed.navigateErr = err instanceof Error ? err.message : String(err);
             }
@@ -147,75 +147,75 @@ describe.skipIf(!LIVE)('live ctx.location + ctx.navigate', () => {
     let result;
     try {
       result = await client.fullLifecycle({
-      account,
-      characterName,
-      planet: 'naboo',
-      holdZonedInMs: 0,
-      script: async (ctx) => {
-        await ctx.wait(2_000);
+        account,
+        characterName,
+        planet: 'naboo',
+        holdZonedInMs: 0,
+        script: async (ctx) => {
+          await ctx.wait(2_000);
 
-        // Enable god mode so /object create works.
-        ctx.useAbility('setGodMode', 0n, '1');
-        await ctx.wait(1_500);
-        observed.enabledGodMode = true;
+          // Enable god mode so /object create works.
+          ctx.useAbility('setGodMode', 0n, '1');
+          await ctx.wait(1_500);
+          observed.enabledGodMode = true;
 
-        // Spawn the house 25m in front of the player. The server places the
-        // building's transform at the requested xyz; we'll then navigate to it.
-        const here = ctx.position();
-        const houseX = here.x + 25;
-        const houseY = here.y;
-        const houseZ = here.z;
-        const responses: string[] = [];
-        const unsub = ctx.dispatcher.onMessage(ConGenericMessage, (m) => {
-          responses.push(m.msg);
-        });
-        const spawnCmd = `object create ${NABOO_HOUSE_TEMPLATE} ${houseX.toFixed(2)} ${houseY.toFixed(2)} ${houseZ.toFixed(2)}`;
-        ctx.send(new ConGenericMessage(spawnCmd, 200));
-        await ctx.wait(4_000); // give the server time to spawn the building + cells + push baselines
-        unsub();
+          // Spawn the house 25m in front of the player. The server places the
+          // building's transform at the requested xyz; we'll then navigate to it.
+          const here = ctx.position();
+          const houseX = here.x + 25;
+          const houseY = here.y;
+          const houseZ = here.z;
+          const responses: string[] = [];
+          const unsub = ctx.dispatcher.onMessage(ConGenericMessage, (m) => {
+            responses.push(m.msg);
+          });
+          const spawnCmd = `object create ${NABOO_HOUSE_TEMPLATE} ${houseX.toFixed(2)} ${houseY.toFixed(2)} ${houseZ.toFixed(2)}`;
+          ctx.send(new ConGenericMessage(spawnCmd, 200));
+          await ctx.wait(4_000); // give the server time to spawn the building + cells + push baselines
+          unsub();
 
-        const idMatch = responses.find((r) => /NetworkId:\s*\d+/.test(r));
-        if (idMatch === undefined) {
-          observed.bailReason =
-            `/object create did not return a NetworkId within 4s. ` +
-            `Likely the template path '${NABOO_HOUSE_TEMPLATE}' was rejected or ` +
-            'god-mode failed (account not in stella_admin.tab?). ' +
-            `Responses: ${JSON.stringify(responses.slice(0, 4))}`;
-          console.warn(`[live-navigate] ${observed.bailReason}`);
-          return;
-        }
-        const idStr = idMatch.match(/NetworkId:\s*(\d+)/)![1]!;
-        observed.houseId = BigInt(idStr) as NetworkId;
-        console.warn(`[live-navigate] admin-spawned house id=${observed.houseId.toString()}`);
+          const idMatch = responses.find((r) => /NetworkId:\s*\d+/.test(r));
+          if (idMatch === undefined) {
+            observed.bailReason =
+              `/object create did not return a NetworkId within 4s. ` +
+              `Likely the template path '${NABOO_HOUSE_TEMPLATE}' was rejected or ` +
+              'god-mode failed (account not in stella_admin.tab?). ' +
+              `Responses: ${JSON.stringify(responses.slice(0, 4))}`;
+            console.warn(`[live-navigate] ${observed.bailReason}`);
+            return;
+          }
+          const idStr = idMatch.match(/NetworkId:\s*(\d+)/)![1]!;
+          observed.houseId = BigInt(idStr) as NetworkId;
+          console.warn(`[live-navigate] admin-spawned house id=${observed.houseId.toString()}`);
 
-        observed.cellNumberBefore = ctx.location.cell?.cellNumber ?? null;
-        observed.inCellBefore = ctx.character.inCell;
+          observed.cellNumberBefore = ctx.location.cell?.cellNumber ?? null;
+          observed.inCellBefore = ctx.character.inCell;
 
-        try {
-          await ctx.navigate(
-            { buildingId: observed.houseId, cellName: 'cell1' },
-            { useMount: 'never', speed: 6 },
+          try {
+            await ctx.navigate(
+              { buildingId: observed.houseId, cellName: 'cell1' },
+              { useMount: 'never' },
+            );
+          } catch (err) {
+            observed.navigateErr = err instanceof Error ? err.message : String(err);
+            console.warn(`[live-navigate] navigate failed: ${observed.navigateErr}`);
+          }
+
+          // Let the server confirm cell containment.
+          await ctx.wait(2_500);
+          observed.cellNumberAfter = ctx.location.cell?.cellNumber ?? null;
+          observed.inCellAfter = ctx.character.inCell;
+          console.warn(
+            `[live-navigate] cell before=${observed.cellNumberBefore}, after=${observed.cellNumberAfter}, inCellAfter=${observed.inCellAfter}`,
           );
-        } catch (err) {
-          observed.navigateErr = err instanceof Error ? err.message : String(err);
-          console.warn(`[live-navigate] navigate failed: ${observed.navigateErr}`);
-        }
 
-        // Let the server confirm cell containment.
-        await ctx.wait(2_500);
-        observed.cellNumberAfter = ctx.location.cell?.cellNumber ?? null;
-        observed.inCellAfter = ctx.character.inCell;
-        console.warn(
-          `[live-navigate] cell before=${observed.cellNumberBefore}, after=${observed.cellNumberAfter}, inCellAfter=${observed.inCellAfter}`,
-        );
-
-        // Cleanup: destroy the admin-spawned house so we don't litter.
-        if (observed.houseId !== null) {
-          ctx.send(new ConGenericMessage(`object destroy ${observed.houseId.toString()}`, 201));
-          await ctx.wait(500);
-        }
-      },
-    });
+          // Cleanup: destroy the admin-spawned house so we don't litter.
+          if (observed.houseId !== null) {
+            ctx.send(new ConGenericMessage(`object destroy ${observed.houseId.toString()}`, 201));
+            await ctx.wait(500);
+          }
+        },
+      });
     } catch (err) {
       lifecycleErr = err instanceof Error ? err.message : String(err);
     }
@@ -234,10 +234,9 @@ describe.skipIf(!LIVE)('live ctx.location + ctx.navigate', () => {
     expect(result.scriptResult?.error, 'script did not throw').toBeUndefined();
 
     // Hard requirements: god-mode enabled, house spawned.
-    expect(
-      observed.enabledGodMode,
-      `god mode failed: ${observed.bailReason ?? 'unknown'}`,
-    ).toBe(true);
+    expect(observed.enabledGodMode, `god mode failed: ${observed.bailReason ?? 'unknown'}`).toBe(
+      true,
+    );
     expect(
       observed.houseId,
       `house spawn failed: ${observed.bailReason ?? 'unknown'}`,

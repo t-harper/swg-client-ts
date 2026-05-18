@@ -25,9 +25,16 @@
  * characters whose skill tables haven't fully populated yet.
  *
  * **Cadence**: the real Windows client emits ~1 packet every 2–3s during
- * sustained movement with 5–10m position deltas (effective ~3–4 m/s). Our
- * default tickMs is 500ms so that with the default 4 m/s speed we send
- * roughly one update per 2m of travel.
+ * sustained movement with 5–10m position deltas. Our default tickMs is 500ms
+ * so that at the canonical run speed (7.3 m/s) we emit roughly one update per
+ * 3.5m of travel.
+ *
+ * **Speed is engine-locked**: on-foot scripts always run at `BASE_RUN_SPEED`
+ * (7.3 m/s, the value from `shared_base_player.tpf`'s `speed[MT_run]`). The
+ * only way to go faster (or slower) is to mount something whose
+ * `m_vehiclePhysicsData->m_runSpeed` is different — and the cap then comes
+ * through `ctx.mount(vehicleId, { speedCap })`. Scripts don't and shouldn't
+ * pick their own walking speed; the engine speaks for the character.
  *
  * **Teleport-ACK bootstrap**: before the first transform is accepted by the
  * server, the client MUST acknowledge the zone-in teleport-lockout signal
@@ -49,19 +56,19 @@ import {
 import type { NetworkId } from '../../types.js';
 import type { ScriptContext } from './context.js';
 
+/**
+ * Canonical SWG run speed (m/s). Lifted from
+ * `dsrc/.../object/creature/player/base/shared_base_player.tpf` —
+ * `speed[MT_run] = 7.3`. Every player species inherits from
+ * `shared_base_player`; none of the species-specific templates override the
+ * run speed, so this is the universal default. The walk-vs-run distinction
+ * isn't exposed on-the-wire (`speed=0` is sent and the server derives the
+ * effective speed from sync-stamp deltas), so scripts effectively always
+ * "run" at this rate.
+ */
+export const BASE_RUN_SPEED = 7.3;
+
 export interface WalkToOptions {
-  /**
-   * Walking speed in meters/sec. Default 4 (slow run).
-   *
-   * **Mounted speed cap**: when the script context has `mountedSpeedCap`
-   * set (via `ctx.mount(vehicleId)`), this `speed` is clamped to that
-   * cap. Pass an explicit speed higher than the cap and you'll get the
-   * cap instead — preventing the server's anti-cheat from rejecting a
-   * mounted speed > server-side `MovementSpeed::getRunSpeed()`. The cap
-   * defaults to ~12 m/s on `mount()` (speeder-bike class) and clears on
-   * `dismount()`.
-   */
-  speed?: number;
   /**
    * Update cadence in ms. Default 500 (~2 updates / second) — matches the
    * sparseness of real-client movement and stays well under the server's
@@ -76,17 +83,13 @@ export interface CircleOptions {
   centerX: number;
   centerZ: number;
   radius: number;
-  durationMs: number;
   /**
-   * Tangential speed in m/s. If omitted, completes exactly one revolution in
-   * durationMs.
-   *
-   * **Mounted speed cap**: like `walkTo`, this is clamped against
-   * `ctx.mountedSpeedCap()` if set. If the implicit
-   * `(2π·radius)/durationMs` derived speed exceeds the cap, the cap is
-   * used (your circle will take longer than `durationMs`).
+   * Target duration for one revolution. The implicit tangential speed
+   * `(2π·radius)/durationMs` is capped at the effective run speed
+   * (`mountedSpeedCap()` if mounted, otherwise `BASE_RUN_SPEED`), so for a
+   * small radius + short duration the actual revolution may take longer.
    */
-  speed?: number;
+  durationMs: number;
   /** Update cadence in ms. Default 500. */
   tickMs?: number;
   /** Override the y-coordinate (otherwise hold current y). */
@@ -98,27 +101,22 @@ export interface CircleOptions {
 const MAX_DISTANCE_PER_TICK_METERS = 8;
 
 /**
- * Read the current mounted speed cap from the context, or `null` if the
- * actor is on foot. Defined as a free function so we can use it from both
- * the world-coord and cell-coord walk paths without a circular import.
+ * Effective run speed for the current context — `mountedSpeedCap()` if the
+ * actor is on a vehicle, otherwise `BASE_RUN_SPEED`. The mount cap is the
+ * only knob scripts can turn; on foot the engine speaks for the character.
  */
-function mountedSpeedCap(ctx: ScriptContext): number | null {
-  return ctx.mountedSpeedCap();
-}
-
-/** Clamp `requested` against the mounted cap when one is set. */
-function clampSpeed(ctx: ScriptContext, requested: number): number {
-  const cap = mountedSpeedCap(ctx);
-  return cap === null ? requested : Math.min(requested, cap);
+function effectiveRunSpeed(ctx: ScriptContext): number {
+  const cap = ctx.mountedSpeedCap();
+  return cap === null ? BASE_RUN_SPEED : cap;
 }
 
 export async function walkTo(
   ctx: ScriptContext,
   target: { x: number; z: number; y?: number },
-  opts: WalkToOptions,
+  opts: WalkToOptions = {},
 ): Promise<void> {
   await ctx.ackPendingTeleports();
-  const speed = clampSpeed(ctx, opts.speed ?? 4);
+  const speed = effectiveRunSpeed(ctx);
   const tickMs = opts.tickMs ?? 500;
   const tickSeconds = tickMs / 1000;
   const startY = opts.y ?? target.y ?? ctx.position().y;
@@ -158,12 +156,8 @@ export async function walkCircle(ctx: ScriptContext, opts: CircleOptions): Promi
   const direction = opts.direction ?? 1;
   const y = opts.y ?? ctx.position().y;
 
-  // Resolve the effective tangential speed (m/s), then clamp against the
-  // mounted cap if any. If a derived speed (from radius/durationMs) exceeds
-  // the cap, the cap wins and the circle takes longer than `durationMs`.
-  const requestedSpeed =
-    opts.speed !== undefined ? opts.speed : (2 * Math.PI * opts.radius * 1000) / opts.durationMs;
-  const effectiveSpeed = clampSpeed(ctx, requestedSpeed);
+  const derivedSpeed = (2 * Math.PI * opts.radius * 1000) / opts.durationMs;
+  const effectiveSpeed = Math.min(derivedSpeed, effectiveRunSpeed(ctx));
   const omega = (direction * effectiveSpeed) / opts.radius;
 
   const cur = ctx.position();
@@ -239,15 +233,6 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
  * cell axes), not world coords.
  */
 export interface WalkToCellOptions {
-  /**
-   * Walking speed in meters/sec. Default 4 (slow run).
-   *
-   * **Mounted speed cap**: clamped against `ctx.mountedSpeedCap()` — see
-   * the matching note on `WalkToOptions.speed`. Mounted movement *inside*
-   * a building cell is rare in practice (the server usually dismounts on
-   * cell entry) but the clamp applies whenever the cursor is set.
-   */
-  speed?: number;
   /** Update cadence in ms. Default 500. */
   tickMs?: number;
   /** Override the cell-relative y-coordinate (otherwise hold current cell y, defaulting to 0). */
@@ -266,7 +251,7 @@ export async function walkToCell(
   opts: WalkToCellOptions = {},
 ): Promise<void> {
   await ctx.ackPendingTeleports();
-  const speed = clampSpeed(ctx, opts.speed ?? 4);
+  const speed = effectiveRunSpeed(ctx);
   const tickMs = opts.tickMs ?? 500;
   const tickSeconds = tickMs / 1000;
   const cellCursor = ctx.cellPosition();

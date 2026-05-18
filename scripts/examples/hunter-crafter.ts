@@ -111,7 +111,7 @@ function buildScenario(
     // server's anti-cheat is happier with a few-meter buffer.
     const approach = approachPoint(ctx.position(), target.position, ENGAGE_RANGE_M);
     try {
-      await ctx.walkTo({ x: approach.x, z: approach.z }, { speed: 6 });
+      await ctx.walkTo({ x: approach.x, z: approach.z });
     } catch (err) {
       log(`walkTo failed: ${err instanceof Error ? err.message : String(err)}`);
     }

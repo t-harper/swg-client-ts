@@ -329,7 +329,7 @@ export async function walkInAndDeclareResidence(
     try {
       await ctx.navigate(
         { buildingId: opts.buildingId, cellName: '' },
-        { useMount: 'never', speed: 4 },
+        { useMount: 'never' },
       );
     } catch (err) {
       // Fall through to the legacy walkTo on navigation failure — likely the
@@ -340,11 +340,11 @@ export async function walkInAndDeclareResidence(
         `[walkInAndDeclareResidence] navigate failed (${reason}); falling back to outdoor walkTo\n`,
       );
       const entry = slot.entryOffset ?? { x: 0, z: -5 };
-      await ctx.walkTo({ x: slot.x + entry.x, z: slot.z + entry.z }, { speed: 4 });
+      await ctx.walkTo({ x: slot.x + entry.x, z: slot.z + entry.z });
     }
   } else {
     const entry = slot.entryOffset ?? { x: 0, z: -5 };
-    await ctx.walkTo({ x: slot.x + entry.x, z: slot.z + entry.z }, { speed: 4 });
+    await ctx.walkTo({ x: slot.x + entry.x, z: slot.z + entry.z });
   }
   await ctx.wait(settleMs);
   return declareResidence(ctx, { timeoutMs: opts.declareTimeoutMs });

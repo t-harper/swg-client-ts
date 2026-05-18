@@ -154,10 +154,9 @@ describe.skipIf(!LIVE)('live ScriptContext timing views', () => {
       observed.cooldownsReadStandWithoutThrow,
       'isReady / msUntil read without throwing post-useAbility',
     ).toBe(true);
-    expect(
-      observed.cooldownsBeforeStand,
-      'cooldowns.all() starts empty before any abilities',
-    ).toBe(0);
+    expect(observed.cooldownsBeforeStand, 'cooldowns.all() starts empty before any abilities').toBe(
+      0,
+    );
     // After issuing `stand`, EITHER the server pushed a CommandTimer (in
     // which case all().size >= 1) OR the command was zero-cooldown (in
     // which case the snapshot stayed at 0). Both are valid — the test

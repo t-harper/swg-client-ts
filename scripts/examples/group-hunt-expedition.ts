@@ -49,7 +49,7 @@ interface ScriptArgs {
   huntX: number;
   huntZ: number;
   bounty: number;
-  rideSpeed: number;
+  mountSpeedCap: number;
   attackTickMs: number;
   attackTimeoutMs: number;
   groupTimeoutMs: number;
@@ -62,7 +62,7 @@ function parseScriptArgs(extra: Map<string, string>): ScriptArgs {
     huntX: Number.parseFloat(extra.get('hunt-x') ?? String(DEFAULT_HUNT_X)),
     huntZ: Number.parseFloat(extra.get('hunt-z') ?? String(DEFAULT_HUNT_Z)),
     bounty: Number.parseInt(extra.get('bounty') ?? '40000', 10),
-    rideSpeed: Number.parseFloat(extra.get('ride-speed') ?? '12'),
+    mountSpeedCap: Number.parseFloat(extra.get('mount-speed-cap') ?? '12'),
     attackTickMs: Number.parseInt(extra.get('attack-tick-ms') ?? '1500', 10),
     attackTimeoutMs: Number.parseInt(extra.get('attack-timeout-ms') ?? '90000', 10),
     groupTimeoutMs: Number.parseInt(extra.get('group-timeout-ms') ?? '20000', 10),
@@ -118,6 +118,7 @@ function pickBossCandidate(ctx: ScriptContext): WorldObject | null {
  */
 async function tryMountVehicle(
   ctx: ScriptContext,
+  mountSpeedCap: number,
   log: (m: string) => void,
 ): Promise<NetworkId | null> {
   const vehicles = ctx.datapad.vehicles();
@@ -139,7 +140,7 @@ async function tryMountVehicle(
     log('vehicle called but no spawn observed');
     return null;
   }
-  ctx.mount(vehicle.id, { speedCap: 12 });
+  ctx.mount(vehicle.id, { speedCap: mountSpeedCap });
   log(`mounted vehicle 0x${vehicle.id.toString(16)}`);
   return vehicle.id;
 }
@@ -172,11 +173,11 @@ function makeLeaderScenario(
     log(`group size after wait: ${ctx.group.size} (expected ${1 + memberIds.length})`);
     if (!outcome.groupFormed) outcome.notes.push('group did not fully form before timeout');
 
-    const vehicleId = await tryMountVehicle(ctx, log);
+    const vehicleId = await tryMountVehicle(ctx, args.mountSpeedCap, log);
     void vehicleId;
 
     log(`riding to hunting ground (${args.huntX}, ${args.huntZ})`);
-    await ctx.walkTo({ x: args.huntX, z: args.huntZ }, { speed: args.rideSpeed });
+    await ctx.walkTo({ x: args.huntX, z: args.huntZ });
 
     if (ctx.mountedSpeedCap() !== null) {
       ctx.dismount();
@@ -266,7 +267,7 @@ function makeMemberScenario(
       return;
     }
 
-    const vehicleId = await tryMountVehicle(ctx, log);
+    const vehicleId = await tryMountVehicle(ctx, args.mountSpeedCap, log);
     void vehicleId;
 
     // `group.follow` re-emits leader transforms directly through the dispatcher,
@@ -360,7 +361,7 @@ async function main(): Promise<number> {
       '  --hunt-x=N               hunting-ground X (default 100)',
       '  --hunt-z=N               hunting-ground Z (default -4700)',
       '  --bounty=N               total credits the leader divides (default 40000)',
-      '  --ride-speed=N           walk speed while mounted (default 12)',
+      '  --mount-speed-cap=N      m/s cap passed to ctx.mount() for ride-to-hunt (default 12)',
       '  --attack-tick-ms=N       ms between attack enqueues (default 1500)',
       '  --attack-timeout-ms=N    boss kill budget in ms (default 90000)',
       '  --group-timeout-ms=N     per-step group-form/invite timeout (default 20000)',

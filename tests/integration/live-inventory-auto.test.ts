@@ -19,9 +19,9 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { ClientOpenContainerMessage } from '../../src/messages/game/client-open-container.js';
 import { SwgClient } from '../../src/client/swg-client.js';
 import type { ScenarioFn } from '../../src/index.js';
+import { ClientOpenContainerMessage } from '../../src/messages/game/client-open-container.js';
 import { liveCredentials, sessionSettle } from './helpers.js';
 
 const LIVE = process.env.LIVE === '1';

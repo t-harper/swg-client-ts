@@ -41,10 +41,20 @@ describe('walkCircle', () => {
     const ccw = createFakeContext({ startPosition: { x: 5, y: 0, z: 0 } });
     const cw = createFakeContext({ startPosition: { x: 5, y: 0, z: 0 } });
     await ccw.ctx.walkCircle({
-      centerX: 0, centerZ: 0, radius: 5, durationMs: 400, tickMs: 200, direction: 1,
+      centerX: 0,
+      centerZ: 0,
+      radius: 5,
+      durationMs: 400,
+      tickMs: 200,
+      direction: 1,
     });
     await cw.ctx.walkCircle({
-      centerX: 0, centerZ: 0, radius: 5, durationMs: 400, tickMs: 200, direction: -1,
+      centerX: 0,
+      centerZ: 0,
+      radius: 5,
+      durationMs: 400,
+      tickMs: 200,
+      direction: -1,
     });
     const ccwSecond = movementSends(ccw.sent)[1]?.data;
     const cwSecond = movementSends(cw.sent)[1]?.data;
@@ -54,7 +64,11 @@ describe('walkCircle', () => {
   it('sends speed=0 in the wire field', async () => {
     const { ctx, sent } = createFakeContext();
     await ctx.walkCircle({
-      centerX: 0, centerZ: 0, radius: 5, durationMs: 1000, tickMs: 200,
+      centerX: 0,
+      centerZ: 0,
+      radius: 5,
+      durationMs: 1000,
+      tickMs: 200,
     });
     for (const { data } of movementSends(sent)) {
       expect(data.speed).toBe(0);

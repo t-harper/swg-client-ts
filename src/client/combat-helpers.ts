@@ -81,11 +81,6 @@ export interface FleeOptions {
   /** ms to wait between callVehicle and mount attempt. Default 1200ms. */
   vehicleSettleMs?: number;
   /**
-   * Walking speed to pass to `ctx.walkTo`. Default 12 m/s (clamped by
-   * mounted-speed cap when applicable).
-   */
-  speed?: number;
-  /**
    * Per-trigger hook fired right after the watcher decides to flee. Useful
    * for logging in scripts. The hook receives a small object describing the
    * trigger conditions; the watcher does NOT await the hook (fire-and-forget).
@@ -199,7 +194,7 @@ export interface CombatHostContext {
   position(): Readonly<{ x: number; y: number; z: number }>;
   nearestHostile(opts?: { maxRadiusM?: number }): WorldObject | undefined;
   useAbility(commandName: string, targetId?: NetworkId, params?: string): number;
-  walkTo(target: { x: number; z: number; y?: number }, opts?: { speed?: number }): Promise<void>;
+  walkTo(target: { x: number; z: number; y?: number }): Promise<void>;
   mount(vehicleId: NetworkId, options?: { speedCap?: number }): number;
   callVehicle(datapadItemId: NetworkId): number;
   fail(reason: string): void;
@@ -408,7 +403,6 @@ export function attachCombatHelpers(host: CombatHostContext): CombatHelpersHandl
     const usePeace = fleeOpts.usePeace ?? true;
     const useVehicle = fleeOpts.useVehicle ?? true;
     const vehicleSettleMs = fleeOpts.vehicleSettleMs ?? 1_200;
-    const speed = fleeOpts.speed ?? 12;
     const onTrigger = fleeOpts.onTrigger;
 
     function check(): void {
@@ -426,7 +420,7 @@ export function attachCombatHelpers(host: CombatHostContext): CombatHelpersHandl
       }
       // Fire-and-forget; the async flee runs independently of the watcher
       // and the watcher disarms itself synchronously.
-      void runFlee({ goTo, usePeace, useVehicle, vehicleSettleMs, speed });
+      void runFlee({ goTo, usePeace, useVehicle, vehicleSettleMs });
     }
 
     async function runFlee(p: {
@@ -434,7 +428,6 @@ export function attachCombatHelpers(host: CombatHostContext): CombatHelpersHandl
       usePeace: boolean;
       useVehicle: boolean;
       vehicleSettleMs: number;
-      speed: number;
     }): Promise<void> {
       try {
         if (p.usePeace) host.useAbility('peace');
@@ -442,8 +435,6 @@ export function attachCombatHelpers(host: CombatHostContext): CombatHelpersHandl
           const vehicle = host.datapad.vehicles()[0];
           if (vehicle !== undefined) {
             host.callVehicle(vehicle.networkId);
-            // Wait for the vehicle creature to spawn. Then identify the
-            // most-recently-created CREO that isn't the player and mount it.
             await host.wait(p.vehicleSettleMs);
             const fresh = pickFreshestVehicle(host);
             if (fresh !== null) {
@@ -452,7 +443,7 @@ export function attachCombatHelpers(host: CombatHostContext): CombatHelpersHandl
             }
           }
         }
-        await host.walkTo(p.goTo, { speed: p.speed });
+        await host.walkTo(p.goTo);
       } catch {
         // swallow — flee is best-effort
       }

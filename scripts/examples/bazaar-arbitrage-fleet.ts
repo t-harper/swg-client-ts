@@ -212,7 +212,7 @@ async function findAndApproachBazaar(
           z: nearest.position.z - (dz / dist) * 2,
         };
         try {
-          await ctx.walkTo(approach, { speed: 6 });
+          await ctx.walkTo(approach);
         } catch (err) {
           log(
             `walkTo bazaar failed (continuing in place): ${err instanceof Error ? err.message : String(err)}`,

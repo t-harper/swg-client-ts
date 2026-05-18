@@ -52,7 +52,6 @@ interface ScriptArgs {
   destinationPlanet: string | null;
   scanMs: number;
   vendorRadiusM: number;
-  walkSpeed: number;
   rezoneTimeoutMs: number;
   warpToX: number | null;
   warpToZ: number | null;
@@ -67,7 +66,6 @@ function parseScriptArgs(extra: Map<string, string>): ScriptArgs {
     destinationPlanet: extra.get('destination-planet') ?? null,
     scanMs: Number.parseInt(extra.get('scan-ms') ?? '5000', 10),
     vendorRadiusM: Number.parseFloat(extra.get('vendor-radius') ?? '120'),
-    walkSpeed: Number.parseFloat(extra.get('walk-speed') ?? '6'),
     rezoneTimeoutMs: Number.parseInt(extra.get('rezone-timeout-ms') ?? '30000', 10),
     warpToX: warpX !== undefined && warpX !== '' ? Number.parseFloat(warpX) : null,
     warpToZ: warpZ !== undefined && warpZ !== '' ? Number.parseFloat(warpZ) : null,
@@ -217,7 +215,7 @@ function buildScenario(args: ScriptArgs, verbose: boolean, out: PilgrimSummary):
         x: collector.position.x - (dx / dist) * 2,
         z: collector.position.z - (dz / dist) * 2,
       };
-      await ctx.walkTo(approach, { speed: args.walkSpeed });
+      await ctx.walkTo(approach);
     }
 
     try {
@@ -291,7 +289,6 @@ async function main(): Promise<void> {
       '  --destination-planet=PLANET  restrict destination planet (default: any planet other than spawn)',
       '  --vendor-radius=M            search radius for vendor + collector (default 120)',
       '  --scan-ms=N                  settle window after re-zone (default 5000)',
-      '  --walk-speed=N               m/s while walking to the collector (default 6)',
       '  --rezone-timeout-ms=N        wait budget for arrival CmdStartScene (default 30000)',
       '  --warp-to-x=X --warp-to-z=Z  admin-warp to (x,z) before searching (test convenience)',
       '  --admin-deposit=N            top-up credits via console (god-mode required; default 0)',

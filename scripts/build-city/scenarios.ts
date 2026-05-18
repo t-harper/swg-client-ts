@@ -72,7 +72,7 @@ async function walkIfFar(
 ): Promise<void> {
   const pos = ctx.position();
   if (distance({ x: pos.x, z: pos.z }, target) <= nearMeters) return;
-  await ctx.walkTo({ x: target.x, z: target.z }, { speed: 6 });
+  await ctx.walkTo({ x: target.x, z: target.z });
 }
 
 /**

@@ -30,7 +30,11 @@
 import { describe, expect, it } from 'vitest';
 
 import { Fleet } from '../../src/client/fleet.js';
-import { DeltasMessage, decodeGroupDelta, decodeGroupInviterDelta } from '../../src/messages/game/baselines/deltas-message.js';
+import {
+  DeltasMessage,
+  decodeGroupDelta,
+  decodeGroupInviterDelta,
+} from '../../src/messages/game/baselines/deltas-message.js';
 import { groupTradeScenario } from '../../src/scenarios/index.js';
 import { liveCredentials } from './helpers.js';
 
@@ -163,12 +167,14 @@ describe.skipIf(!LIVE)('live group-trade (2 clients, invite → accept → disba
         const decoded = decodeGroupDelta(e.decoded);
         return decoded !== null && decoded.groupId !== 0n;
       });
-    expect(sawGroupAccept(leaderLr, leaderId), 'leader received m_group delta with non-zero groupId').toBe(
-      true,
-    );
-    expect(sawGroupAccept(inviteeLr, inviteeId), 'invitee received m_group delta with non-zero groupId').toBe(
-      true,
-    );
+    expect(
+      sawGroupAccept(leaderLr, leaderId),
+      'leader received m_group delta with non-zero groupId',
+    ).toBe(true);
+    expect(
+      sawGroupAccept(inviteeLr, inviteeId),
+      'invitee received m_group delta with non-zero groupId',
+    ).toBe(true);
 
     // Soft-assertion failures (from the scenario's own expectWithin
     // checks) should be empty.

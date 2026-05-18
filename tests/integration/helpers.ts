@@ -143,7 +143,6 @@ export async function sessionSettle(ms = 8_000): Promise<void> {
   await new Promise((r) => setTimeout(r, ms));
 }
 
-
 /**
  * For Stage-1-only tests (live-login) — returns just an account name.
  * Honors CI_REUSE_ACCOUNT; ignores CI_REUSE_CHARACTER.

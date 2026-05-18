@@ -30,7 +30,13 @@ describe('ScriptContext world sugar', () => {
           ),
         );
         simulateRecv(
-          new BaselinesMessage(id, ObjectTypeTags.CREO, BaselinePackageIds.SHARED, new Uint8Array(0), null),
+          new BaselinesMessage(
+            id,
+            ObjectTypeTags.CREO,
+            BaselinePackageIds.SHARED,
+            new Uint8Array(0),
+            null,
+          ),
         );
       };
       tagAsCreo(0x10n, 5, 0); // 5m away
@@ -55,7 +61,13 @@ describe('ScriptContext world sugar', () => {
         ),
       );
       simulateRecv(
-        new BaselinesMessage(0x10n, ObjectTypeTags.CREO, BaselinePackageIds.SHARED, new Uint8Array(0), null),
+        new BaselinesMessage(
+          0x10n,
+          ObjectTypeTags.CREO,
+          BaselinePackageIds.SHARED,
+          new Uint8Array(0),
+          null,
+        ),
       );
 
       expect(ctx.findNearest(ObjectTypeTags.CREO, { maxRadiusM: 10 })).toBeUndefined();
@@ -69,11 +81,15 @@ describe('ScriptContext world sugar', () => {
         startPosition: { x: 0, y: 0, z: 0 },
       });
       // Self as a CREO at the player position
+      simulateRecv(new SceneCreateObjectByCrc(playerId, IDENTITY, 0, false));
       simulateRecv(
-        new SceneCreateObjectByCrc(playerId, IDENTITY, 0, false),
-      );
-      simulateRecv(
-        new BaselinesMessage(playerId, ObjectTypeTags.CREO, BaselinePackageIds.SHARED, new Uint8Array(0), null),
+        new BaselinesMessage(
+          playerId,
+          ObjectTypeTags.CREO,
+          BaselinePackageIds.SHARED,
+          new Uint8Array(0),
+          null,
+        ),
       );
 
       expect(ctx.findNearest(ObjectTypeTags.CREO)).toBeUndefined();
@@ -138,9 +154,7 @@ describe('ScriptContext world sugar', () => {
 
     it('returns undefined when nothing is hostile', () => {
       const { ctx, simulateRecv } = createFakeContext({});
-      simulateRecv(
-        new SceneCreateObjectByCrc(0x10n, IDENTITY, 0, false),
-      );
+      simulateRecv(new SceneCreateObjectByCrc(0x10n, IDENTITY, 0, false));
       simulateRecv(
         new BaselinesMessage(
           0x10n,
@@ -180,7 +194,13 @@ describe('ScriptContext world sugar', () => {
       // Self
       simulateRecv(new SceneCreateObjectByCrc(playerId, IDENTITY, 0, false));
       simulateRecv(
-        new BaselinesMessage(playerId, ObjectTypeTags.PLAY, BaselinePackageIds.SHARED, new Uint8Array(0), null),
+        new BaselinesMessage(
+          playerId,
+          ObjectTypeTags.PLAY,
+          BaselinePackageIds.SHARED,
+          new Uint8Array(0),
+          null,
+        ),
       );
 
       // Other players at various distances
@@ -194,7 +214,13 @@ describe('ScriptContext world sugar', () => {
           ),
         );
         simulateRecv(
-          new BaselinesMessage(id, ObjectTypeTags.PLAY, BaselinePackageIds.SHARED, new Uint8Array(0), null),
+          new BaselinesMessage(
+            id,
+            ObjectTypeTags.PLAY,
+            BaselinePackageIds.SHARED,
+            new Uint8Array(0),
+            null,
+          ),
         );
       };
       spawn(0x100n, 8); // in range

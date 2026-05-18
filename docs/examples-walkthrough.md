@@ -29,6 +29,8 @@ Fleet scenarios pass shared mutable state between their per-character `ScenarioF
 
 All scenarios are designed to **soft-fail** on missing world state (no terminal in scene, no survey tool in inventory, no creature in range) — they log the reason via `ctx.fail(reason)`, push it into `summary.assertionFailures`, log out cleanly, and emit the partial JSON. They never throw on a missing prerequisite.
 
+**Movement speed is engine-locked.** `walkTo` / `walkCircle` / `walkToCell` / `navigate` no longer take a `speed?` option; on foot, every script runs at `BASE_RUN_SPEED = 7.3` m/s (the canonical `speed[MT_run]` from `shared_base_player.tpf`). When `ctx.mount(vehicleId, { speedCap })` is in effect, the cap replaces the base run speed — that's the only way to go faster (or slower) than 7.3 m/s. Scripts that previously passed `--walk-speed` / `--ride-speed` / `--evac-speed` flags either drop them entirely (on-foot speed isn't tunable) or feed them into `mount({ speedCap })` instead (mount-tier control still belongs to the scenario).
+
 ## Index
 
 | Scenario | Shape | Key chain |
@@ -198,7 +200,6 @@ LIVE=1 pnpm exec tsx scripts/examples/hunter-crafter.ts --user=tslive01 --charac
 - `--sample-timeout-ms` (default 120000) — overall sampling budget.
 - `--per-sample-tick-ms` (default 35000) — per-tick `waitForSampleEvent` timeout.
 - `--survey-timeout-ms` (default 8000) — per-type survey response timeout.
-- `--walk-speed` (default 6) — m/s for the peak + bazaar walks.
 - `--bazaar-scan-ms` (default 5000) — wall-clock to wait for a bazaar baseline.
 - `--bazaar-max-radius` (default 800) — ignore bazaars farther than this from spawn.
 - `--listing-duration-hours` (default 24) — auction window for `listForSale`.
@@ -235,7 +236,7 @@ LIVE=1 pnpm exec tsx scripts/examples/surveyor-bazaar.ts --user=tslive02 --chara
 4. `ctx.navigate` to the terminal (`useMount: 'never'` — server gates mission interactions on close presence), then `ctx.requestMissionList(terminalId, { flags: 0 })`. Poll `ctx.missions.active` for up to 5 s, treating any newly-arrived MISO baselines as the offered set.
 5. Rank the offered missions by `--pick` strategy (`payout` = highest credits first; `distance` = shortest waypoint first), then call `ctx.acceptMission(missionId, terminalId)` for the top `--max-missions` (default 3).
 6. For each accepted mission, `runMission(ctx, m, args, log)`:
-   - `ctx.navigate(waypoint, { useMount: 'auto', speed })` — uses a vehicle PCD automatically if distance > 50 m and one is in the datapad.
+   - `ctx.navigate(waypoint, { useMount: 'auto' })` — uses a vehicle PCD automatically if distance > 50 m and one is in the datapad.
    - If the mission `type` matches `destroy|bounty|hunting|assassinat`, run `ctx.combat.attackingNearest` in 15 s slices until the mission falls out of `ctx.missions.active` (server's `MissionObject` cleanup on completion) or the per-mission budget elapses.
    - Otherwise pick the closest interactable inside the arrival radius (TANO first, CREO as fallback) and fire `ObjectMenuSelectMessage(targetId, ITEM_USE)` via `ctx.send`. For many delivery/recon missions arrival itself completes server-side; the radial-Use is belt-and-braces. Poll the cache until completion or deadline.
    - `ctx.combat.autoLoot = true` so any combat drops auto-loot.
@@ -288,7 +289,6 @@ LIVE=1 pnpm exec tsx scripts/examples/surveyor-bazaar.ts --user=tslive02 --chara
 - `--terminal-radius` (default 120) — baseline-range radius for the initial terminal scan.
 - `--fallback-walk-radius` (default 250) — radius scanned for a landmark when no terminal in range.
 - `--arrival-radius` (default 12) — radius around the waypoint for the completion-target scan.
-- `--speed` (default 6) — walking speed in m/s.
 - `--pick` (`payout` | `distance`, default `payout`) — acceptance-order strategy.
 
 ### Soft-fail conditions
@@ -336,7 +336,7 @@ LIVE=1 pnpm exec tsx scripts/examples/mission-marathon.ts --user=tslive03 --char
 | `loadPlanetTrn(planet)` + `parseTrnMetadata` | Offline TRN metadata read for the map bounds + water table. |
 | `generateCandidateGrid({...})` | Concentric-ring `(x, z)` candidate generator. |
 | `resolveInventoryOid(ctx)` | Admin lookup → `ctx.inventory.containerId` fallback for the deed-spawn container. |
-| `ctx.walkTo({ x, z }, { speed })` | Move the player to each probe candidate. |
+| `ctx.walkTo({ x, z })` | Move the player to each probe candidate. |
 | `ctx.position()` | Read terrain height (`y`) after arrival. |
 | `probeBuildable(ctx, inventoryOid, x, z, opts)` | Live placement probe (admin deed spawn + USE + chat-OOB watch). |
 | `ctx.logout` | Clean shutdown. |
@@ -345,7 +345,7 @@ LIVE=1 pnpm exec tsx scripts/examples/mission-marathon.ts --user=tslive03 --char
 
 | Location | What |
 |---|---|
-| `scripts/examples/city-recon-surveyor.ts:49-75` | `parseScriptArgs` — planet, search center/radius, ring grid shape, probe budget, spacing, walk speed, settle. |
+| `scripts/examples/city-recon-surveyor.ts:49-75` | `parseScriptArgs` — planet, search center/radius, ring grid shape, probe budget, spacing, settle. |
 | `scripts/examples/city-recon-surveyor.ts:77-96` | `ReconMeta` + `CandidateScore` summary shapes. |
 | `scripts/examples/city-recon-surveyor.ts:98-101` | `ScoredCandidate` — internal pre-rank tuple. |
 | `scripts/examples/city-recon-surveyor.ts:103-110` | `tryLoadPlanetMetadata` — wraps `loadPlanetTrn` + `parseTrnMetadata` with error capture. |
@@ -369,7 +369,6 @@ LIVE=1 pnpm exec tsx scripts/examples/mission-marathon.ts --user=tslive03 --char
 - `--angular-steps` (default 6) — candidates per ring.
 - `--probes` (default 10) — top-N candidates to spend live probe-time on.
 - `--min-spacing` (default 60) — min metres between any two probed spots.
-- `--speed` (default 8) — walk speed in m/s for the per-candidate hops.
 - `--settle-ms` (default 4500) — ms to listen for a placement rejection chat-OOB inside `probeBuildable`.
 
 ### Soft-fail conditions
@@ -415,7 +414,7 @@ Note that this script does NOT issue a `CmdSceneReady` ack after arrival — `us
 | `ctx.listDestinations({timeoutMs?})` | EnterTicketPurchaseMode → 12 PlanetTravelPointListRequest round-trips → flatten |
 | `ctx.buyTicket({destination, destinationPlanet?, timeoutMs?})` | Vendor SUI → purchaseTicket command → inventory-poll for the new ticket |
 | `ctx.useTicket({ticketId, timeoutMs?})` | boardShuttle command → wait for inbound CmdStartScene |
-| `ctx.walkTo({x, z}, {speed})` | Approach the vendor / collector if not already adjacent |
+| `ctx.walkTo({x, z})` | Approach the vendor / collector if not already adjacent |
 | `ctx.wait(ms)` | Settle windows for baseline flood + post-arrival pause |
 | `ctx.logout()` | Stage 4 clean logout |
 
@@ -511,7 +510,6 @@ LIVE=1 pnpm exec tsx scripts/examples/shuttle-traveler.ts \
 - `--destination-planet` (default unset) — Optional planet name restrictor; default is "any planet other than the spawn planet".
 - `--vendor-radius` (default 120) — Search radius for both vendor and collector.
 - `--scan-ms` (default 5000) — Settle window after re-zone before scanning for the mission terminal.
-- `--walk-speed` (default 6) — Foot speed during the walk to the collector.
 - `--rezone-timeout-ms` (default 30000) — Wait budget for the destination's `CmdStartScene` after `useTicket`.
 - `--warp-to-x` / `--warp-to-z` (default unset) — Admin-warp to (x, 0, z) before searching for the vendor.
 - `--admin-deposit` (default 0) — Top up the character to at least this many credits before buying (skipped if already wealthier).
@@ -636,7 +634,7 @@ Both are folded into `summary.extra` at line 457 after the fleet completes.
 
 The per-character timeline:
 
-1. **Leader** (`makeLeaderScenario`, line 147) — issues a defensive `useAbility('disband')` to wipe stale group state (same reason as in `src/scenarios/group-trade.ts`: a previous run that died mid-handshake would otherwise hit `SID_GROUP_ALREADY_GROUPED`), then fires `useAbility('invite', m)` for each of the three resolved `memberIds` with a 250 ms gap. Polls `ctx.group.size` until it reaches `1 + memberIds.length` or `--group-timeout-ms` elapses (`outcome.groupFormed` records the result). Tries to mount a vehicle (`tryMountVehicle`, line 119 — best-effort; on-foot still works), `walkTo`s `(--hunt-x, --hunt-z)` at `--ride-speed`, dismounts, picks a boss via `pickBossCandidate`, sets `ctx.combat.autoLoot = true`, attacks on a `--attack-tick-ms` cadence until `!ctx.world.has(boss.id)` or `--attack-timeout-ms` elapses, then drives `ctx.tradeWith(m, { credits: floor(bounty / memberCount), ...timeouts })` for each member sequentially. Disbands at the end.
+1. **Leader** (`makeLeaderScenario`, line 147) — issues a defensive `useAbility('disband')` to wipe stale group state (same reason as in `src/scenarios/group-trade.ts`: a previous run that died mid-handshake would otherwise hit `SID_GROUP_ALREADY_GROUPED`), then fires `useAbility('invite', m)` for each of the three resolved `memberIds` with a 250 ms gap. Polls `ctx.group.size` until it reaches `1 + memberIds.length` or `--group-timeout-ms` elapses (`outcome.groupFormed` records the result). Tries to mount a vehicle (`tryMountVehicle`, line 119 — best-effort; on-foot still works), `walkTo`s `(--hunt-x, --hunt-z)` at the mount cap (`--mount-speed-cap`), dismounts, picks a boss via `pickBossCandidate`, sets `ctx.combat.autoLoot = true`, attacks on a `--attack-tick-ms` cadence until `!ctx.world.has(boss.id)` or `--attack-timeout-ms` elapses, then drives `ctx.tradeWith(m, { credits: floor(bounty / memberCount), ...timeouts })` for each member sequentially. Disbands at the end.
 2. **Members** (`makeMemberScenario`, line 233) — defensively `decline` + `disband`, then poll `ctx.character.groupInviter` until non-null or `--group-timeout-ms` elapses; on invite, `useAbility('join')`, then poll `ctx.group.size >= 2` to confirm. Mount, then **call `await ctx.ackPendingTeleports()` before `ctx.group.follow(leaderId)`** — `follow` re-emits the leader's transform broadcasts as raw `CM_netUpdateTransform` sends bypassing the movement primitives that would normally ack teleports, so the explicit ack is mandatory after zone-in (without it every mirrored transform gets dropped by the server's `isTeleporting()` check). While following, scan `ctx.combat.targets()` and `pickBossCandidate` to focus-fire whatever the leader is attacking. After the ride budget elapses, unsubscribe `unfollow()`, dismount, and call `ctx.acceptIncomingTrade({ ... })` to wait for the leader's trade request and complete the handshake.
 
 ### Key APIs used
@@ -646,7 +644,7 @@ The per-character timeline:
 | `ctx.useAbility('disband' \| 'invite' \| 'join' \| 'decline' \| 'leaveGroup' \| 'mount' \| 'dismount', targetId?)` | Server-side command-table commands wrapped in `CM_commandQueueEnqueue` |
 | `ctx.group.size`, `ctx.character.groupInviter`, `ctx.group.follow(leaderId)` | Live group view + leader-follow primitive that mirrors transform broadcasts |
 | `ctx.ackPendingTeleports()` | Mandatory before raw transform sends after zone-in (see CLAUDE.md gotcha #6) |
-| `ctx.walkTo({ x, z }, { speed })` | Multi-segment walk; auto-handles teleport ack on first call |
+| `ctx.walkTo({ x, z })` | Multi-segment walk; auto-handles teleport ack on first call |
 | `ctx.datapad.vehicles()`, `ctx.callVehicle(pcdId)`, `ctx.mount(vehicleId, { speedCap })`, `ctx.mountedSpeedCap()`, `ctx.dismount()` | Vehicle PCD call + mount/dismount |
 | `ctx.world.byType(ObjectTypeTags.CREO)`, `ctx.world.has(id)`, `o.baselines.get(6)` | Boss candidate selection from the CREO pool + `inCombat` predicate from SHARED_NP |
 | `ctx.combat.autoLoot`, `ctx.combat.targets()`, `ctx.attackTarget(id)` | Combat helpers + raw attack-enqueue |
@@ -659,7 +657,7 @@ The per-character timeline:
 | File:line | Function | Purpose |
 |---|---|---|
 | `group-hunt-expedition.ts:90` | `pickBossCandidate` | Scores nearby CREOs by template regex (`/rancor|krayt|.../`), `inCombat` flag, and distance; returns the highest-weighted match within 250 m |
-| `group-hunt-expedition.ts:119` | `tryMountVehicle` | Best-effort: read first datapad PCD, `callVehicle`, wait 1.5 s, find the freshly-spawned vehicle template (matches `/vehicle|speeder|swoop|landspeeder/i`), `mount` with `speedCap: 12`. Returns `null` if datapad has no vehicle |
+| `group-hunt-expedition.ts:119` | `tryMountVehicle` | Best-effort: read first datapad PCD, `callVehicle`, wait 1.5 s, find the freshly-spawned vehicle template (matches `/vehicle|speeder|swoop|landspeeder/i`), `mount` with `speedCap: --mount-speed-cap` (default 12). Returns `null` if datapad has no vehicle |
 | `group-hunt-expedition.ts:147` | `makeLeaderScenario` | Leader's full timeline: disband → invite × N → wait for group → mount → walk to hunt ground → dismount → pick boss → attack loop → tradeWith × N → disband |
 | `group-hunt-expedition.ts:233` | `makeMemberScenario` | Member's timeline: decline/disband → wait for invite → join → wait for group → mount → `ackPendingTeleports` → `group.follow(leaderId)` → focus-fire loop → unfollow → dismount → `acceptIncomingTrade` → leaveGroup |
 | `group-hunt-expedition.ts:327` | `resolveNetworkIds` | Phase-1 lookup — runs a Fleet with `skipGameStage: true` against each `{ account, characterName }`, returns the `LifecycleResult.character.networkId` array in caller order |
@@ -669,7 +667,7 @@ The per-character timeline:
 
 - `--hunt-x` (default 100), `--hunt-z` (default -4700) — hunting-ground world coords; rendezvous point for the whole group.
 - `--bounty` (default 40000) — total credits split evenly across members (each member receives `floor(bounty / memberCount)`).
-- `--ride-speed` (default 12) — `walkTo` speed while mounted; clamped by `mountedSpeedCap`.
+- `--mount-speed-cap` (default 12) — m/s ceiling passed to `ctx.mount({ speedCap })` for the ride to the hunting ground. Foot speed is engine-locked, so this is the only knob.
 - `--attack-tick-ms` (default 1500) — interval between repeated `attackTarget` enqueues.
 - `--attack-timeout-ms` (default 90000) — total ms the leader will keep attacking before giving up.
 - `--group-timeout-ms` (default 20000) — per-step timeout for invite arrival, group formation polling.
@@ -705,7 +703,7 @@ Coordination is a single closure-captured `TroupeState` object (built in `main` 
 
 Per-role timeline:
 
-1. **Dancer** (`makeDancerScenario`, line 101) — `changePosture('standing')`, then `walkTo` a dance spot 1.5 m laterally offset from the anchor (dancer 0 left, dancer 1 right) at speed 5. Issues `useAbility('startdance', 0n, args.danceStyle)` (default `'basic'`), increments `state.dancersReady` AND `state.dancersPerformed`, then sleeps in 5-second chunks until the `--minutes` deadline. At the end fires `useAbility('stopdance')` and decrements `state.dancersReady`.
+1. **Dancer** (`makeDancerScenario`, line 101) — `changePosture('standing')`, then `walkTo` a dance spot 1.5 m laterally offset from the anchor (dancer 0 left, dancer 1 right) . Issues `useAbility('startdance', 0n, args.danceStyle)` (default `'basic'`), increments `state.dancersReady` AND `state.dancersPerformed`, then sleeps in 5-second chunks until the `--minutes` deadline. At the end fires `useAbility('stopdance')` and decrements `state.dancersReady`.
 2. **Spotter** (`makeSpotterScenario`, line 140) — `changePosture('standing')`, `walkTo` an entrance position 6 m south of the anchor (spotter 0 at `-spotter-spread`, spotter 1 at `+spotter-spread`). Subscribes `ctx.chat.onTell(/./)` to log every inbound tell into `state.tellsReceived`. Then enters its main loop:
    - If `state.dancersReady < 2`: log "waiting for dancers" once, then wait 2 s and retry (the dancer-barrier).
    - Otherwise: pull the next ad line from `AD_LINES` (rotation seeded with the spotter index so the two spotters don't say the same line back-to-back), `ctx.say(ad)`, snapshot `ctx.playersInRange(args.scanRadiusM)`, accumulate unique ids into `state.attendees` plus a name lookup in `state.attendeeNames`. Sleep `--ad-interval-ms` (default 45 s) and repeat.
@@ -718,7 +716,7 @@ Per-role timeline:
 | `ctx.*` | Purpose |
 |---|---|
 | `ctx.changePosture('standing')` | Issues `useAbility('changeposture')` with the posture-int param; ensures the dancer isn't sitting/dead when `startdance` fires |
-| `ctx.walkTo({ x, z }, { speed })` | Approach to the dance spot / entrance |
+| `ctx.walkTo({ x, z })` | Approach to the dance spot / entrance |
 | `ctx.useAbility('startdance', 0n, danceStyle)`, `ctx.useAbility('stopdance')` | Entertainer command-queue path; `params` carries the style string |
 | `ctx.say(text)` | Spatial-chat broadcast via the `spatialChatInternal` command queue (the only `CM_spatialChat*` path that passes the server's `allowFromClient` gate — see CLAUDE.md "Known limitations") |
 | `ctx.chat.onTell(/./, (text, sender) => ...)` | Predicate-driven tell subscription; returns an unsubscribe fn |
@@ -789,12 +787,12 @@ The second `Fleet` launches the actual scenarios, passing the opposite character
 
 1. Register a self-flee watcher via `ctx.safety.fleeWhenHealthBelow(0.2, {...})` — at 20% HAM it breaks combat, calls a vehicle, and walks to the evac coordinates.
 2. Spin a 750 ms sampler that increments `positionsVisited` when the player moves >2 m, tracks `minHealthSeen`, and if `ctx.hitTimer.engaged` is true (set whenever a `CM_combatAction(204)` lands on the player within 10 s) shouts "Help! Under attack!" via `ctx.say`, throttled to once every 8 s.
-3. Run `ctx.walkCircle({centerX, centerZ, radius:40, durationMs, speed:4})` for the full duration. The sampler is cleared in `finally`.
+3. Run `ctx.walkCircle({centerX, centerZ, radius:40, durationMs})` for the full duration. The sampler is cleared in `finally`.
 
 **Bodyguard per-tick loop (`buildBodyguardScenario`, reactive-bodyguard-fleet.ts:182-328):**
 
 1. Same `fleeWhenHealthBelow` registration for self-preservation.
-2. `tryEvac` (line 232) reads the VIP's HAM directly from its `CreatureObjectSharedNpBaseline` (`totalAttributes[0] / totalMaxAttributes[0]` — the standard HAM-package layout at `BaselinePackageIds.SHARED_NP`). Below the evac fraction it calls `ctx.callVehicle` on the first datapad PCD, waits for the speeder to materialize, dismounts/recalls to dodge stale-mount state, picks the most recently spawned CREO via `firstSeenAt`, mounts it, and walks to the evac point at the configured speed.
+2. `tryEvac` (line 232) reads the VIP's HAM directly from its `CreatureObjectSharedNpBaseline` (`totalAttributes[0] / totalMaxAttributes[0]` — the standard HAM-package layout at `BaselinePackageIds.SHARED_NP`). Below the evac fraction it calls `ctx.callVehicle` on the first datapad PCD, waits for the speeder to materialize, dismounts/recalls to dodge stale-mount state, picks the most recently spawned CREO via `firstSeenAt`, mounts it, and walks to the evac point at the engine-locked run speed (mount cap if mounted).
 3. `pickAggressor` (line 212) scans `ctx.world.byType(ObjectTypeTags.CREO)` for any non-self / non-VIP creature whose SHARED_NP `inCombat` flag is true and is inside the scan radius of both the bodyguard and the VIP. Returns the closest such target.
 4. The main loop locks onto an active aggressor, re-attacks every 1.5 s, and drops the lock when the target either disappears from the world (counted as a kill) or both combatants leave combat.
 5. When idle, if the bodyguard has fallen >8 m behind the VIP, it walks toward `(VIP - followDistance)` at 6 m/s. Otherwise it waits 500 ms.
@@ -805,8 +803,8 @@ The second `Fleet` launches the actual scenarios, passing the opposite character
 |---|---|
 | `ctx.safety.fleeWhenHealthBelow(ratio, opts)` | Auto self-flee at HAM threshold: peace → vehicle → walk to safe coords |
 | `ctx.hitTimer.engaged` | True when a `CM_combatAction` landed on us within the last 10 s |
-| `ctx.walkCircle({centerX, centerZ, radius, durationMs, speed})` | Cell-aware perimeter circuit; honors mount cap |
-| `ctx.walkTo({x, z}, {speed})` | Straight-line move with auto teleport-ack on first call |
+| `ctx.walkCircle({centerX, centerZ, radius, durationMs})` | Cell-aware perimeter circuit; honors mount cap |
+| `ctx.walkTo({x, z})` | Straight-line move with auto teleport-ack on first call |
 | `ctx.world.byType(ObjectTypeTags.CREO)` | Live snapshot of every creature CREO baseline currently in scene |
 | `ctx.world.get(id)` | Look up one tracked object by NetworkId |
 | `ctx.position()` | Server-authoritative world-space (x, y, z) |
@@ -837,7 +835,6 @@ The second `Fleet` launches the actual scenarios, passing the opposite character
 - `--scan-radius` (default 20) — Hostile-detection radius around both Bodyguard and VIP.
 - `--evac-health` (default 0.5) — VIP HAM ratio that triggers the Bodyguard's evac response.
 - `--evac-x` / `--evac-z` (default 0, 0) — Safe coordinates for both self-flee and evac.
-- `--evac-speed` (default 12) — Walk speed during evac (clamped by the mount cap when riding).
 - `--vip-account` / `--bodyguard-account` / `--vip-character` / `--bodyguard-character` — Override the default credentials.
 - `--vip-safety` (default 0.2) / `--bodyguard-safety` (default 0.2) — Self-flee HAM ratios for each role.
 
@@ -874,7 +871,7 @@ There's no inter-character runtime coordination at all — every assignment is c
 3. **Per-character scenario** (`makeScenario`, line 155):
    - Sleep 2.5 s for baselines + containment messages to settle (so `findSurveyTools` sees the inventory).
    - `findSurveyTools(ctx)` (from `_lib-survey.ts`) — BFS the inventory + nested containers for survey-tool template patterns, returning a `class → NetworkId` map. `pickToolForClass(tools, args.resource)` returns either the exact-class tool or the universal `*` fallback. **Soft-fail**: no matching tool → `status.status = 'no-tool'`, push to `shared.statuses`, `ctx.logout()`, return.
-   - `ctx.walkTo({ x: cell.centerX, z: cell.centerZ }, { speed: --walk-speed })` — outdoor cells can be hundreds of metres from spawn; high speed keeps us from burning the `--minutes` budget on travel. `walkTo` failure → `status.status = 'walk-failed'`, log, `ctx.logout()`, return.
+   - `ctx.walkTo({ x: cell.centerX, z: cell.centerZ })` — outdoor cells can be hundreds of metres from spawn. Foot speed is engine-locked at `BASE_RUN_SPEED`; if `--minutes` runs out before all cells are visited, the remaining cells just don't get sampled. `walkTo` failure → `status.status = 'walk-failed'`, log, `ctx.logout()`, return.
    - Wait 1.2 s for the world to settle, snapshot `ctx.position()`.
    - `ctx.fetchSurveyResources(toolId, { timeoutMs })` — drives the full `CM_objectMenuRequest` → `CM_objectMenuResponse` → `ObjectMenuSelectMessage(ITEM_USE)` → `ResourceListForSurveyMessage` flow and returns the `ResourceListItem[]` of spawned types this tool can reach at this location. Empty list or thrown timeout → `status.status = 'no-types'`, logout, return.
    - Slice the first `--max-types` types, call `ctx.survey(toolId, type.resourceName)` for each, then `await ctx.waitForSurvey({ timeoutMs })` for the inbound `SurveyMessage`. Each result is appended to `shared.allSurveys` as a `CellSurvey` (cell metadata + the raw `SurveyPoint[]`). Per-type timeout is logged but doesn't abort the cell — other types still get scanned.
@@ -887,7 +884,7 @@ There's no inter-character runtime coordination at all — every assignment is c
 |---|---|
 | `findSurveyTools(ctx)` (`_lib-survey.ts`) | BFS inventory + sub-containers for survey-tool templates; returns `class → NetworkId` map |
 | `pickToolForClass(tools, args.resource)` (`_lib-survey.ts`) | Resolve exact class or universal `*` fallback |
-| `ctx.walkTo({ x, z }, { speed })` | Walk to cell centre; auto-handles teleport ack on first call |
+| `ctx.walkTo({ x, z })` | Walk to cell centre; auto-handles teleport ack on first call |
 | `ctx.position()` | Snapshot the actual sampled location (may differ from `cell.centerX/Z`) |
 | `ctx.fetchSurveyResources(toolId, { timeoutMs })` | Drives the radial `Use` flow; returns `ResourceListItem[]` |
 | `ctx.survey(toolId, resourceName)` | Fires `useAbility('requestsurvey', toolId, resourceName)`; resourceName must be a SPECIFIC spawned type, not a class |
@@ -917,7 +914,6 @@ There's no inter-character runtime coordination at all — every assignment is c
 - `--cols` (default 4), `--rows` (default 3) — grid geometry; `cols * rows` must be `>= 10`.
 - `--max-types` (default 3) — cap on resource types surveyed per cell.
 - `--survey-timeout-ms` (default 8000) — per-response timeout for `fetchSurveyResources` and each `waitForSurvey`.
-- `--walk-speed` (default 12) — `walkTo` speed (m/s); high default to keep travel time bounded.
 - `--stagger-ms` (default 750) — launch stagger between the 10 clients.
 - `--planet=CITY` (default `mos_eisley`) — `starting_locations.iff` key for character creation.
 - `--output-ndjson=PATH` (default `/tmp/cartography-<ts>.ndjson`) — heatmap output path; `mkdir -p` happens automatically.

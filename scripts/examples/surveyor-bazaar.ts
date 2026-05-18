@@ -76,7 +76,6 @@ interface ScriptArgs {
   sampleTimeoutMs: number;
   perSampleTickMs: number;
   surveyTimeoutMs: number;
-  walkSpeed: number;
   bazaarScanMs: number;
   bazaarMaxRadiusM: number;
   listingDurationHours: number;
@@ -89,7 +88,6 @@ function parseScriptArgs(extra: Map<string, string>): ScriptArgs {
     sampleTimeoutMs: Number.parseInt(extra.get('sample-timeout-ms') ?? '120000', 10),
     perSampleTickMs: Number.parseInt(extra.get('per-sample-tick-ms') ?? '35000', 10),
     surveyTimeoutMs: Number.parseInt(extra.get('survey-timeout-ms') ?? '8000', 10),
-    walkSpeed: Number.parseFloat(extra.get('walk-speed') ?? '6'),
     bazaarScanMs: Number.parseInt(extra.get('bazaar-scan-ms') ?? '5000', 10),
     bazaarMaxRadiusM: Number.parseFloat(extra.get('bazaar-max-radius') ?? '800'),
     listingDurationHours: Number.parseInt(extra.get('listing-duration-hours') ?? '24', 10),
@@ -277,7 +275,7 @@ function buildScenario(args: ScriptArgs, verbose: boolean, out: RunSummary): Sce
     );
 
     // ── 4. Walk to the peak sample point ──────────────────────────────
-    await ctx.walkTo(out.peakAt, { speed: args.walkSpeed });
+    await ctx.walkTo(out.peakAt);
     await ctx.wait(1_500);
     log(`arrived at peak; starting sample loop (target ${args.targetUnits} units)`);
 
@@ -367,7 +365,7 @@ function buildScenario(args: ScriptArgs, verbose: boolean, out: RunSummary): Sce
     // commodities ops (the live server uses an interactability check;
     // ~8m is well inside it).
     const approach = approachPoint(bazaar.position, ctx.position(), 6);
-    await ctx.walkTo(approach, { speed: args.walkSpeed });
+    await ctx.walkTo(approach);
     await ctx.wait(1_500);
 
     // ── 8. Browse for comps + compute median ──────────────────────────
@@ -513,7 +511,6 @@ async function main(): Promise<number> {
       '  --sample-timeout-ms=N        overall sampling budget in ms (default 120000)',
       '  --per-sample-tick-ms=N       per-tick timeout while sampling (default 35000)',
       '  --survey-timeout-ms=N        per-type survey response timeout (default 8000)',
-      '  --walk-speed=N               m/s (default 6)',
       '  --bazaar-scan-ms=N           ms to wait for a bazaar baseline (default 5000)',
       '  --bazaar-max-radius=N        ignore bazaars farther than this from spawn (m, default 800)',
       '  --listing-duration-hours=N   auction window (default 24)',

@@ -52,7 +52,6 @@ interface ScriptArgs {
   terminalSearchRadiusM: number;
   fallbackWalkRadiusM: number;
   waypointArrivalRadiusM: number;
-  speed: number;
   pickStrategy: 'payout' | 'distance';
 }
 
@@ -67,7 +66,6 @@ function parseScriptArgs(extra: Map<string, string>): ScriptArgs {
     terminalSearchRadiusM: Number.parseFloat(extra.get('terminal-radius') ?? '120'),
     fallbackWalkRadiusM: Number.parseFloat(extra.get('fallback-walk-radius') ?? '250'),
     waypointArrivalRadiusM: Number.parseFloat(extra.get('arrival-radius') ?? '12'),
-    speed: Number.parseFloat(extra.get('speed') ?? '6'),
     pickStrategy: pickRaw,
   };
 }
@@ -173,10 +171,7 @@ async function nudgeTowardLandmark(
     `nudging toward ${best.templateName} (~${Math.sqrt(bestD2).toFixed(1)}m away) to surface a mission terminal`,
   );
   try {
-    await ctx.navigate(
-      { x: best.position.x, z: best.position.z },
-      { useMount: 'never', speed: args.speed },
-    );
+    await ctx.navigate({ x: best.position.x, z: best.position.z }, { useMount: 'never' });
     return true;
   } catch (err) {
     log(`navigate to landmark failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -247,7 +242,7 @@ async function runMission(
     log(
       `mission 0x${m.id.toString(16)} type=${m.type} payout=${m.payout} → walking to (${waypoint.x.toFixed(1)}, ${waypoint.z.toFixed(1)}) (~${distanceM.toFixed(1)}m)`,
     );
-    await ctx.navigate(waypoint, { useMount: 'auto', speed: args.speed });
+    await ctx.navigate(waypoint, { useMount: 'auto' });
   } catch (err) {
     stat.outcome = 'navigation-failed';
     stat.reason = err instanceof Error ? err.message : String(err);
@@ -427,10 +422,7 @@ function buildScenario(
     // Walk up to the terminal (server requires presence proximity to surface
     // mission options) and request the browser.
     try {
-      await ctx.navigate(
-        { x: terminal.position.x, z: terminal.position.z },
-        { useMount: 'never', speed: args.speed },
-      );
+      await ctx.navigate({ x: terminal.position.x, z: terminal.position.z }, { useMount: 'never' });
     } catch (err) {
       log(`approach navigate failed: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -530,7 +522,7 @@ function buildScenario(
         log(`returning to terminal ${stats.terminalUsed} to close out`);
         await ctx.navigate(
           { x: terminal.position.x, z: terminal.position.z },
-          { useMount: 'auto', speed: args.speed },
+          { useMount: 'auto' },
         );
       } catch (err) {
         log(`return navigate failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -564,7 +556,6 @@ async function main(): Promise<number> {
         '  --terminal-radius=N       baseline-range radius for terminal scan in m (default 120)',
         '  --fallback-walk-radius=N  radius to scan for a landmark when no terminal in range (default 250)',
         '  --arrival-radius=N        radius around the waypoint for completion-target scan (default 12)',
-        '  --speed=N                 walking speed in m/s (default 6)',
         '  --pick=STRATEGY           payout (default) | distance',
       ],
     );

@@ -20,19 +20,12 @@
  * of the script-context uses.
  */
 
-import type { ScriptContext } from './script/context.js';
+import { BaselinePackageIds, ObjectTypeTags } from '../messages/game/baselines/registry.js';
 import type { Vector3 } from '../types.js';
 import type { NetworkId } from '../types.js';
-import {
-  findCellByName,
-  findFirstPublicCell,
-  resolvePlayerCell,
-} from './location.js';
+import { findCellByName, findFirstPublicCell, resolvePlayerCell } from './location.js';
+import type { ScriptContext } from './script/context.js';
 import type { WorldModel, WorldObject } from './world-model.js';
-import {
-  BaselinePackageIds,
-  ObjectTypeTags,
-} from '../messages/game/baselines/registry.js';
 
 /** Outdoor coordinate target. */
 export interface OutdoorTarget {
@@ -73,8 +66,6 @@ export interface NavigateOptions {
    * Distance threshold for `useMount: 'auto'`. Default 50m.
    */
   mountThresholdM?: number;
-  /** Walking speed cap (m/s). Default 4 on foot; mount cap when mounted. */
-  speed?: number;
   /**
    * Distance (m) from the building's outdoor anchor to dismount at when
    * approaching an interior target. Default 8m — close enough to walk to
@@ -99,14 +90,13 @@ export type NavigateStep =
   | { kind: 'callVehicle'; vehiclePcdId: NetworkId }
   | { kind: 'mount'; vehicleId: NetworkId }
   | { kind: 'dismount' }
-  | { kind: 'walkTo'; x: number; z: number; y?: number; speed?: number }
+  | { kind: 'walkTo'; x: number; z: number; y?: number }
   | {
       kind: 'walkToCell';
       cellId: NetworkId;
       x: number;
       z: number;
       y?: number;
-      speed?: number;
     };
 
 export interface NavigatePlan {
@@ -158,7 +148,6 @@ export function planNavigate(
   const useMount = opts.useMount ?? 'auto';
   const mountThresholdM = opts.mountThresholdM ?? DEFAULT_MOUNT_THRESHOLD_M;
   const dismountDistanceM = opts.dismountDistanceM ?? DEFAULT_DISMOUNT_DISTANCE_M;
-  const speed = opts.speed;
 
   const isInterior = 'buildingId' in target;
 
@@ -242,17 +231,12 @@ export function planNavigate(
   const walkAnchor = isInterior
     ? approachAnchor(pc.position, outdoorAnchor, dismountDistanceM)
     : outdoorAnchor;
-  if (
-    !approxEqual(walkAnchor.x, pc.position.x) ||
-    !approxEqual(walkAnchor.z, pc.position.z)
-  ) {
-    const step: NavigateStep = {
+  if (!approxEqual(walkAnchor.x, pc.position.x) || !approxEqual(walkAnchor.z, pc.position.z)) {
+    steps.push({
       kind: 'walkTo',
       x: walkAnchor.x,
       z: walkAnchor.z,
-    };
-    if (speed !== undefined) step.speed = speed;
-    steps.push(step);
+    });
   }
 
   if (isInterior) {
@@ -262,20 +246,16 @@ export function planNavigate(
     if (pc.mountCapMps !== null || shouldMount) {
       steps.push({ kind: 'dismount' });
     }
-    // Walk to the building's anchor (last leg on foot).
     if (
       !approxEqual(walkAnchor.x, outdoorAnchor.x) ||
       !approxEqual(walkAnchor.z, outdoorAnchor.z)
     ) {
-      const step: NavigateStep = {
+      steps.push({
         kind: 'walkTo',
         x: outdoorAnchor.x,
         z: outdoorAnchor.z,
-      };
-      if (speed !== undefined) step.speed = speed;
-      steps.push(step);
+      });
     }
-    // Cell-relative walk into the interior position.
     const cellStep: NavigateStep = {
       kind: 'walkToCell',
       cellId: cellId!,
@@ -283,7 +263,6 @@ export function planNavigate(
       z: cellLocalTarget!.z,
     };
     if (cellLocalTarget!.y !== undefined) cellStep.y = cellLocalTarget!.y;
-    if (speed !== undefined) cellStep.speed = speed;
     steps.push(cellStep);
   }
 
@@ -394,8 +373,7 @@ export async function runPlan(
         await ctx.wait(500);
         break;
       case 'walkTo': {
-        const walkOpts: { speed?: number; y?: number } = {};
-        if (step.speed !== undefined) walkOpts.speed = step.speed;
+        const walkOpts: { y?: number } = {};
         if (step.y !== undefined) walkOpts.y = step.y;
         const target: { x: number; z: number; y?: number } = { x: step.x, z: step.z };
         if (step.y !== undefined) target.y = step.y;
@@ -403,8 +381,7 @@ export async function runPlan(
         break;
       }
       case 'walkToCell': {
-        const walkOpts: { speed?: number; y?: number } = {};
-        if (step.speed !== undefined) walkOpts.speed = step.speed;
+        const walkOpts: { y?: number } = {};
         if (step.y !== undefined) walkOpts.y = step.y;
         const target: { x: number; z: number; y?: number } = { x: step.x, z: step.z };
         if (step.y !== undefined) target.y = step.y;

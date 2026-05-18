@@ -55,7 +55,6 @@ interface ScriptArgs {
   angularSteps: number;
   probes: number;
   minSpacing: number;
-  speed: number;
   settleMs: number;
 }
 
@@ -69,7 +68,6 @@ function parseScriptArgs(extra: Map<string, string>): ScriptArgs {
     angularSteps: Number.parseInt(extra.get('angular-steps') ?? '6', 10),
     probes: Number.parseInt(extra.get('probes') ?? '10', 10),
     minSpacing: Number.parseFloat(extra.get('min-spacing') ?? '60'),
-    speed: Number.parseFloat(extra.get('speed') ?? '8'),
     settleMs: Number.parseInt(extra.get('settle-ms') ?? '4500', 10),
   };
 }
@@ -222,7 +220,7 @@ function buildScenario(
       const { spot, flatnessScore } = cand;
 
       try {
-        await ctx.walkTo({ x: spot.x, z: spot.z }, { speed: args.speed });
+        await ctx.walkTo({ x: spot.x, z: spot.z });
       } catch (err) {
         log(`walk to (${spot.x.toFixed(1)}, ${spot.z.toFixed(1)}) failed: ${err}`);
       }
@@ -291,7 +289,6 @@ async function main(): Promise<number> {
       '  --angular-steps=N        candidates per ring (default 6)',
       '  --probes=N               top-N to probe via live server (default 10)',
       '  --min-spacing=N          min metres between probed spots (default 60)',
-      '  --speed=N                walk speed in m/s (default 8)',
       '  --settle-ms=N            ms to wait for probe rejection chat (default 4500)',
     ]);
     return 0;

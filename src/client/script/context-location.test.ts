@@ -105,7 +105,7 @@ describe('ScriptContext.location', () => {
     });
     expect(ctx.location.position).toEqual({ x: 100, y: 5, z: 200 });
     // Mutate the pose cursor by walking.
-    await ctx.walkTo({ x: 110, z: 200 }, { speed: 5, tickMs: 50 });
+    await ctx.walkTo({ x: 110, z: 200 }, { tickMs: 50 });
     const pos = ctx.location.position;
     expect(pos.x).toBeCloseTo(110, 1);
   });
@@ -148,7 +148,7 @@ describe('ScriptContext.character.heading', () => {
       startPosition: { x: 0, y: 0, z: 0 },
     });
     // Walk a short line +x → produces several CM_113 sends along the +x axis.
-    await ctx.walkTo({ x: 10, z: 0 }, { speed: 5, tickMs: 50 });
+    await ctx.walkTo({ x: 10, z: 0 }, { tickMs: 50 });
     // atan2(dx=positive, dz=0) → π/2 (heading "east" in SWG's local axes).
     expect(ctx.character.heading).toBeCloseTo(Math.PI / 2, 2);
   });
@@ -158,10 +158,10 @@ describe('ScriptContext.character.heading', () => {
       playerNetworkId: 0x1n,
       startPosition: { x: 0, y: 0, z: 0 },
     });
-    await ctx.walkTo({ x: 0, z: 10 }, { speed: 5, tickMs: 50 });
+    await ctx.walkTo({ x: 0, z: 10 }, { tickMs: 50 });
     // atan2(0, +z) → 0 (heading "north").
     expect(ctx.character.heading).toBeCloseTo(0, 2);
-    await ctx.walkTo({ x: 0, z: 20 }, { speed: 5, tickMs: 50 });
+    await ctx.walkTo({ x: 0, z: 20 }, { tickMs: 50 });
     expect(ctx.character.heading).toBeCloseTo(0, 2);
   });
 });
@@ -203,8 +203,8 @@ describe('ScriptContext.navigate', () => {
 
   it('rejects with an informative error when the building is unknown', async () => {
     const { ctx } = createFakeContext({ playerNetworkId: 0x1n });
-    await expect(
-      ctx.navigate({ buildingId: 0xdeadn, cellName: 'cell1' }),
-    ).rejects.toThrow(/not in the WorldModel/);
+    await expect(ctx.navigate({ buildingId: 0xdeadn, cellName: 'cell1' })).rejects.toThrow(
+      /not in the WorldModel/,
+    );
   });
 });

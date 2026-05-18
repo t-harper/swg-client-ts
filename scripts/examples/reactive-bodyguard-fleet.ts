@@ -44,7 +44,6 @@ interface ScriptArgs {
   evacHealthFraction: number;
   evacX: number;
   evacZ: number;
-  evacSpeed: number;
   vipAccount: string;
   bodyguardAccount: string;
   vipCharacter: string;
@@ -62,7 +61,6 @@ function parseScriptArgs(extra: Map<string, string>): ScriptArgs {
     evacHealthFraction: Number.parseFloat(extra.get('evac-health') ?? '0.5'),
     evacX: Number.parseFloat(extra.get('evac-x') ?? '0'),
     evacZ: Number.parseFloat(extra.get('evac-z') ?? '0'),
-    evacSpeed: Number.parseFloat(extra.get('evac-speed') ?? '12'),
     vipAccount: extra.get('vip-account') ?? VIP_ACCOUNT_DEFAULT,
     bodyguardAccount: extra.get('bodyguard-account') ?? BODYGUARD_ACCOUNT_DEFAULT,
     vipCharacter: extra.get('vip-character') ?? VIP_CHARACTER_DEFAULT,
@@ -125,7 +123,6 @@ function buildVipScenario(
       goTo: { x: args.evacX, z: args.evacZ },
       usePeace: true,
       useVehicle: true,
-      speed: args.evacSpeed,
       onTrigger: (info) => {
         stats.fledForSafety = true;
         log(
@@ -169,7 +166,6 @@ function buildVipScenario(
         centerZ: spawn.z,
         radius: args.circuitRadius,
         durationMs: totalMs,
-        speed: 4,
       });
     } finally {
       clearInterval(sampler);
@@ -195,7 +191,6 @@ function buildBodyguardScenario(
       goTo: { x: args.evacX, z: args.evacZ },
       usePeace: true,
       useVehicle: true,
-      speed: args.evacSpeed,
       onTrigger: (info) => {
         log(
           `bodyguard self-flee: ratio=${info.healthRatio.toFixed(2)} hp=${info.health}/${info.healthMax}`,
@@ -256,7 +251,7 @@ function buildBodyguardScenario(
           await ctx.wait(400);
         }
       }
-      await ctx.walkTo({ x: args.evacX, z: args.evacZ }, { speed: args.evacSpeed });
+      await ctx.walkTo({ x: args.evacX, z: args.evacZ });
       return true;
     };
 
@@ -313,7 +308,7 @@ function buildBodyguardScenario(
           z: me.z + dz * k,
         };
         stats.catchupWalks++;
-        await ctx.walkTo(target, { speed: 6 });
+        await ctx.walkTo(target);
       } else {
         await ctx.wait(500);
       }
@@ -366,7 +361,6 @@ async function main(): Promise<number> {
       '  --evac-health=F          VIP HAM ratio that triggers evac (default 0.5)',
       '  --evac-x=N               evac destination X (default 0)',
       '  --evac-z=N               evac destination Z (default 0)',
-      '  --evac-speed=N           evac walk speed (default 12, clamped by mount cap)',
       '  --vip-account=NAME       account name for VIP (default tslive05)',
       '  --bodyguard-account=NAME account name for bodyguard (default tslive06)',
       '  --vip-character=NAME     VIP character name (default ExVIP)',

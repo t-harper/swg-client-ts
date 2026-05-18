@@ -115,7 +115,7 @@ function makeDancerScenario(
     };
     log(`walking to dance spot (${target.x.toFixed(1)}, ${target.z.toFixed(1)})`);
     try {
-      await ctx.walkTo(target, { speed: 5 });
+      await ctx.walkTo(target);
     } catch (err) {
       log(`walkTo failed: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -154,7 +154,7 @@ function makeSpotterScenario(
     };
     log(`walking to entrance (${entrance.x.toFixed(1)}, ${entrance.z.toFixed(1)})`);
     try {
-      await ctx.walkTo(entrance, { speed: 5 });
+      await ctx.walkTo(entrance);
     } catch (err) {
       log(`walkTo failed: ${err instanceof Error ? err.message : String(err)}`);
     }

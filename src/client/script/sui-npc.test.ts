@@ -14,8 +14,8 @@ import { ObjControllerSubtypeIds } from '../../messages/game/obj-controller/regi
 import { SuiCreatePageMessage } from '../../messages/game/sui/sui-create-page-message.js';
 import { SuiEventNotification } from '../../messages/game/sui/sui-event-notification.js';
 import { SuiForceClosePage } from '../../messages/game/sui/sui-force-close-page.js';
-import { SuiUpdatePageMessage } from '../../messages/game/sui/sui-update-page-message.js';
 import type { SuiPageData } from '../../messages/game/sui/sui-page-data.js';
+import { SuiUpdatePageMessage } from '../../messages/game/sui/sui-update-page-message.js';
 import type { NetworkId } from '../../types.js';
 import { createFakeContext } from './test-helpers.js';
 
@@ -70,7 +70,12 @@ describe('SUI primitives', () => {
       ...makeFakePageData(7),
       pageName: 'banker.main',
       commands: [
-        { type: 'setProperty', targetWidget: 'cmp.title', propertyName: 'Text', propertyValue: 'Hi' },
+        {
+          type: 'setProperty',
+          targetWidget: 'cmp.title',
+          propertyName: 'Text',
+          propertyValue: 'Hi',
+        },
       ],
     };
     setTimeout(() => simulateRecv(new SuiCreatePageMessage(page)), 5);
@@ -284,9 +289,7 @@ describe('ctx.sui — high-level autoRespond + active', () => {
     const { ctx, sent, simulateRecv } = createFakeContext({ playerNetworkId: PLAYER_ID });
     ctx.sui.autoRespond((p) => p.pageName === 'A', { eventType: 11, returnList: [] });
     ctx.sui.autoRespond((p) => p.pageName === 'A', { eventType: 22, returnList: [] });
-    simulateRecv(
-      new SuiCreatePageMessage({ ...makeFakePageData(3), pageName: 'A' }),
-    );
+    simulateRecv(new SuiCreatePageMessage({ ...makeFakePageData(3), pageName: 'A' }));
     expect(sent.length).toBe(1);
     const reply = sent[0];
     if (!(reply instanceof SuiEventNotification)) throw new Error('typeguard');
@@ -424,9 +427,7 @@ describe('ctx.npc — high-level converse + lastDialog', () => {
     // Step 1: prompt + 3-option menu including 'greet me'.
     simulateRecv(buildNpcPromptMessage(PLAYER_ID, 'Yes?'));
     await new Promise((r) => setTimeout(r, 10));
-    simulateRecv(
-      buildNpcResponsesMessage(PLAYER_ID, ['Greet me', 'Inquire further', 'Leave']),
-    );
+    simulateRecv(buildNpcResponsesMessage(PLAYER_ID, ['Greet me', 'Inquire further', 'Leave']));
     await new Promise((r) => setTimeout(r, 10));
 
     // Step 2: new prompt + menu containing 'inquire'.

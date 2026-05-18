@@ -61,7 +61,7 @@ function buildScenario(args: ScriptArgs, verbose: boolean): ScenarioFn {
       log(
         `vendor at (${wide.position.x.toFixed(1)}, ${wide.position.z.toFixed(1)}) — walking closer`,
       );
-      await ctx.walkTo({ x: wide.position.x - 4, z: wide.position.z - 4 }, { speed: 8 });
+      await ctx.walkTo({ x: wide.position.x - 4, z: wide.position.z - 4 });
       await ctx.wait(1_000);
       vendor = ctx.travel.findTicketVendor();
       if (vendor === undefined) vendor = wide;
@@ -95,7 +95,7 @@ function buildScenario(args: ScriptArgs, verbose: boolean): ScenarioFn {
     log(
       `collector: id=0x${collector.id.toString(16)} template=${collector.templateName ?? '<none>'} — walking up`,
     );
-    await ctx.walkTo({ x: collector.position.x, z: collector.position.z }, { speed: 8 });
+    await ctx.walkTo({ x: collector.position.x, z: collector.position.z });
     await ctx.wait(1_000);
     const arrival = await ctx.useTicket({ ticketId, timeoutMs: 25_000 });
     log(

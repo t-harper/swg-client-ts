@@ -83,7 +83,7 @@ describe.skipIf(!LIVE)('live trade (full SecureTrade handshake)', () => {
           holdZonedInMs: 0,
           script: async (ctx) => {
             await ctx.wait(2_000);
-            await ctx.walkTo({ x: MEETUP_X, z: MEETUP_Z }, { speed: 6, tickMs: 400 });
+            await ctx.walkTo({ x: MEETUP_X, z: MEETUP_Z }, { tickMs: 400 });
             // Wait an extra 4s so the invitee's listener is armed before we
             // fire RequestTrade.
             await ctx.wait(4_000);
@@ -105,7 +105,7 @@ describe.skipIf(!LIVE)('live trade (full SecureTrade handshake)', () => {
           holdZonedInMs: 0,
           script: async (ctx) => {
             await ctx.wait(2_000);
-            await ctx.walkTo({ x: MEETUP_X, z: MEETUP_Z }, { speed: 6, tickMs: 400 });
+            await ctx.walkTo({ x: MEETUP_X, z: MEETUP_Z }, { tickMs: 400 });
             // Be ready before the leader fires.
             const r = await ctx.acceptIncomingTrade({
               requestTimeoutMs: 30_000,

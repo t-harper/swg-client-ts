@@ -27,9 +27,6 @@
  * without remembering the exact PCD template names.
  */
 
-import { extractDatapadContainerId } from '../baseline-helpers.js';
-import type { TranscriptEvent } from '../dispatcher.js';
-import type { WorldEvent, WorldModel, WorldObject } from '../world-model.js';
 import {
   BaselinePackageIds,
   type CreatureObjectSharedBaseline,
@@ -37,6 +34,9 @@ import {
   type TangibleObjectSharedBaseline,
 } from '../../messages/game/baselines/index.js';
 import type { NetworkId } from '../../types.js';
+import { extractDatapadContainerId } from '../baseline-helpers.js';
+import type { TranscriptEvent } from '../dispatcher.js';
+import type { WorldEvent, WorldModel, WorldObject } from '../world-model.js';
 
 /** Discriminated `kind` derived from a datapad entry's `templateName`. */
 export type DatapadItemKind =
@@ -419,7 +419,10 @@ export class DatapadViewImpl implements DatapadView {
     // like petCommand) OR the PCD id (for call/store). Resolve to the
     // PCD id by checking both maps.
     let pcdId: NetworkId | null = null;
-    if (this.pcdStates.has(pcdOrCreatureId) || this.pendingCalls.some((p) => p.pcdId === pcdOrCreatureId)) {
+    if (
+      this.pcdStates.has(pcdOrCreatureId) ||
+      this.pendingCalls.some((p) => p.pcdId === pcdOrCreatureId)
+    ) {
       pcdId = pcdOrCreatureId;
     } else if (this.creatureToPcd.has(pcdOrCreatureId)) {
       pcdId = this.creatureToPcd.get(pcdOrCreatureId) ?? null;

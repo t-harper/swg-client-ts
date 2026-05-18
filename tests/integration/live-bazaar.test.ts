@@ -99,9 +99,7 @@ describe.skipIf(!LIVE)('live bazaar browse (admin-spawn terminal → browseBazaa
         }
 
         // Cleanup: destroy the admin-spawned terminal.
-        ctx.send(
-          new ConGenericMessage(`object destroy ${observed.terminalId.toString()}`, 101),
-        );
+        ctx.send(new ConGenericMessage(`object destroy ${observed.terminalId.toString()}`, 101));
         await ctx.wait(500);
       },
     });

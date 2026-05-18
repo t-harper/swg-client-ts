@@ -24,10 +24,9 @@ export type ScenarioFactory = (args: Record<string, string>) => ScenarioFn;
 export const walkLine: ScenarioFactory = (args) => {
   const x = numArg(args, 'x', 0);
   const z = numArg(args, 'z', 0);
-  const speed = numArg(args, 'speed', 5);
   const holdMs = numArg(args, 'holdMs', 1000);
   return async (ctx) => {
-    await ctx.walkTo({ x, z }, { speed });
+    await ctx.walkTo({ x, z });
     if (holdMs > 0) await ctx.wait(holdMs);
   };
 };
@@ -36,7 +35,6 @@ export const walkLine: ScenarioFactory = (args) => {
 export const walkCircle: ScenarioFactory = (args) => {
   const radius = numArg(args, 'radius', 8);
   const durationMs = numArg(args, 'durationMs', 5000);
-  const speed = args.speed !== undefined ? Number(args.speed) : undefined;
   const direction = args.direction === '-1' ? -1 : 1;
   return async (ctx) => {
     const cur = ctx.position();
@@ -48,7 +46,6 @@ export const walkCircle: ScenarioFactory = (args) => {
       radius,
       durationMs,
       direction,
-      ...(speed !== undefined ? { speed } : {}),
     });
   };
 };
@@ -392,9 +389,11 @@ export const groupTradeScenario: ScenarioFactory = (args) => {
  *      `callable.callCallable(player, vehicle)`.)
  *   2. wait `settleMs` for the vehicle to materialize.
  *   3. `useAbility('mount', vehicleId)` — server validates and sets
- *      `States::RidingMount`. We set `mountedSpeedCap` to 12 m/s.
- *   4. `walkCircle(...)` — movement primitives clamp the requested speed
- *      to the mounted cap.
+ *      `States::RidingMount`. We set `mountedSpeedCap` to `mountSpeedCap`
+ *      (default 12 m/s — speeder-bike class).
+ *   4. `walkCircle(...)` — on-foot would lock to BASE_RUN_SPEED (7.3 m/s);
+ *      mounted, it uses the cap instead. Pass a larger `mountSpeedCap` to
+ *      simulate a faster swoop.
  *   5. `useAbility('dismount')` — clears the riding state.
  *   6. `ObjectMenuSelectMessage(vehicleId, PET_STORE=60)` — stores it
  *      back into the PCD.
@@ -410,8 +409,8 @@ export const groupTradeScenario: ScenarioFactory = (args) => {
  *                  the id ahead of time and pass it explicitly.
  *   radius         (default 30) circle radius in meters
  *   durationMs     (default 10000) circle duration
- *   speed          (default 12) requested speed; will be clamped by the
- *                  mounted cap
+ *   mountSpeedCap  (default 12) m/s ceiling while mounted — the only speed
+ *                  knob; on-foot speed is engine-locked to BASE_RUN_SPEED
  *   settleMs       (default 1500) wait between call→mount and dismount→store
  *   skipMount      (default false) for transcript-only smoke tests:
  *                  only call/store, never mount
@@ -423,7 +422,7 @@ export const rideVehicle: ScenarioFactory = (args) => {
     : null;
   const radius = numArg(args, 'radius', 30);
   const durationMs = numArg(args, 'durationMs', 10_000);
-  const speed = numArg(args, 'speed', 12);
+  const mountSpeedCap = numArg(args, 'mountSpeedCap', 12);
   const settleMs = numArg(args, 'settleMs', 1_500);
   const skipMount = args.skipMount === '1' || args.skipMount === 'true';
   const vehicleIdRaw = args.vehicleId;
@@ -453,14 +452,13 @@ export const rideVehicle: ScenarioFactory = (args) => {
       return;
     }
 
-    ctx.mount(vehicleId);
+    ctx.mount(vehicleId, { speedCap: mountSpeedCap });
     const cur = ctx.position();
     await ctx.walkCircle({
       centerX: cur.x,
       centerZ: cur.z,
       radius,
       durationMs,
-      speed,
     });
     ctx.dismount();
     if (settleMs > 0) await ctx.wait(settleMs);

@@ -21,7 +21,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { reconnectVerify } from '../../src/client/reconnect-harness.js';
 import type { ScenarioFn } from '../../src/client/script/context.js';
-import { poolCredentials, type PoolCredentialsResult } from './helpers.js';
+import { type PoolCredentialsResult, poolCredentials } from './helpers.js';
 
 const LIVE = process.env.LIVE === '1';
 const HOST = process.env.SWG_HOST ?? '10.254.0.253';
@@ -64,7 +64,7 @@ describe.skipIf(!LIVE)('live persistence soak (reconnectVerify harness)', () => 
       await ctx.ackPendingTeleports();
       try {
         const start = ctx.position();
-        await ctx.walkTo({ x: start.x + 18, z: start.z + 18 }, { speed: 4 });
+        await ctx.walkTo({ x: start.x + 18, z: start.z + 18 });
       } catch {
         // Anti-cheat or zero-distance walk — proceed with whatever
         // position we ended up at; the snapshot diff still validates

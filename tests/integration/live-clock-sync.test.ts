@@ -12,10 +12,10 @@
  */
 import { describe, expect, it } from 'vitest';
 
+import { MessageDispatcher } from '../../src/client/dispatcher.js';
+import { runLoginStage } from '../../src/client/login-stage.js';
 import { ClientIdMsg } from '../../src/messages/connection/client-id-msg.js';
 import { ClientPermissionsMessage } from '../../src/messages/connection/client-permissions-message.js';
-import { runLoginStage } from '../../src/client/login-stage.js';
-import { MessageDispatcher } from '../../src/client/dispatcher.js';
 import { SoeConnection } from '../../src/soe/connection.js';
 import { liveAccount } from './helpers.js';
 

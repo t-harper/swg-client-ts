@@ -135,9 +135,10 @@ describe.skipIf(!LIVE)('live spatial chat — single-client self-broadcast', () 
       if (e.direction !== 'send' || e.messageName !== 'ObjControllerMessage') return false;
       return true;
     });
-    expect(sentSpatialChats.length, 'at least one ObjControllerMessage sent').toBeGreaterThanOrEqual(
-      1,
-    );
+    expect(
+      sentSpatialChats.length,
+      'at least one ObjControllerMessage sent',
+    ).toBeGreaterThanOrEqual(1);
 
     // Headline assertion: we received the broadcast echoed back to us.
     if (observed.data === undefined) {
@@ -397,10 +398,9 @@ describe.skipIf(!LIVE)('live spatial chat (2 co-located clients, /say round-trip
     // A's playerNetworkId should match the sourceId on the inbound trailer.
     const aPlayerId = aResult.sceneStart?.playerNetworkId;
     if (aPlayerId !== undefined && aPlayerId !== 0n) {
-      expect(
-        observed.sourceId,
-        "B's observed sourceId matches A's playerNetworkId",
-      ).toBe(aPlayerId);
+      expect(observed.sourceId, "B's observed sourceId matches A's playerNetworkId").toBe(
+        aPlayerId,
+      );
     }
 
     // Independent decode of the raw trailer bytes — verify via the registered
@@ -419,7 +419,11 @@ describe.skipIf(!LIVE)('live spatial chat (2 co-located clients, /say round-trip
         (e.decoded.decodedSubtype.data as SpatialChatData).text === needle,
     );
     expect(recvMatch, 'B has the inbound CM_spatialChatReceive in its transcript').toBeDefined();
-    if (recvMatch !== undefined && 'decoded' in recvMatch && recvMatch.decoded instanceof ObjControllerMessage) {
+    if (
+      recvMatch !== undefined &&
+      'decoded' in recvMatch &&
+      recvMatch.decoded instanceof ObjControllerMessage
+    ) {
       const trailerRoundTrip = SpatialChatReceiveDecoder.decode(
         new ReadIterator(recvMatch.decoded.data),
       );

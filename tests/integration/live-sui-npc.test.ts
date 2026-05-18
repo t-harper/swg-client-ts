@@ -25,13 +25,13 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { SwgClient } from '../../src/client/swg-client.js';
 import {
   adminGetInventoryId,
   adminGodModeOn,
   adminSpawnAt,
   adminSpawnInto,
 } from '../../scripts/build-city/admin.js';
+import { SwgClient } from '../../src/client/swg-client.js';
 import { SuiEventNotification } from '../../src/messages/game/sui/sui-event-notification.js';
 import type { NetworkId } from '../../src/types.js';
 import { liveCredentials, sessionSettle } from './helpers.js';
@@ -95,7 +95,8 @@ describe.skipIf(!LIVE)('live SUI auto-responder + NPC dialog tracker', () => {
           inventoryOid = ctx.inventory.containerId;
         }
         if (inventoryOid === null) {
-          observed.bailReason = `Could not resolve inventory NetworkId (admin lookup + auto-sync both null). ` +
+          observed.bailReason =
+            `Could not resolve inventory NetworkId (admin lookup + auto-sync both null). ` +
             `Most likely god-mode failed to enable (account ${account} not whitelisted in stella_admin.tab?).`;
           return;
         }
@@ -116,17 +117,14 @@ describe.skipIf(!LIVE)('live SUI auto-responder + NPC dialog tracker', () => {
         // is installed in time. Match any incoming SUI page (the cityhall flow
         // pushes a msgbox; we're not picky about pageName here — we want to
         // exercise the engine's match-and-fire path).
-        const unsub = ctx.sui.autoRespond(
-          (p) => {
-            // Capture the pageId for the post-script assertion. The match
-            // returns true so the engine fires a 'cancel' reply (event 1)
-            // — we're testing the auto-fire wire path, not actually placing
-            // the cityhall.
-            observed.autoRespondedPageId = p.pageId;
-            return true;
-          },
-          'cancel',
-        );
+        const unsub = ctx.sui.autoRespond((p) => {
+          // Capture the pageId for the post-script assertion. The match
+          // returns true so the engine fires a 'cancel' reply (event 1)
+          // — we're testing the auto-fire wire path, not actually placing
+          // the cityhall.
+          observed.autoRespondedPageId = p.pageId;
+          return true;
+        }, 'cancel');
 
         try {
           // Use the radial — server opens the SUI.
@@ -177,8 +175,14 @@ describe.skipIf(!LIVE)('live SUI auto-responder + NPC dialog tracker', () => {
         `autoRespondedPageId=${observed.autoRespondedPageId})`,
     ).toBeGreaterThanOrEqual(1);
 
-    expect(observed.autoRespondedPageId, 'autoRespond predicate received a non-null pageId').not.toBeNull();
-    expect(observed.activePeak, 'ctx.sui.active reflected at least one open page at peak').toBeGreaterThanOrEqual(1);
+    expect(
+      observed.autoRespondedPageId,
+      'autoRespond predicate received a non-null pageId',
+    ).not.toBeNull();
+    expect(
+      observed.activePeak,
+      'ctx.sui.active reflected at least one open page at peak',
+    ).toBeGreaterThanOrEqual(1);
   }, 90_000);
 
   it('ctx.npc.lastDialog populates after talkTo with an admin-spawned NPC', async () => {

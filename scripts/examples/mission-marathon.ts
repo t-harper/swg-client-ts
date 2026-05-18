@@ -33,7 +33,16 @@ import {
   type ScriptContext,
   type WorldObject,
 } from '../../src/index.js';
-import { durationMs, formatJson, makeLogger, parseCommonArgs, runScenario, usage } from './_lib.js';
+import {
+  dist2,
+  durationMs,
+  findNearestByTemplate,
+  formatJson,
+  makeLogger,
+  parseCommonArgs,
+  runScenario,
+  usage,
+} from './_lib.js';
 
 const SCRIPT = 'scripts/examples/mission-marathon.ts';
 
@@ -102,12 +111,6 @@ interface MarathonStats {
   bailReason: string | null;
 }
 
-function dist2(a: { x: number; z: number }, b: { x: number; z: number }): number {
-  const dx = a.x - b.x;
-  const dz = a.z - b.z;
-  return dx * dx + dz * dz;
-}
-
 function xpMapToObject(m: ReadonlyMap<string, number>): Record<string, number> {
   const out: Record<string, number> = {};
   for (const [k, v] of m.entries()) out[k] = v;
@@ -127,28 +130,11 @@ function diffXp(
   return out;
 }
 
-/**
- * Scan the live world for a mission terminal within `radiusM`. The terminal
- * objects are TANO-class; their templateName is shaped like
- * `object/tangible/terminal/terminal_mission_destroy_imperial.iff` (the
- * legacy variants) or `object/tangible/terminal/terminal_mission*.iff`.
- */
 function findNearestMissionTerminal(ctx: ScriptContext, radiusM: number): WorldObject | undefined {
-  const here = ctx.position();
-  const maxR2 = radiusM * radiusM;
-  let best: WorldObject | undefined;
-  let bestD2 = Number.POSITIVE_INFINITY;
-  for (const o of ctx.world.byType(ObjectTypeTags.TANO)) {
-    if (o.templateName === undefined) continue;
-    if (!MISSION_TERMINAL_RE.test(o.templateName)) continue;
-    const d2 = dist2(o.position, here);
-    if (d2 > maxR2) continue;
-    if (d2 < bestD2) {
-      best = o;
-      bestD2 = d2;
-    }
-  }
-  return best;
+  return findNearestByTemplate(ctx, MISSION_TERMINAL_RE, {
+    typeTag: ObjectTypeTags.TANO,
+    maxRadiusM: radiusM,
+  });
 }
 
 /**

@@ -21,7 +21,9 @@ import {
   type FullLifecycleOptions,
   type LifecycleResult,
   type ScenarioFn,
+  type ScriptContext,
   SwgClient,
+  type WorldObject,
 } from '../../src/index.js';
 
 // ---------------------------------------------------------------------------
@@ -432,6 +434,90 @@ export function aggregateTranscript(
     out[ev.messageName] = bucket;
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// World / math helpers (shared across grandiose scenarios)
+// ---------------------------------------------------------------------------
+
+export function dist2(
+  a: Readonly<{ x: number; z: number }>,
+  b: Readonly<{ x: number; z: number }>,
+): number {
+  const dx = a.x - b.x;
+  const dz = a.z - b.z;
+  return dx * dx + dz * dz;
+}
+
+export interface FindNearestOptions {
+  /** Cap the search radius in metres. Default: unlimited. */
+  maxRadiusM?: number;
+  /** Restrict to a single ObjectTypeTag (e.g. TANO/CREO). Default: all typed objects. */
+  typeTag?: number;
+}
+
+/** Synchronous one-shot scan of `ctx.world` for the nearest object whose templateName matches `pattern`. */
+export function findNearestByTemplate(
+  ctx: ScriptContext,
+  pattern: RegExp,
+  opts: FindNearestOptions = {},
+): WorldObject | undefined {
+  const here = ctx.position();
+  const maxR2 =
+    opts.maxRadiusM !== undefined ? opts.maxRadiusM * opts.maxRadiusM : Number.POSITIVE_INFINITY;
+  const pool =
+    opts.typeTag !== undefined
+      ? ctx.world.byType(opts.typeTag)
+      : ctx.world.filter((o) => o.templateName !== undefined);
+  let best: WorldObject | undefined;
+  let bestD2 = Number.POSITIVE_INFINITY;
+  for (const o of pool) {
+    if (o.templateName === undefined) continue;
+    if (!pattern.test(o.templateName)) continue;
+    const d2 = dist2(o.position, here);
+    if (d2 > maxR2) continue;
+    if (d2 < bestD2) {
+      best = o;
+      bestD2 = d2;
+    }
+  }
+  return best;
+}
+
+export interface PollNearestOptions extends FindNearestOptions {
+  /** Total wall-clock budget for the poll. */
+  scanMs: number;
+  /** First poll interval; doubles up to 1s. Default 250. */
+  initialPollMs?: number;
+}
+
+/** Poll `ctx.world` for the nearest matching object until found or `scanMs` elapses. */
+export async function pollForNearestByTemplate(
+  ctx: ScriptContext,
+  pattern: RegExp,
+  opts: PollNearestOptions,
+): Promise<WorldObject | undefined> {
+  const deadline = Date.now() + opts.scanMs;
+  let pollMs = opts.initialPollMs ?? 250;
+  while (Date.now() < deadline && !ctx.signal.aborted) {
+    const found = findNearestByTemplate(ctx, pattern, opts);
+    if (found !== undefined) return found;
+    await ctx.wait(Math.min(pollMs, Math.max(0, deadline - Date.now())));
+    pollMs = Math.min(1000, pollMs * 2);
+  }
+  return undefined;
+}
+
+/** Median of a numeric array. Returns `null` for an empty input. */
+export function medianOf(values: readonly number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  if ((sorted.length & 1) === 1) return sorted[mid] ?? null;
+  const lo = sorted[mid - 1];
+  const hi = sorted[mid];
+  if (lo === undefined || hi === undefined) return null;
+  return (lo + hi) / 2;
 }
 
 // ---------------------------------------------------------------------------

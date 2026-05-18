@@ -23,12 +23,7 @@
  * in `scripts/check-resources-at-location.ts`.
  */
 
-import type {
-  NetworkId,
-  ResourceListItem,
-  ScriptContext,
-  WorldObject,
-} from '../../src/index.js';
+import type { NetworkId, ResourceListItem, ScriptContext, WorldObject } from '../../src/index.js';
 
 /**
  * Template short-names returned over the wire are truncated (e.g.

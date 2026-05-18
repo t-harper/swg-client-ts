@@ -56,10 +56,18 @@ import type {
   ScenarioFn,
   ScriptContext,
   SurveyPoint,
-  WorldObject,
 } from '../../src/index.js';
 import { findSurveyTools } from './_lib-survey.js';
-import { durationMs, formatJson, makeLogger, parseCommonArgs, runScenario, usage } from './_lib.js';
+import {
+  durationMs,
+  formatJson,
+  makeLogger,
+  medianOf,
+  parseCommonArgs,
+  pollForNearestByTemplate,
+  runScenario,
+  usage,
+} from './_lib.js';
 
 const SCRIPT = 'scripts/examples/surveyor-bazaar.ts';
 
@@ -137,66 +145,12 @@ async function pickBestResourceAtLocation(
 
 const BAZAAR_PATTERN = /bazaar|terminal_bazaar|vendor_bazaar/i;
 
-function isBazaarObject(o: WorldObject): boolean {
-  const t = o.templateName;
-  return t !== undefined && BAZAAR_PATTERN.test(t);
-}
-
-/**
- * Sweep `ctx.world` for the nearest bazaar terminal, polling for up to
- * `scanMs` because baselines after zone-in can take a beat to land.
- * Returns the nearest within `maxRadiusM`, or `undefined`.
- */
-async function findNearestBazaar(
-  ctx: ScriptContext,
-  scanMs: number,
-  maxRadiusM: number,
-  log: (msg: string) => void,
-): Promise<WorldObject | undefined> {
-  const here = ctx.position();
-  const maxR2 = maxRadiusM * maxRadiusM;
-  const deadline = Date.now() + scanMs;
-  let pollMs = 250;
-  while (Date.now() < deadline) {
-    const candidates = ctx.world.filter(isBazaarObject);
-    let nearest: WorldObject | undefined;
-    let nearestD2 = Number.POSITIVE_INFINITY;
-    for (const o of candidates) {
-      const dx = o.position.x - here.x;
-      const dz = o.position.z - here.z;
-      const d2 = dx * dx + dz * dz;
-      if (d2 > maxR2) continue;
-      if (d2 < nearestD2) {
-        nearest = o;
-        nearestD2 = d2;
-      }
-    }
-    if (nearest !== undefined) {
-      log(
-        `bazaar in scene: id=0x${nearest.id.toString(16)} ` +
-          `template=${nearest.templateName} dist=${Math.sqrt(nearestD2).toFixed(1)}m`,
-      );
-      return nearest;
-    }
-    await ctx.wait(Math.min(pollMs, Math.max(0, deadline - Date.now())));
-    pollMs = Math.min(1000, pollMs * 2);
-  }
-  return undefined;
-}
-
-/** Compute the median listing price, biased toward `buyNowPrice` then `highBid`. */
 function medianPrice(listings: readonly AuctionListing[]): number | null {
   const prices = listings
     .map((l) => (l.buyNowPrice > 0 ? l.buyNowPrice : l.highBid))
-    .filter((p) => p > 0)
-    .sort((a, b) => a - b);
-  if (prices.length === 0) return null;
-  const mid = Math.floor(prices.length / 2);
-  if (prices.length % 2 === 1) return prices[mid] ?? null;
-  const lo = prices[mid - 1];
-  const hi = prices[mid];
-  if (lo === undefined || hi === undefined) return null;
-  return Math.round((lo + hi) / 2);
+    .filter((p) => p > 0);
+  const med = medianOf(prices);
+  return med === null ? null : Math.round(med);
 }
 
 /**
@@ -385,7 +339,17 @@ function buildScenario(args: ScriptArgs, verbose: boolean, out: RunSummary): Sce
     // (The script always tries — even when 0 units harvested — so the
     // discovery path is exercised. The list step bails when we have
     // nothing to sell.)
-    const bazaar = await findNearestBazaar(ctx, args.bazaarScanMs, args.bazaarMaxRadiusM, log);
+    const bazaar = await pollForNearestByTemplate(ctx, BAZAAR_PATTERN, {
+      scanMs: args.bazaarScanMs,
+      maxRadiusM: args.bazaarMaxRadiusM,
+    });
+    if (bazaar !== undefined) {
+      const dx = bazaar.position.x - ctx.position().x;
+      const dz = bazaar.position.z - ctx.position().z;
+      log(
+        `bazaar found: id=0x${bazaar.id.toString(16)} template=${bazaar.templateName} dist=${Math.hypot(dx, dz).toFixed(1)}m`,
+      );
+    }
     if (bazaar === undefined) {
       const reason = `no bazaar terminal in scene within ${args.bazaarMaxRadiusM}m`;
       ctx.fail(reason);

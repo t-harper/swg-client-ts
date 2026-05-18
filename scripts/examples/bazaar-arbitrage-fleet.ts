@@ -38,9 +38,17 @@ import {
   type FleetClientConfig,
   type ScenarioFn,
   type ScriptContext,
-  type WorldObject,
 } from '../../src/index.js';
-import { durationMs, formatJson, makeLogger, parseCommonArgs, runFleet, usage } from './_lib.js';
+import {
+  durationMs,
+  findNearestByTemplate,
+  formatJson,
+  makeLogger,
+  medianOf,
+  parseCommonArgs,
+  runFleet,
+  usage,
+} from './_lib.js';
 
 const SCRIPT = 'scripts/examples/bazaar-arbitrage-fleet.ts';
 
@@ -180,52 +188,18 @@ function parseScriptArgs(extra: Map<string, string>): ScriptArgs {
   };
 }
 
-/** Compute median of a non-empty array of positive prices. */
-function median(prices: readonly number[]): number {
-  if (prices.length === 0) return 0;
-  const sorted = [...prices].sort((a, b) => a - b);
-  const mid = sorted.length >> 1;
-  if ((sorted.length & 1) === 1) return sorted[mid] ?? 0;
-  return ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2;
-}
-
-/**
- * Walk to the nearest bazaar terminal within `maxRadiusM`. Returns its
- * NetworkId on success, `null` if none is visible after `scanMs` (which
- * is the common case on a freshly-baked test cluster's mos_eisley spawn —
- * the script's role-loop should then log "no listings to arbitrage" and
- * idle rather than crash).
- */
 async function findAndApproachBazaar(
   ctx: ScriptContext,
   scanMs: number,
   maxRadiusM: number,
   log: (msg: string) => void,
 ): Promise<{ id: bigint; position: { x: number; z: number } } | null> {
-  const here = ctx.position();
-  const maxR2 = maxRadiusM * maxRadiusM;
   const deadline = Date.now() + scanMs;
   let pollMs = 200;
-
-  const pickNearest = (): WorldObject | undefined => {
-    let best: WorldObject | undefined;
-    let bestD2 = Number.POSITIVE_INFINITY;
-    for (const o of ctx.world.filter((w) => BAZAAR_TEMPLATE_RX.test(w.templateName ?? ''))) {
-      const dx = o.position.x - here.x;
-      const dz = o.position.z - here.z;
-      const d2 = dx * dx + dz * dz;
-      if (d2 > maxR2) continue;
-      if (d2 < bestD2) {
-        best = o;
-        bestD2 = d2;
-      }
-    }
-    return best;
-  };
-
   while (Date.now() < deadline && !ctx.signal.aborted) {
-    const nearest = pickNearest();
+    const nearest = findNearestByTemplate(ctx, BAZAAR_TEMPLATE_RX, { maxRadiusM });
     if (nearest !== undefined) {
+      const here = ctx.position();
       const dx = nearest.position.x - here.x;
       const dz = nearest.position.z - here.z;
       const dist = Math.hypot(dx, dz);
@@ -315,8 +289,8 @@ function makeScoutScenario(
         for (const [itemType, group] of byType) {
           const h = history.get(itemType) ?? [];
           if (h.length < 3) continue;
-          const med = median(h);
-          if (med <= 0) continue;
+          const med = medianOf(h);
+          if (med === null || med <= 0) continue;
           const threshold = med * args.buyThreshold;
           for (const l of group) {
             const eff = l.buyNowPrice > 0 ? l.buyNowPrice : l.highBid;

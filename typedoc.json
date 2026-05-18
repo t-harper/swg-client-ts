@@ -7,6 +7,7 @@
   "includeVersion": true,
   "readme": "docs/docs-portal-readme.md",
   "projectDocuments": [
+    "docs/player-handbook.md",
     "docs/scripting-quickref.md",
     "docs/views-reference.md",
     "docs/actions-reference.md",
@@ -26,6 +27,7 @@
     "Actions": "documents/Actions.html"
   },
   "sidebarLinks": {
+    "Player Handbook (start here)": "documents/Player_Handbook.html",
     "Wire reference": "documents/Wire-message_reference.html",
     "Scripting cookbook": "documents/Scripting_cookbook.html",
     "Examples walkthrough": "documents/Examples_walkthrough.html",

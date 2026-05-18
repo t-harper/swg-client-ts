@@ -416,6 +416,7 @@ the full `ScriptContext` API and the ObjController subtype dispatch.
 
 ## Reference
 
+- `docs/player-handbook.md` — **plain-English Player's Handbook** (14 chapters covering every aspect of a player — identity, sheet, position, mounts, travel, inventory, datapad, structures, world, crafting, combat, social, trade, fleets — with real captured snapshots from the live cluster)
 - `docs/scripting-quickref.md` — `ScriptContext` landing page (start here)
 - `docs/views-reference.md` — every always-on view (auto-generated)
 - `docs/actions-reference.md` — every method (auto-generated)

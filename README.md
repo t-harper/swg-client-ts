@@ -456,6 +456,7 @@ For tooling that reads SWG's binary asset files:
 - **`src/iff/`** — IFF (Interchange File Format) read + write. Use `Iff.fromFile(path)` to navigate FORM/chunk trees; `IffWriter` to build new IFFs.
 - **`src/tre/`** — SOE `.tre` archive read + write. Use `TreReader.fromFile('foo.tre').read('terrain/naboo.trn')` to pull a file out; `TreWriter` to build a fresh archive.
 - **`src/terrain/`** — TRN metadata reader + planet-general asset loader + empirical buildability probe + flat-patch grid search. Recommended entry: `loadPlanetTrn('naboo')` (transparently checks extracted-on-disk first, then `.tre` archive).
+- **`src/terrain/sim/`** — **offline** procedural terrain generator: full TypeScript port (~15 k LOC) of the C++ `sharedTerrain` + `sharedFractal` libraries (Ken Perlin MultiFractal + layer graph + height affectors + 4 boundary types). Use `loadPlanetTrnTemplate('naboo')` → `new ProceduralTerrainAppearance(template)` → `getHeight(x, z)` — no server round-trip. 27 planets covered; 281 unit tests. Drives `bin/find-flat-land.ts` (offline flattest-window search for player-city siting).
 
 Ground truth is the C++ source at `~/code/swg-main/src/` — never modified,
 always referenced.

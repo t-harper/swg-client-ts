@@ -41,7 +41,13 @@ import {
   SwgClient,
   type WorldObject,
 } from '../src/index.js';
-import { adminConsole, adminGodModeOn, adminPlanetWarp, adminSpawnInto } from './build-city/admin.js';
+import {
+  adminConsole,
+  adminGodModeOn,
+  adminPlanetWarp,
+  adminSpawnAtXYZ,
+  adminSpawnInto,
+} from './build-city/admin.js';
 import { AutoArrayCodec } from '../src/archive/containers.js';
 import type { IByteStream, IReadIterator } from '../src/archive/interface.js';
 import { StringCodec } from '../src/archive/string.js';
@@ -433,73 +439,64 @@ function makeScenario(args: Args, killController: { stop: boolean; reason: strin
     }
     await ctx.wait(750);
 
-    // 6b. Show-off jog to the cantina. The bot warps to (--x, --z) which is
-    // typically a hold-point outside the building; run to the cantina anchor
-    // (~3528, -4807 — the Mos Eisley cantina's buildout pos) with a flourish
-    // mid-route so anyone watching sees movement + animation, then settle
-    // there to play. Falls back to the warp position on any error.
-    //
-    // `adminPlanetWarp` inserts a fresh teleport-pending seq into the server's
-    // `m_teleportIds` for this character. walkTo auto-acks ONCE on its first
-    // invocation, but if any other teleport has happened since then the ack
-    // is already consumed — every subsequent client→server transform is
-    // silently rejected by `PlayerCreatureController::handleMove`'s
-    // `isTeleporting()` check and the bot appears frozen to watching clients.
-    // Force a re-ack here so the post-warp walkTo actually moves the player.
-    await ctx.ackPendingTeleports();
-
+    // 6b. Show-off hop to the cantina. The bot's initial warp lands at the
+    // user-supplied (--x, --z) hold-point; chain two more adminPlanetWarp
+    // hops with flourishes in between so anyone watching sees the bot
+    // pop-flourish-pop-flourish to the cantina anchor (~3528, -4807 — the
+    // Mos Eisley cantina's buildout pos). We use planetwarp instead of
+    // walkTo because walkTo's client→server CM_netUpdateTransform messages
+    // appear to get silently swallowed after an adminPlanetWarp even with
+    // an explicit ackPendingTeleports — the bot's log says "jogging" but
+    // watching clients see it frozen at the warp point. planetwarp goes
+    // through the server's authoritative `requestSceneWarp` path which
+    // always re-broadcasts the new position to every nearby observer.
     const CANTINA_X = 3528;
     const CANTINA_Z = -4807;
     try {
-      const stops = [
+      const hops = [
         { x: (args.x + CANTINA_X) / 2, z: (args.z + CANTINA_Z) / 2, flourish: 3 },
         { x: CANTINA_X, z: CANTINA_Z, flourish: 7 },
       ];
-      for (const stop of stops) {
-        alwaysLog(`jogging to (${stop.x.toFixed(0)}, ${stop.z.toFixed(0)})`);
-        await ctx.walkTo({ x: stop.x, z: stop.z });
-        ctx.useAbility('flourish', undefined, String(stop.flourish));
-        print(`flourish ${stop.flourish}`);
-        await ctx.wait(500);
+      for (const hop of hops) {
+        alwaysLog(`hopping to (${hop.x.toFixed(0)}, ${hop.z.toFixed(0)})`);
+        await adminPlanetWarp(ctx, args.planet, hop.x, 0, hop.z);
+        ctx.useAbility('flourish', undefined, String(hop.flourish));
+        print(`flourish ${hop.flourish}`);
+        await ctx.wait(750);
       }
       alwaysLog(`arrived at cantina (${CANTINA_X}, ${CANTINA_Z})`);
     } catch (err) {
       alwaysLog(
-        `WARNING: jog-to-cantina failed (${err instanceof Error ? err.message : String(err)}) — playing from warp spot instead`,
+        `WARNING: hop-to-cantina failed (${err instanceof Error ? err.message : String(err)}) — playing from warp spot instead`,
       );
     }
     await ctx.wait(500);
 
-    // 6c. Equip the fanfar to the bot's hold_r slot. `CreatureObject::
-    // getInstrumentAudioId` (CreatureObject.cpp:5457) only returns a non-zero
-    // audioId for hand-held instruments when they're in `hold_r` — and
-    // performance.java::startMusic (line 873-886) silently aborts with
-    // SID_MUSIC_NO_INSTRUMENT when audioId is 0. The result on watching
-    // clients: Bard stands silent.
-    //
-    // The radial `ITEM_EQUIP=12` doesn't work for instruments because
-    // instrument.java's OnObjectMenuRequest only registers `ITEM_USE` —
-    // there's no equip entry to select. The wire path the real client uses
-    // for an inventory→slot move is the `transferItemMisc` ground command:
-    //   target = fanfarOid
-    //   params = "<destOid> <arrangement>"
-    // where destOid = the slotted container that holds hold_r (= the
-    // player's own creature oid) and arrangement = 0 (the default
-    // arrangement slot index for a hand-held instrument, which maps to
-    // hold_r on the player creature's `equipment` slot configuration).
-    if (fanfarOid !== null) {
-      try {
-        const botOid = ctx.sceneStart.playerNetworkId.toString();
-        ctx.useAbility('transferItemMisc', fanfarOid, `${botOid} 0`);
-        alwaysLog(`equipped fanfar via transferItemMisc (oid=${fanfarOid.toString()} → ${botOid}/hold_r)`);
-        await ctx.wait(1_000);
-      } catch (err) {
-        alwaysLog(
-          `WARNING: equip fanfar failed (${err instanceof Error ? err.message : String(err)})`,
-        );
-      }
-    } else {
-      alwaysLog('WARNING: fanfar oid not captured — startMusic will fire without an instrument');
+    // 6c. Drop a floor-standing ommni_box at the cantina anchor for the
+    // visual ambiance. We TRIED having the bot play music via this
+    // instrument (path 2 of `CreatureObject::getInstrumentAudioId`, which
+    // resolves audioId from `getIntendedTarget()` when no weapon is in
+    // hold_r) but `CM_setIntendedTarget=1220` is NOT on the server's
+    // `ControllerMessageFactory::allowFromClient` registry — sending it
+    // from a client gets the session silently kicked (HackAttempts entry).
+    // Without a working intendedTarget set + no working in-slot equip
+    // path, the bot can't play actual audible music; the show-off jog
+    // around the cantina is what watching players see.
+    try {
+      const ommniOid = await adminSpawnAtXYZ(
+        ctx,
+        'object/tangible/instrument/ommni_box.iff',
+        CANTINA_X,
+        0,
+        CANTINA_Z,
+        { timeoutMs: 5_000 },
+      );
+      alwaysLog(`spawned ambient ommni_box at cantina (oid=${ommniOid.toString()})`);
+      await ctx.wait(500);
+    } catch (err) {
+      alwaysLog(
+        `WARNING: ommni_box ambient spawn failed (${err instanceof Error ? err.message : String(err)})`,
+      );
     }
 
     // 7. Set the in-game biography so players can /examine the bot to see

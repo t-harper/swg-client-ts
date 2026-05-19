@@ -15,6 +15,7 @@
  */
 
 import { ByteStream } from '../../archive/byte-stream.js';
+import { writeStdString } from '../../archive/string.js';
 import {
   AttributeListMessage,
   type AttributePair,
@@ -153,6 +154,7 @@ import {
 import { type LastNpcDialog, NpcConverseTracker, runNpcConversation } from '../npc-converse.js';
 import { SuiAutoResponder, type SuiAutoResponse, type SuiPage } from '../sui-auto.js';
 import { type BestKnownSample, SurveyCacheImpl, type SurveyLastResults } from '../survey-cache.js';
+import { type TerrainView, createTerrainView } from '../terrain-view.js';
 import {
   type CombatTimerHandle,
   type CombatTimerView,
@@ -682,6 +684,21 @@ export interface ScriptContext {
    */
   readonly location: LocationView;
   /**
+   * Offline procedural terrain for the current planet — get heights at any
+   * (x, z) without a live-server round-trip.
+   *
+   *   await ctx.terrain.getHeight(2800, -2800)          // current planet
+   *   await ctx.terrain.appearance()                    // cached appearance
+   *   await ctx.terrain.appearanceFor('rori')           // any planet
+   *
+   * Backed by `src/terrain/sim/` — the bit-exact TS port of the C++
+   * `sharedTerrain` + `sharedFractal` libraries. First call for a planet
+   * pays a 50-200 ms load (file I/O + IFF parse + generator prepare);
+   * subsequent calls hit the per-planet cache. Failed loads are NOT cached
+   * so a transient missing-asset error retries cleanly.
+   */
+  readonly terrain: TerrainView;
+  /**
    * Combat helpers — `targets()` (who's targeting us), `engaged` (heuristic
    * "we're in a fight"), `autoLoot` (auto-fire `loot` on creature death),
    * and `attackingNearest()` (sugar over nearestHostile + attackTarget loop).
@@ -930,6 +947,35 @@ export interface ScriptContext {
    *   - 'sitting'   → 'sit'
    */
   changePosture(posture: Posture): number;
+
+  /**
+   * Pick an NGE profession path on this character — the same wire flow the
+   * Windows client emits when you choose a class from the
+   * `ws_professiontemplateselect` UI mediator that appears via
+   * `respec.startNpcRespec` after clicking a respec token.
+   *
+   * Sends two ObjControllerMessages back-to-back:
+   *   1. CM_setProfessionTemplate (1116) with `skillTemplate`
+   *      (e.g. `"officer_1a"`, `"commando_1a"`, `"medic_1a"`)
+   *   2. CM_setCurrentWorkingSkill (1115) with `workingSkill`
+   *      (e.g. `"class_officer_phase1_novice"`)
+   *
+   * Fire-and-forget — the server does not send a direct reply, but the
+   * player's PLAY baseline updates with the new `m_skillTemplate` /
+   * `m_currentWorkingSkill` shortly after.
+   *
+   * Prefer passing `skillTemplate` + `workingSkill` at character creation
+   * via `fullLifecycle()` — those carry on `ClientCreateCharacterMessage`
+   * and avoid the in-game picker firing in the first place. Use this method
+   * only when you need to override an already-created character's path
+   * after zone-in.
+   *
+   * Template + working-skill pairs live in
+   * `dsrc/.../skill_template/skill_template.tab` — column 1 is the
+   * template name, column 5 has the comma-separated skill chain (first
+   * entry is the working skill).
+   */
+  setProfessionTemplate(skillTemplate: string, workingSkill: string): void;
 
   // --- Chat primitives ---
 
@@ -1912,6 +1958,13 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     position: () => ({ x: state.pose.x, y: state.pose.y, z: state.pose.z }),
   });
 
+  // Offline procedural terrain — `ctx.terrain.getHeight(x, z)` etc. Stateless
+  // wrt the dispatcher (no subscriptions, no detach handle); its only state
+  // is a per-planet appearance cache that's GC'd with the script context.
+  const terrainView = createTerrainView({
+    getCurrentPlanet: (): string => locationView.planet,
+  });
+
   const characterSheetHandle = createCharacterSheet({
     dispatcher: opts.dispatcher,
     playerNetworkId: opts.sceneStart.playerNetworkId,
@@ -2067,6 +2120,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     _missionsCache: missionsCache,
     survey: surveyCallable,
     location: locationView,
+    terrain: terrainView,
     sui: suiNamespace,
     npc: npcNamespace,
     bank: bankView,
@@ -2340,6 +2394,37 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
       return ctx.useAbility(POSTURE_COMMAND[posture]);
     },
 
+    setProfessionTemplate(skillTemplate, workingSkill): void {
+      const playerOid = opts.sceneStart.playerNetworkId;
+      // CM_setProfessionTemplate (1116) + CM_setCurrentWorkingSkill (1115)
+      // Trailer is a single std::string. Match the live Windows-client
+      // wire on 2026-05-18 byte-for-byte: flags=0x2b, value=0.
+      const SET_PROFESSION_TEMPLATE_FLAGS = 0x2b; // 0x01 | 0x02 | 0x08 | 0x20
+      const encodeStdString = (s: string): Uint8Array => {
+        const stream = new ByteStream();
+        writeStdString(stream, s);
+        return stream.toBytes();
+      };
+      ctx.send(
+        new ObjControllerMessage(
+          SET_PROFESSION_TEMPLATE_FLAGS,
+          ObjControllerSubtypeIds.CM_setProfessionTemplate,
+          playerOid,
+          0,
+          encodeStdString(skillTemplate),
+        ),
+      );
+      ctx.send(
+        new ObjControllerMessage(
+          SET_PROFESSION_TEMPLATE_FLAGS,
+          ObjControllerSubtypeIds.CM_setCurrentWorkingSkill,
+          playerOid,
+          0,
+          encodeStdString(workingSkill),
+        ),
+      );
+    },
+
     // --- Chat primitives ---
 
     nextChatSequence(): number {
@@ -2429,7 +2514,11 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
           m.message === ObjControllerSubtypeIds.CM_draftSchematicsMessage &&
           m.decodedSubtype?.kind === DraftSchematicsKind,
       });
-      return msg.decodedSubtype!.data as DraftSchematicsData;
+      const subtype = msg.decodedSubtype;
+      if (subtype === null || subtype === undefined) {
+        throw new Error('waitForDraftSchematics: missing decodedSubtype');
+      }
+      return subtype.data as DraftSchematicsData;
     },
 
     async waitForDraftSlots(waitOpts?: { timeoutMs?: number }): Promise<ManufactureSchematicData> {
@@ -2440,7 +2529,11 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
           m.message === ObjControllerSubtypeIds.CM_draftSlotsMessage &&
           m.decodedSubtype?.kind === ManufactureSchematicKind,
       });
-      return msg.decodedSubtype!.data as ManufactureSchematicData;
+      const subtype = msg.decodedSubtype;
+      if (subtype === null || subtype === undefined) {
+        throw new Error('waitForDraftSlots: missing decodedSubtype');
+      }
+      return subtype.data as ManufactureSchematicData;
     },
 
     assignCraftingSlot(
@@ -3020,7 +3113,11 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
         }
         throw err;
       }
-      const initiatorId = (requested.decodedSubtype!.data as TradeStartData).initiatorId;
+      const requestedSubtype = requested.decodedSubtype;
+      if (requestedSubtype === null || requestedSubtype === undefined) {
+        throw new Error('acceptIncomingTrade: missing decodedSubtype on trade request');
+      }
+      const initiatorId = (requestedSubtype.data as TradeStartData).initiatorId;
 
       if (acceptOpts?.decline === true) {
         sendTradeSubtype(ctx, playerId, {

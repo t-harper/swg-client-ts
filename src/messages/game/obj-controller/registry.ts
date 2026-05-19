@@ -327,4 +327,37 @@ export const ObjControllerSubtypeIds = {
    * (used at mount destruction). Trailer is empty.
    */
   CM_detachAllRidersForMount: 1205,
+  /**
+   * Client → server. Set the player's current working skill — the leaf of
+   * the NGE skill-template tree that the player is currently progressing
+   * toward (e.g. `class_officer_phase1_novice`). Sent by the live Windows
+   * client immediately after CM_setProfessionTemplate when the player picks
+   * a class from the in-client `ws_professiontemplateselect` UI mediator.
+   * Trailer is `std::string workingSkillName`.
+   *
+   * Source: GameControllerMessage.def:967 (explicit `// 1115` comment).
+   * Server handler: PlayerCreatureController::CM_setCurrentWorkingSkill
+   * forwards to PlayerObject::setCurrentWorkingSkill which writes the
+   * `m_currentWorkingSkill` PLAY baseline.
+   */
+  CM_setCurrentWorkingSkill: 1115,
+  /**
+   * Client → server. Set the player's NGE profession skill-template (e.g.
+   * `officer_1a`, `commando_1a`, `medic_1a`). Sent by the live Windows
+   * client when the player picks a class from the `ws_professiontemplateselect`
+   * UI mediator (which is itself opened by `respec.startNpcRespec` →
+   * `playUiEffect(player, "showMediator=ws_professiontemplateselect")`).
+   * Trailer is `std::string professionTemplate`.
+   *
+   * Server handler: PlayerCreatureController.cpp:1722-1730 →
+   * PlayerObject::setSkillTemplate (PlayerObject.cpp:6479) which writes the
+   * `m_skillTemplate` PLAY baseline and fires `TRIG_SKILL_TEMPLATE_CHANGED`.
+   *
+   * Source: GameControllerMessage.def:968,
+   * MessageQueueSelectProfessionTemplate.{cpp,h}.
+   *
+   * Wire format verified against a live Windows-client capture on 2026-05-18
+   * (officer pick) — see set-profession-template.test.ts golden bytes.
+   */
+  CM_setProfessionTemplate: 1116,
 } as const;

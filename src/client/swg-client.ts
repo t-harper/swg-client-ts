@@ -126,6 +126,25 @@ export interface FullLifecycleOptions {
   planet?: string;
   /** Profession on creation. Default 'combat_brawler'. */
   profession?: string;
+  /**
+   * NGE skill-template baked into the character at creation time (e.g.
+   * `"officer_1a"`, `"commando_1a"`, `"medic_1a"` — see
+   * `dsrc/.../skill_template/skill_template.tab`). Carried on the
+   * `ClientCreateCharacterMessage` wire so the player's `m_skillTemplate`
+   * PLAY baseline is set before zone-in — bypasses the in-client
+   * `ws_professiontemplateselect` picker that fresh characters otherwise
+   * get on first login. Pair with `workingSkill` (the starting skill of
+   * the template chain, e.g. `"class_officer_phase1_novice"`).
+   */
+  skillTemplate?: string;
+  /**
+   * The starting skill of the chosen `skillTemplate` chain (e.g.
+   * `"class_officer_phase1_novice"`). Sent in `ClientCreateCharacterMessage`
+   * alongside `skillTemplate`. Required for the bypass to fully stick —
+   * the server uses this to initialize the player's `m_currentWorkingSkill`
+   * PLAY baseline.
+   */
+  workingSkill?: string;
   /** How long to hold the zoned-in state before logging out. Default 5_000ms. */
   holdZonedInMs?: number;
   /**
@@ -289,6 +308,8 @@ export class SwgClient {
             name: opts.characterName,
             startingLocation: opts.planet ?? 'mos_eisley',
             profession: opts.profession ?? 'combat_brawler',
+            ...(opts.skillTemplate !== undefined ? { skillTemplate: opts.skillTemplate } : {}),
+            ...(opts.workingSkill !== undefined ? { workingSkill: opts.workingSkill } : {}),
           }
         : undefined;
     const picker =

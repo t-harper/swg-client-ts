@@ -15,6 +15,13 @@
 export { AttributeChangedDecoder, AttributeChangedKind } from './attribute-changed.js';
 export type { AttributeChangedData } from './attribute-changed.js';
 export {
+  SetCurrentWorkingSkillDecoder,
+  SetCurrentWorkingSkillKind,
+  SetProfessionTemplateDecoder,
+  SetProfessionTemplateKind,
+} from './set-profession-template.js';
+export type { ProfessionTemplateData } from './set-profession-template.js';
+export {
   AddAllowedDecoder,
   AddAllowedKind,
   AddBannedDecoder,

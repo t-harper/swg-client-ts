@@ -6,25 +6,26 @@
  *
  * Pipeline:
  *   1. Zone in on the requested planet.
- *   2. Load the planet's TRN metadata (`loadPlanetTrn`). Soft-fail with a
- *      clear setup hint if the asset isn't staged.
+ *   2. Load the planet's procedural terrain via `ctx.terrain.appearanceFor`.
+ *      Soft-fail with a clear setup hint if the asset isn't staged.
  *   3. Generate a candidate grid (`generateCandidateGrid`) of concentric
  *      rings around (centerX, centerZ).
- *   4. Score every candidate offline (flatnessScore = synthetic proxy from
- *      radial position + map bounds + global water table).
+ *   4. Score every candidate by sampling real terrain heights in a
+ *      configurable window around each spot via `appearance.scanHeights`.
+ *      Smaller `max - min` height range = flatter = higher score. Hard-
+ *      filter underwater spots (median below the global water table) and
+ *      cells that sit mostly on baked roads/rivers (NaN heights).
  *   5. Walk to the top-N by score, drop a probe deed via `probeBuildable`,
  *      and record whether the server accepted placement.
  *   6. Rank: buildable first, then by flatnessScore.
  *   7. Emit a JSON summary on stdout.
  *
- * The offline flatness score is intentionally synthetic — we don't decode
- * the full terrain heightmap (that's thousands of lines of fractal/affector
- * port). Instead we use:
- *   - distance from search center (closer = preferred for compact cities)
- *   - clearance from map edge (within the `mapWidth/2` boundary)
- *   - clearance above the global water table (if defined)
- * The probe itself is the source of truth for buildability; the score just
- * orders which candidates to spend probe-time on first.
+ * The flatness score is a real procedural-terrain measurement: `ctx.terrain`
+ * uses the bit-exact TS port of the C++ `sharedTerrain` + `sharedFractal`
+ * libraries at `src/terrain/sim/`, so the offline ranking matches what the
+ * live server's placement validator sees (modulo dynamic objects). The
+ * live probe remains the source of truth for buildability — the score just
+ * picks which candidates are worth spending probe-time on first.
  *
  * Example:
  *   LIVE=1 pnpm tsx scripts/examples/city-recon-surveyor.ts \
@@ -34,13 +35,13 @@
  *     --minutes=10
  */
 
-import type { FlatSpot, ScenarioFn, TrnMetadata } from '../../src/index.js';
-import {
-  generateCandidateGrid,
-  loadPlanetTrn,
-  parseTrnMetadata,
-  probeBuildable,
+import type {
+  FlatSpot,
+  ProceduralTerrainAppearance,
+  ScenarioFn,
+  ScriptContext,
 } from '../../src/index.js';
+import { generateCandidateGrid, probeBuildable } from '../../src/index.js';
 import { resolveInventoryOid } from '../build-city/place.js';
 import { durationMs, formatJson, makeLogger, parseCommonArgs, runScenario, usage } from './_lib.js';
 
@@ -56,6 +57,10 @@ interface ScriptArgs {
   probes: number;
   minSpacing: number;
   settleMs: number;
+  flatnessWindowM: number;
+  flatnessGridM: number;
+  maxHeightRangeM: number;
+  maxNanFraction: number;
 }
 
 function parseScriptArgs(extra: Map<string, string>): ScriptArgs {
@@ -69,6 +74,10 @@ function parseScriptArgs(extra: Map<string, string>): ScriptArgs {
     probes: Number.parseInt(extra.get('probes') ?? '10', 10),
     minSpacing: Number.parseFloat(extra.get('min-spacing') ?? '60'),
     settleMs: Number.parseInt(extra.get('settle-ms') ?? '4500', 10),
+    flatnessWindowM: Number.parseFloat(extra.get('flatness-window') ?? '30'),
+    flatnessGridM: Number.parseFloat(extra.get('flatness-grid') ?? '2'),
+    maxHeightRangeM: Number.parseFloat(extra.get('max-height-range') ?? '5'),
+    maxNanFraction: Number.parseFloat(extra.get('max-nan-fraction') ?? '0.3'),
   };
 }
 
@@ -76,8 +85,9 @@ interface ReconMeta {
   status: 'ok' | 'no-terrain-assets' | 'wrong-planet' | 'error';
   errorMessage: string | null;
   planet: string;
-  trn: { mapWidth: number; chunkWidth: number; waterHeight: number | null } | null;
+  terrain: { mapWidth: number; chunkWidth: number; waterHeight: number | null } | null;
   candidatesGenerated: number;
+  candidatesFiltered: number;
   candidatesScanned: number;
   candidatesBuildable: number;
   top5: CandidateScore[];
@@ -88,6 +98,9 @@ interface CandidateScore {
   x: number;
   z: number;
   flatnessScore: number;
+  heightRange: number | null;
+  medianHeight: number | null;
+  nanFraction: number;
   isBuildable: boolean | null;
   terrainHeight: number | null;
   probeNotes: string;
@@ -96,36 +109,78 @@ interface CandidateScore {
 interface ScoredCandidate {
   spot: FlatSpot;
   flatnessScore: number;
+  heightRange: number | null;
+  medianHeight: number | null;
+  nanFraction: number;
 }
 
-function tryLoadPlanetMetadata(planet: string): { trn: TrnMetadata | null; error: string | null } {
-  try {
-    const bytes = loadPlanetTrn(planet);
-    return { trn: parseTrnMetadata(bytes), error: null };
-  } catch (err) {
-    return { trn: null, error: err instanceof Error ? err.message : String(err) };
-  }
-}
-
-function scoreCandidates(
+/**
+ * Score every candidate by sampling real terrain heights in a window around
+ * each spot. Hard-filters underwater + heavily-NaN (road/river) candidates
+ * to zero. Combines flatness (primary) with the existing radial + edge
+ * preferences as secondary tiebreakers.
+ */
+async function scoreCandidatesWithTerrain(
   spots: readonly FlatSpot[],
-  trn: TrnMetadata | null,
-  centerX: number,
-  centerZ: number,
-  maxRadius: number,
-): ScoredCandidate[] {
-  const halfMap = trn !== null ? trn.mapWidth / 2 : Number.POSITIVE_INFINITY;
+  ctx: ScriptContext,
+  args: ScriptArgs,
+  mapWidth: number,
+  waterHeight: number | null,
+): Promise<ScoredCandidate[]> {
+  const appearance = await ctx.terrain.appearance();
+  const halfMap = mapWidth / 2;
+  const cellsPerSide = Math.max(2, Math.ceil(args.flatnessWindowM / args.flatnessGridM));
+  const cellSize = args.flatnessGridM;
+
   const out: ScoredCandidate[] = [];
   for (const spot of spots) {
-    const dx = spot.x - centerX;
-    const dz = spot.z - centerZ;
+    const originX = spot.x - (cellsPerSide * cellSize) / 2;
+    const originZ = spot.z - (cellsPerSide * cellSize) / 2;
+    const heights = appearance.scanHeights(originX, originZ, cellsPerSide, cellsPerSide, cellSize);
+
+    const nonNan: number[] = [];
+    for (let i = 0; i < heights.length; ++i) {
+      const h = heights[i] as number;
+      if (Number.isNaN(h)) continue;
+      nonNan.push(h);
+    }
+    const nanFraction = 1 - nonNan.length / heights.length;
+    let heightRange: number | null = null;
+    let medianHeight: number | null = null;
+    if (nonNan.length > 0) {
+      nonNan.sort((a, b) => a - b);
+      const first = nonNan[0];
+      const last = nonNan[nonNan.length - 1];
+      const mid = nonNan[Math.floor(nonNan.length / 2)];
+      if (first !== undefined && last !== undefined && mid !== undefined) {
+        heightRange = last - first;
+        medianHeight = mid;
+      }
+    }
+
+    const dx = spot.x - args.centerX;
+    const dz = spot.z - args.centerZ;
     const radialDist = Math.sqrt(dx * dx + dz * dz);
-    const radialFactor = maxRadius <= 0 ? 1 : 1 - radialDist / maxRadius;
+    const radialFactor = args.maxRadius <= 0 ? 1 : Math.max(0, 1 - radialDist / args.maxRadius);
     const edgeMargin = Math.min(halfMap - Math.abs(spot.x), halfMap - Math.abs(spot.z));
-    const edgeFactor =
-      edgeMargin === Number.POSITIVE_INFINITY ? 1 : Math.max(0, Math.min(1, edgeMargin / 500));
-    const flatnessScore = Math.max(0, radialFactor * 0.6 + edgeFactor * 0.4);
-    out.push({ spot, flatnessScore });
+    const edgeFactor = Math.max(0, Math.min(1, edgeMargin / 500));
+
+    let flatnessScore = 0;
+    const underwater = waterHeight !== null && medianHeight !== null && medianHeight <= waterHeight;
+    const passesFilters =
+      heightRange !== null &&
+      heightRange <= args.maxHeightRangeM &&
+      nanFraction <= args.maxNanFraction &&
+      !underwater;
+    if (passesFilters && heightRange !== null) {
+      // Smaller range → flatter → higher score. 0 m → 1.0, 1 m → 0.5,
+      // 5 m → 0.17, 10 m → 0.09. Combined with secondary preferences.
+      const flatnessFactor = 1 / (1 + heightRange);
+      flatnessScore =
+        flatnessFactor * 0.6 + (1 - nanFraction) * 0.2 + radialFactor * 0.15 + edgeFactor * 0.05;
+    }
+
+    out.push({ spot, flatnessScore, heightRange, medianHeight, nanFraction });
   }
   return out;
 }
@@ -163,25 +218,22 @@ function buildScenario(
       return;
     }
 
-    const { trn, error } = tryLoadPlanetMetadata(planet);
-    if (trn === null) {
+    let appearance: ProceduralTerrainAppearance;
+    try {
+      appearance = await ctx.terrain.appearanceFor(planet);
+    } catch (err) {
       meta.status = 'no-terrain-assets';
       meta.errorMessage =
-        `Could not load TRN metadata for '${planet}': ${error ?? 'unknown'}. ` +
+        `Could not load TRN for '${planet}': ${err instanceof Error ? err.message : String(err)}. ` +
         `Stage assets/terrain/${planet}.trn (see assets/README.md) or set SWG_TRE_PATH.`;
       log(meta.errorMessage);
       await ctx.logout();
       return;
     }
-    meta.trn = {
-      mapWidth: trn.mapWidth,
-      chunkWidth: trn.chunkWidth,
-      waterHeight: trn.globalWaterHeight,
-    };
+    const { mapWidth, chunkWidth, globalWaterHeight } = appearance.template;
+    meta.terrain = { mapWidth, chunkWidth, waterHeight: globalWaterHeight };
     log(
-      `${planet}: mapWidth=${trn.mapWidth}m chunkWidth=${trn.chunkWidth}m water=${
-        trn.globalWaterHeight ?? 'none'
-      }`,
+      `${planet}: mapWidth=${mapWidth}m chunkWidth=${chunkWidth}m water=${globalWaterHeight ?? 'none'}`,
     );
 
     const candidates = generateCandidateGrid({
@@ -194,12 +246,23 @@ function buildScenario(
     meta.candidatesGenerated = candidates.length;
     log(`generated ${candidates.length} candidates (rings=${args.rings}×${args.angularSteps})`);
 
-    const scored = scoreCandidates(candidates, trn, args.centerX, args.centerZ, args.maxRadius);
-    scored.sort((a, b) => b.flatnessScore - a.flatnessScore);
+    const scored = await scoreCandidatesWithTerrain(
+      candidates,
+      ctx,
+      args,
+      mapWidth,
+      globalWaterHeight,
+    );
+    const acceptable = scored.filter((c) => c.flatnessScore > 0);
+    meta.candidatesFiltered = scored.length - acceptable.length;
+    log(
+      `terrain-filtered ${meta.candidatesFiltered}/${scored.length} candidates (range>${args.maxHeightRangeM}m, nan>${args.maxNanFraction}, or underwater); ${acceptable.length} acceptable`,
+    );
+    acceptable.sort((a, b) => b.flatnessScore - a.flatnessScore);
 
     const chosen: FlatSpot[] = [];
     const toProbe: ScoredCandidate[] = [];
-    for (const cand of scored) {
+    for (const cand of acceptable) {
       if (toProbe.length >= args.probes) break;
       if (tooClose(cand.spot, chosen, args.minSpacing)) continue;
       chosen.push(cand.spot);
@@ -217,7 +280,7 @@ function buildScenario(
       }
       const cand = toProbe[i];
       if (cand === undefined) continue;
-      const { spot, flatnessScore } = cand;
+      const { spot, flatnessScore, heightRange, medianHeight, nanFraction } = cand;
 
       try {
         await ctx.walkTo({ x: spot.x, z: spot.z });
@@ -227,7 +290,7 @@ function buildScenario(
       const terrainHeight = ctx.position().y;
 
       log(
-        `probe ${i + 1}/${toProbe.length}: (${spot.x.toFixed(1)}, ${spot.z.toFixed(1)}) y=${terrainHeight.toFixed(2)} score=${flatnessScore.toFixed(3)}`,
+        `probe ${i + 1}/${toProbe.length}: (${spot.x.toFixed(1)}, ${spot.z.toFixed(1)}) y=${terrainHeight.toFixed(2)} range=${heightRange?.toFixed(2) ?? 'n/a'}m nan=${(nanFraction * 100).toFixed(0)}% score=${flatnessScore.toFixed(3)}`,
       );
 
       let isBuildable: boolean | null = null;
@@ -247,6 +310,9 @@ function buildScenario(
         x: spot.x,
         z: spot.z,
         flatnessScore,
+        heightRange,
+        medianHeight,
+        nanFraction,
         isBuildable,
         terrainHeight,
         probeNotes,
@@ -290,6 +356,10 @@ async function main(): Promise<number> {
       '  --probes=N               top-N to probe via live server (default 10)',
       '  --min-spacing=N          min metres between probed spots (default 60)',
       '  --settle-ms=N            ms to wait for probe rejection chat (default 4500)',
+      '  --flatness-window=N      side length (m) of the offline height sample window (default 30)',
+      '  --flatness-grid=N        sample spacing (m) inside the window (default 2 → 16×16 samples)',
+      '  --max-height-range=N     hard reject candidates whose window range exceeds this (m, default 5)',
+      '  --max-nan-fraction=N     hard reject candidates whose window is >N fraction NaN (default 0.3)',
     ]);
     return 0;
   }
@@ -299,8 +369,9 @@ async function main(): Promise<number> {
     status: 'error',
     errorMessage: null,
     planet: script.planet,
-    trn: null,
+    terrain: null,
     candidatesGenerated: 0,
+    candidatesFiltered: 0,
     candidatesScanned: 0,
     candidatesBuildable: 0,
     top5: [],

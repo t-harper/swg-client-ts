@@ -32,3 +32,9 @@ export { DEFAULT_PROBE_DEED, probeBuildable } from './probe.js';
 
 export type { FindFlatPatchOptions, FlatSpot } from './find-flat-patch.js';
 export { findFlatPatch, generateCandidateGrid } from './find-flat-patch.js';
+
+// Procedural terrain simulator — bit-exact port of the C++ `sharedTerrain` +
+// `sharedFractal` libraries. Computes per-(x, z) heights for any planet
+// offline (no live-server round-trip). See `./sim/index.ts` for the
+// curated public surface.
+export * from './sim/index.js';

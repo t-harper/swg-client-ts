@@ -24,10 +24,8 @@
  * Defaults are tuned for build-city's MVP city plot (~750 m windowed).
  */
 
-import {
-  loadPlanetTrnTemplate,
-  ProceduralTerrainAppearance,
-} from '../src/terrain/sim/index.js';
+import type { ProceduralTerrainTemplate } from '../src/index.js';
+import { ProceduralTerrainAppearance, loadPlanetTrnTemplate } from '../src/index.js';
 
 interface Args {
   planet: string;
@@ -55,11 +53,21 @@ function parseArgs(argv: string[]): Args {
     const key = eq < 0 ? arg.slice(2) : arg.slice(2, eq);
     const val = eq < 0 ? 'true' : arg.slice(eq + 1);
     switch (key) {
-      case 'planet': a.planet = val; break;
-      case 'window': a.windowM = Number.parseInt(val, 10); break;
-      case 'grid': a.gridM = Number.parseInt(val, 10); break;
-      case 'range': a.rangeM = Number.parseInt(val, 10); break;
-      case 'top': a.top = Number.parseInt(val, 10); break;
+      case 'planet':
+        a.planet = val;
+        break;
+      case 'window':
+        a.windowM = Number.parseInt(val, 10);
+        break;
+      case 'grid':
+        a.gridM = Number.parseInt(val, 10);
+        break;
+      case 'range':
+        a.rangeM = Number.parseInt(val, 10);
+        break;
+      case 'top':
+        a.top = Number.parseInt(val, 10);
+        break;
       default:
         process.stderr.write(`unknown flag --${key}\n`);
         process.exit(2);
@@ -74,28 +82,31 @@ function parseArgs(argv: string[]): Args {
  *
  * Sources: SWG community wiki coords, cross-checked against `starting_locations.iff`.
  */
-const NPC_CITIES: Record<string, ReadonlyArray<{ name: string; x: number; z: number; radius: number }>> = {
+const NPC_CITIES: Record<
+  string,
+  ReadonlyArray<{ name: string; x: number; z: number; radius: number }>
+> = {
   naboo: [
-    { name: 'Theed',         x: -5000, z:  4200, radius: 1000 },
-    { name: 'Moenia',        x:  4800, z: -4700, radius:  700 },
-    { name: "Dee'ja Peak",   x:  5200, z:  2400, radius: 1200 },
-    { name: 'Keren',          x:  1500, z:  2700, radius:  600 },
-    { name: 'Kaadara',        x:  5200, z:  6700, radius:  500 },
+    { name: 'Theed', x: -5000, z: 4200, radius: 1000 },
+    { name: 'Moenia', x: 4800, z: -4700, radius: 700 },
+    { name: "Dee'ja Peak", x: 5200, z: 2400, radius: 1200 },
+    { name: 'Keren', x: 1500, z: 2700, radius: 600 },
+    { name: 'Kaadara', x: 5200, z: 6700, radius: 500 },
   ],
   tatooine: [
-    { name: 'Mos Eisley',     x:  3528, z: -4804, radius:  800 },
-    { name: 'Mos Espa',       x: -2926, z:  2129, radius:  800 },
-    { name: 'Bestine',        x: -1300, z: -3590, radius:  700 },
-    { name: 'Anchorhead',     x:    37, z:  -5300, radius:  500 },
-    { name: 'Wayfar',         x: -5188, z:  -6700, radius:  400 },
-    { name: 'Mos Entha',      x:  1300, z:  3100, radius:  600 },
+    { name: 'Mos Eisley', x: 3528, z: -4804, radius: 800 },
+    { name: 'Mos Espa', x: -2926, z: 2129, radius: 800 },
+    { name: 'Bestine', x: -1300, z: -3590, radius: 700 },
+    { name: 'Anchorhead', x: 37, z: -5300, radius: 500 },
+    { name: 'Wayfar', x: -5188, z: -6700, radius: 400 },
+    { name: 'Mos Entha', x: 1300, z: 3100, radius: 600 },
   ],
   corellia: [
-    { name: 'Coronet',        x: -130,  z: -4720, radius: 1100 },
-    { name: 'Tyrena',         x: -5400, z: -2700, radius:  600 },
-    { name: 'Kor Vella',      x: -3149, z:  2796, radius:  500 },
-    { name: 'Doaba Guerfel',  x:  3300, z:  5500, radius:  500 },
-    { name: 'Bela Vistal',    x:  6675, z: -5710, radius:  500 },
+    { name: 'Coronet', x: -130, z: -4720, radius: 1100 },
+    { name: 'Tyrena', x: -5400, z: -2700, radius: 600 },
+    { name: 'Kor Vella', x: -3149, z: 2796, radius: 500 },
+    { name: 'Doaba Guerfel', x: 3300, z: 5500, radius: 500 },
+    { name: 'Bela Vistal', x: 6675, z: -5710, radius: 500 },
   ],
 };
 
@@ -115,7 +126,7 @@ async function main(): Promise<number> {
   );
 
   // 1. Load the planet template.
-  let template;
+  let template: ProceduralTerrainTemplate;
   try {
     template = await loadPlanetTrnTemplate(args.planet);
   } catch (err) {
@@ -139,7 +150,9 @@ async function main(): Promise<number> {
   const scanStart = Date.now();
   const heights = appearance.scanHeights(originX, originZ, gridSize, gridSize, args.gridM);
   const scanMs = Date.now() - scanStart;
-  process.stderr.write(`[find-flat-land] scan done in ${scanMs}ms (${(scanMs / heights.length).toFixed(2)}ms/cell)\n`);
+  process.stderr.write(
+    `[find-flat-land] scan done in ${scanMs}ms (${(scanMs / heights.length).toFixed(2)}ms/cell)\n`,
+  );
 
   // Helper: index into the heights array.
   const idx = (xi: number, zi: number): number => zi * gridSize + xi;
@@ -161,15 +174,18 @@ async function main(): Promise<number> {
   for (let cz = halfWindowCells; cz < gridSize - halfWindowCells; cz++) {
     for (let cx = halfWindowCells; cx < gridSize - halfWindowCells; cx++) {
       // Window cell range.
-      let min = Infinity;
-      let max = -Infinity;
+      let min = Number.POSITIVE_INFINITY;
+      let max = Number.NEGATIVE_INFINITY;
       let sum = 0;
       let count = 0;
       let hasNaN = false;
       for (let dz = -halfWindowCells; dz <= halfWindowCells; dz++) {
         for (let dx = -halfWindowCells; dx <= halfWindowCells; dx++) {
           const h = heights[idx(cx + dx, cz + dz)] as number;
-          if (Number.isNaN(h)) { hasNaN = true; break; }
+          if (Number.isNaN(h)) {
+            hasNaN = true;
+            break;
+          }
           if (h < min) min = h;
           if (h > max) max = h;
           sum += h;

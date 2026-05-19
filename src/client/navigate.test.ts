@@ -775,6 +775,79 @@ describe('planNavigate', () => {
       }
     });
 
+    it('multi-portal destination cell uses the door centroid for cell-local entry', () => {
+      // Building layout: 0 (exterior) ↔ 1 (foyer) ↔ 2 (back room).
+      // Cell 1 has TWO portals — one to exterior at x=+3, one to cell 2 at
+      // x=-3. The centroid of these two door positions is (0,0,0). The
+      // entry for the 0→1 hop should land at the centroid, NOT at the door
+      // ±2m along the (sign-ambiguous) inward normal.
+      const { ctx, buildingId } = setupBuildingMulti([1, 2]);
+      const layout = buildPortalLayout(3, [
+        { a: 0, b: 1, doorInA: { x: 3, y: 0, z: 0 }, doorInB: { x: 3, y: 0, z: 0 } },
+        { a: 1, b: 2, doorInA: { x: -3, y: 0, z: 1 }, doorInB: { x: -3, y: 0, z: 1 } },
+      ]);
+      const cellPath = buildCellPathHops(layout, [0, 1]);
+      const plan = planNavigateSync(
+        {
+          world: ctx.world,
+          position: { x: 0, y: 0, z: 0 },
+          currentCell: null,
+          mountCapMps: null,
+          vehiclePcdIds: [],
+        },
+        { buildingId, cellName: 'cell1' },
+        {},
+        layout,
+        cellPath,
+      );
+      const portalStep = plan.steps.find((s) => s.kind === 'walkThroughPortal');
+      expect(portalStep).toBeDefined();
+      if (portalStep?.kind === 'walkThroughPortal') {
+        // Centroid of cell 1's two door positions: ((3 + -3)/2, (0+0)/2, (0+1)/2) = (0, 0, 0.5).
+        expect(portalStep.toCellLocalEntry.x).toBeCloseTo(0, 3);
+        expect(portalStep.toCellLocalEntry.z).toBeCloseTo(0.5, 3);
+      }
+    });
+
+    it('single-portal destination uses source-cell centroid as inward direction', () => {
+      // Building layout: 0 (exterior) ↔ 1 (foyer w/ 2 portals) ↔ 2 (alcove,
+      // single portal). The 1→2 hop's destination (cell 2) has only one
+      // portal, so the centroid heuristic doesn't apply on the destination
+      // side; instead we offset 2m along the (door - sourceCentroid)
+      // direction.
+      const { ctx, buildingId } = setupBuildingMulti([1, 2]);
+      const layout = buildPortalLayout(3, [
+        // Cell 1 has two portals: one at x=+3 (to exterior) and one at x=-3 (to alcove).
+        { a: 0, b: 1, doorInA: { x: 3, y: 0, z: 0 }, doorInB: { x: 3, y: 0, z: 0 } },
+        { a: 1, b: 2, doorInA: { x: -3, y: 0, z: 0 }, doorInB: { x: -3, y: 0, z: 0 } },
+      ]);
+      const cellPath = buildCellPathHops(layout, [0, 1, 2]);
+      const plan = planNavigateSync(
+        {
+          world: ctx.world,
+          position: { x: 0, y: 0, z: 0 },
+          currentCell: null,
+          mountCapMps: null,
+          vehiclePcdIds: [],
+        },
+        { buildingId, cellName: 'cell2' },
+        {},
+        layout,
+        cellPath,
+      );
+      const portalSteps = plan.steps.filter((s) => s.kind === 'walkThroughPortal');
+      expect(portalSteps).toHaveLength(2);
+      // Second hop (1→2): source-cell centroid is cell 1's portal-door
+      // centroid = ((3 + -3)/2, ?, (0+0)/2) = (0, 0, 0). Door on B side is
+      // (-3, 0, 0). Direction (door - sourceCentroid) normalized = (-1, 0).
+      // Entry = (-3, 0, 0) + (-1, 0)*2 = (-5, 0, 0).
+      const hop2 = portalSteps[1];
+      if (hop2?.kind === 'walkThroughPortal') {
+        expect(hop2.toCellLocalEntry.x).toBeCloseTo(-5, 1);
+        expect(hop2.toCellLocalEntry.z).toBeCloseTo(0, 1);
+      }
+    });
+
     it('portalWorld ≈ building.position + rotated(door + outwardNormal*1m)', () => {
       const buildingX = 50;
       const buildingZ = -30;

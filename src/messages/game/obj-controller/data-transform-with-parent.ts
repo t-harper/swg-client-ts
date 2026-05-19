@@ -3,10 +3,16 @@
  * bidirectional. Cell-relative variant of CM_netUpdateTransform. Used when
  * the player (or any creature) is parented to a cell (inside a building).
  *
- * Wire layout (trailer only):
- *   [NetworkId]      parentCell       (u64)
+ * Wire layout (trailer only) — order MUST match the C++ pack order in
+ * `MessageQueueDataTransformWithParent::pack`. The fields are written in
+ * this exact order; getting it wrong produces "depersist into a cell that
+ * does not exist" warnings server-side (the server's reader picks our
+ * parentCell bytes off as syncStamp+sequenceNumber, then reads our
+ * syncStamp+sequenceNumber bytes as the parent NetworkId — yielding huge
+ * bogus cell IDs in the warning log):
  *   [u32]            syncStamp
  *   [i32]            sequenceNumber
+ *   [NetworkId]      parentCell       (u64)
  *   [Quaternion]     rotation         (4 × f32; cell-local frame)
  *   [Vector3]        position         (3 × f32; cell-local frame, meters)
  *   [f32]            speed
@@ -15,6 +21,8 @@
  *
  * Source:
  *   /home/tharper/code/swg-main/src/engine/shared/library/sharedNetworkMessages/src/shared/clientGameServer/MessageQueueDataTransformWithParent.cpp
+ *   (pack at line 44 — syncStamp, sequenceNumber, parent, transform, speed,
+ *   lookAtYaw, useLookAtYaw)
  */
 
 import type { IByteStream, IReadIterator } from '../../../archive/interface.js';
@@ -42,9 +50,9 @@ export const NetUpdateTransformWithParentDecoder =
     kind: NetUpdateTransformWithParentKind,
     subtypeId: ObjControllerSubtypeIds.CM_netUpdateTransformWithParent,
     encode(stream: IByteStream, data: NetUpdateTransformWithParentData): void {
-      NetworkIdCodec.encode(stream, data.parentCell);
       stream.writeU32(data.syncStamp >>> 0);
       stream.writeI32(data.sequenceNumber);
+      NetworkIdCodec.encode(stream, data.parentCell);
       QuaternionCodec.encode(stream, data.rotation);
       Vector3Codec.encode(stream, data.position);
       stream.writeF32(data.speed);
@@ -52,9 +60,9 @@ export const NetUpdateTransformWithParentDecoder =
       stream.writeU8(data.useLookAtYaw ? 1 : 0);
     },
     decode(iter: IReadIterator): NetUpdateTransformWithParentData {
-      const parentCell = NetworkIdCodec.decode(iter);
       const syncStamp = iter.readU32();
       const sequenceNumber = iter.readI32();
+      const parentCell = NetworkIdCodec.decode(iter);
       const rotation = QuaternionCodec.decode(iter);
       const position = Vector3Codec.decode(iter);
       const speed = iter.readF32();

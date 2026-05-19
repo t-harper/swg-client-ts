@@ -750,6 +750,15 @@ async function main(): Promise<number> {
       account: args.user,
       characterName: args.character,
       planet: args.planet,
+      // NGE medic class baked in at create-time — bypasses the in-game
+      // `ws_professiontemplateselect` picker that fresh characters
+      // otherwise get on first zone-in. Carried on
+      // ClientCreateCharacterMessage so the PlayerObject's m_skillTemplate
+      // baseline is set before zone-in. No-op when the named character
+      // already exists.
+      skillTemplate: 'medic_1a',
+      workingSkill: 'class_medic_phase1_novice',
+      profession: 'science_medic',
       // The script runs its own loop (until SIGINT or in-game `kill`) and
       // calls ctx.logout() before returning. Game-stage's post-script sleep
       // is computed as max(0, holdZonedInMs - scriptElapsed); after a

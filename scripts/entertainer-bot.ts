@@ -657,6 +657,15 @@ async function main(): Promise<void> {
       account: args.user,
       characterName: args.character,
       planet: 'mos_eisley',
+      // NGE entertainer class baked in at create-time — bypasses the
+      // in-game `ws_professiontemplateselect` picker that fresh
+      // characters otherwise get on first zone-in. Carried on
+      // ClientCreateCharacterMessage so the PlayerObject's m_skillTemplate
+      // baseline is set before zone-in. No-op when the named character
+      // already exists.
+      skillTemplate: 'entertainer_1a',
+      workingSkill: 'class_entertainer_phase1_novice',
+      profession: 'social_entertainer',
       holdZonedInMs: 10_000,
       script: makeScenario(args, killController),
     });

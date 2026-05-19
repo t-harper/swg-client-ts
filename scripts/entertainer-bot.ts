@@ -482,77 +482,40 @@ function makeScenario(args: Args, killController: { stop: boolean; reason: strin
 
     // 6c. Enter the cantina via ctx.navigate. The buildingId is the static
     // BUIO OID from `tatooine_6_2_ws.tab` (preserved verbatim at runtime);
-    // cellName='' picks the first public cell (the main floor). Navigate
-    // handles the cell-relative walkToCell after the outdoor walkTo lands
-    // us at the building anchor.
+    // cellName='' picks the first public cell. Track D's portal-aware planner
+    // walks us through the door + re-parents the CREO inside the cell.
     try {
       alwaysLog(`entering cantina (building oid=${CANTINA_BUILDING_OID.toString()})`);
-      await ctx.navigate({
-        buildingId: CANTINA_BUILDING_OID,
-        cellName: '',
-      }, { useMount: 'never' });
-      alwaysLog('inside cantina');
+      await ctx.navigate({ buildingId: CANTINA_BUILDING_OID, cellName: '' }, { useMount: 'never' });
+      const cell = ctx.location.cell;
+      if (cell !== null && cell.buildingId === CANTINA_BUILDING_OID) {
+        alwaysLog(`inside cantina cell ✓ (cellName=${cell.cellName ?? 'public'}, cellNumber=${cell.cellNumber})`);
+      } else {
+        alwaysLog(`WARNING: navigate returned but ctx.location.cell is ${cell === null ? 'null (outdoors)' : 'wrong building'}; continuing outside`);
+      }
     } catch (err) {
-      alwaysLog(
-        `WARNING: cantina entry failed (${err instanceof Error ? err.message : String(err)}) — playing from outside`,
-      );
+      alwaysLog(`WARNING: cantina entry failed (${err instanceof Error ? err.message : String(err)}); continuing outside`);
     }
     await ctx.wait(500);
 
-    // 6d. Equip the fanfar to hold_r. The wire path uses one of three
-    // ground commands depending on which slot the item lands in:
-    //   - `transferItemMisc`  → routed if `isGoingInWeaponSlot=false`
-    //     (i.e. arrangement<=0 OR arrangement's slots don't include
-    //     hold_r/hold_l)
-    //   - `transferItemWeapon` → routed if `isGoingInWeaponSlot=true`
-    //     (arrangement>0 AND slots include hold_r/hold_l)
-    //   - `transferItemArmor` → routed for armor pieces specifically
-    //
-    // We don't know the right arrangement index a priori — the fanfar's
-    // arrangementDescriptor only declares one ARG ([hold_r]) but the wire
-    // index might be 0 or 1. Try the combinations until the fanfar's
-    // WorldModel containerId moves from inventory (`playerOid + 1`) to the
-    // player creature (`playerOid`), which means hold_r equip stuck.
+    // 6d. Equip the fanfar to hold_r. We verified live that
+    // `transferItemWeapon arr=4` is the path the server accepts for this
+    // fanfar template (the wire's `isGoingInWeaponSlot=true` route).
     if (fanfarOid !== null) {
-      const botOid = ctx.sceneStart.playerNetworkId;
-      const attempts: Array<[string, number]> = [
-        ['transferItemMisc', 0],
-        ['transferItemWeapon', 1],
-        ['transferItemMisc', 1],
-        ['transferItemWeapon', 4],
-        ['transferItemMisc', 4],
-        ['transferItemWeapon', 0],
-      ];
-      let equipped = false;
-      for (const [cmd, arrangement] of attempts) {
-        try {
-          ctx.useAbility(cmd, fanfarOid, `${botOid.toString()} ${arrangement}`);
-          await ctx.wait(1_500);
-          const fanfarObj = ctx.world.get(fanfarOid);
-          const containerNow = fanfarObj?.containerId ?? 0n;
-          if (containerNow === botOid) {
-            alwaysLog(
-              `equipped fanfar to hold_r via ${cmd} arr=${arrangement} ✓ (containerId=playerOid)`,
-            );
-            equipped = true;
-            break;
-          }
-          print(
-            `equip attempt ${cmd}/arr=${arrangement} didn't stick (containerId=${containerNow.toString()})`,
-          );
-        } catch (err) {
-          print(
-            `equip attempt ${cmd}/arr=${arrangement} threw: ${err instanceof Error ? err.message : String(err)}`,
-          );
+      try {
+        const botOid = ctx.sceneStart.playerNetworkId;
+        ctx.useAbility('transferItemWeapon', fanfarOid, `${botOid.toString()} 4`);
+        await ctx.wait(1_500);
+        const fanfarObj = ctx.world.get(fanfarOid);
+        const containerNow = fanfarObj?.containerId ?? 0n;
+        if (containerNow === botOid) {
+          alwaysLog('equipped fanfar to hold_r ✓');
+        } else {
+          alwaysLog(`WARNING: equip didn't take — fanfar containerId=${containerNow.toString()}`);
         }
+      } catch (err) {
+        alwaysLog(`WARNING: equip fanfar failed (${err instanceof Error ? err.message : String(err)})`);
       }
-      if (!equipped) {
-        alwaysLog(
-          `WARNING: none of ${attempts.length} equip attempts stuck — startMusic will fail`,
-        );
-      }
-    } else {
-      alwaysLog('WARNING: fanfar oid not captured — startMusic will fail');
     }
 
     // 7. Set the in-game biography so players can /examine the bot to see

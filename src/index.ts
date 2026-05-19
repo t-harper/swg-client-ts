@@ -831,6 +831,42 @@ export {
 } from './iff/index.js';
 
 // =============================================================================
+// STF (localized string-table) reader. Parses `.stf` files into a flat
+// `key → string` map. The `StringKBImpl` wrapper (see Knowledge below) is
+// the lazy + cached + asset-path-aware consumer most callers want.
+// =============================================================================
+export { parseStf } from './iff/stf-reader.js';
+export type { StfTable } from './iff/stf-reader.js';
+
+// =============================================================================
+// Knowledge — process-wide shared in-memory index of offline game-data
+// lookups (terrain templates, STF strings, more lenses to come). One
+// `Knowledge` instance per process; every `SwgClient` / `ScriptContext`
+// reads through it, so two clients asking for the same planet's terrain
+// or the same STF file share the same `Promise` and the same resolved
+// data. Tests construct their own `new KnowledgeImpl()` for isolation;
+// production uses the module-level `defaultKnowledge` singleton.
+// =============================================================================
+export { KnowledgeImpl, TerrainKBImpl, defaultKnowledge } from './client/knowledge.js';
+export type {
+  Knowledge,
+  KnowledgeOptions,
+  PreloadOptions,
+  StringKB,
+  StringKBOptions,
+  TerrainKB,
+  TerrainKBOptions,
+} from './client/knowledge.js';
+export { StringKBImpl } from './client/string-kb.js';
+
+// Live terrain + strings views (exposed as `ctx.terrain` / `ctx.strings`
+// during script runs). Stateless wrappers that delegate to `Knowledge`.
+export { createTerrainView } from './client/terrain-view.js';
+export type { TerrainView, TerrainViewOptions } from './client/terrain-view.js';
+export { createStringsView } from './client/strings-view.js';
+export type { StringsView, StringsViewOptions } from './client/strings-view.js';
+
+// =============================================================================
 // Building permissions (Feature 0.1)
 // =============================================================================
 // ObjController subtype decoders for the four permission-mutation cross-auth

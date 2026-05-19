@@ -31,6 +31,7 @@ import { SceneEndBaselines } from '../messages/game/scene-end-baselines.js';
 import { type NetworkId, type SceneStart, ZoneState } from '../types.js';
 import type { MessageDispatcher, TranscriptEvent } from './dispatcher.js';
 import { InventoryViewImpl } from './inventory-view.js';
+import type { Knowledge } from './knowledge.js';
 import {
   type ScenarioFn,
   type ScriptResult,
@@ -74,6 +75,13 @@ export interface GameStageOptions {
   onStateChange?: (state: ZoneState) => void;
   /** Hook for streaming transcript events. */
   onTranscript?: (event: TranscriptEvent) => void;
+  /**
+   * Shared knowledge base — forwarded to `createScriptContext` so the
+   * scenario's `ctx.terrain` / `ctx.strings` views read from the same
+   * process-wide cache as every other client. Defaults to `defaultKnowledge`
+   * inside `createScriptContext` when omitted.
+   */
+  knowledge?: Knowledge;
 }
 
 export interface GameStageResult {
@@ -168,17 +176,13 @@ export async function runGameStage(opts: GameStageOptions): Promise<GameStageRes
     inventoryView = new InventoryViewImpl(world, startScene.playerNetworkId);
     inventoryView.attach();
     try {
-      dispatcher.send(
-        new ClientOpenContainerMessage(startScene.playerNetworkId, 'inventory'),
-      );
+      dispatcher.send(new ClientOpenContainerMessage(startScene.playerNetworkId, 'inventory'));
     } catch {
       // socket may already be closed (unexpected this early but possible if
       // an external observer aborted) — log via the transcript catch-all.
     }
     try {
-      dispatcher.send(
-        new ClientOpenContainerMessage(startScene.playerNetworkId, 'datapad'),
-      );
+      dispatcher.send(new ClientOpenContainerMessage(startScene.playerNetworkId, 'datapad'));
     } catch {
       // socket may have closed mid-zone-in — ignore
     }
@@ -210,6 +214,7 @@ export async function runGameStage(opts: GameStageOptions): Promise<GameStageRes
         // Hand the already-attached view into the context so it gets shared
         // (vs. having the context construct & attach its own).
         inventory: inventoryView,
+        ...(opts.knowledge !== undefined ? { knowledge: opts.knowledge } : {}),
       });
       scriptResult = await runScript(opts.script, scriptCtx);
       scriptLoggedOut = didScriptLogout(scriptCtx);

@@ -144,6 +144,7 @@ import { createGroupView } from '../group-view.js';
 import type { GuildView } from '../guild-view.js';
 import { createGuildView } from '../guild-view.js';
 import { type InventoryView, InventoryViewImpl } from '../inventory-view.js';
+import { type Knowledge, defaultKnowledge } from '../knowledge.js';
 import { type LocationView, createLocationView } from '../location.js';
 import { MissionsCacheImpl, type MissionsCacheView } from '../missions-cache.js';
 import {
@@ -152,6 +153,7 @@ import {
   navigate as navigateImpl,
 } from '../navigate.js';
 import { type LastNpcDialog, NpcConverseTracker, runNpcConversation } from '../npc-converse.js';
+import { type StringsView, createStringsView } from '../strings-view.js';
 import { SuiAutoResponder, type SuiAutoResponse, type SuiPage } from '../sui-auto.js';
 import { type BestKnownSample, SurveyCacheImpl, type SurveyLastResults } from '../survey-cache.js';
 import { type TerrainView, createTerrainView } from '../terrain-view.js';
@@ -698,6 +700,21 @@ export interface ScriptContext {
    * so a transient missing-asset error retries cleanly.
    */
   readonly terrain: TerrainView;
+  /**
+   * STF (string-table) resolver. Translates server-side `(file, key)`
+   * tokens — the things that show up in chat oob, system messages, dialog
+   * responses, and error chat — into the localized text the real Windows
+   * client would render.
+   *
+   *   await ctx.strings.resolve('city/city', 'declared_residence')
+   *   await ctx.strings.resolve('@city/city:declared_residence')   // shorthand
+   *   await ctx.strings.resolveFile('cmd_err')                     // whole file
+   *
+   * Backed by `Knowledge.strings` (shared across every client in the
+   * process — one STF file is parsed once, not per-client). Returns `null`
+   * if the file or key isn't present.
+   */
+  readonly strings: StringsView;
   /**
    * Combat helpers — `targets()` (who's targeting us), `engaged` (heuristic
    * "we're in a fight"), `autoLoot` (auto-fire `loot` on creature death),
@@ -1837,6 +1854,13 @@ export interface CreateScriptContextOptions {
    * primed before the script started) if you need precise control.
    */
   inventory?: InventoryView;
+  /**
+   * Shared knowledge base — the process-wide cache of lazy-loaded offline
+   * data (terrain templates, STF strings, ...). Defaults to the module-level
+   * `defaultKnowledge` singleton. Tests inject a fresh `new KnowledgeImpl()`
+   * for isolation; Fleet runs use the singleton so 30 clients share one cache.
+   */
+  knowledge?: Knowledge;
   /** Initial sequence number for UpdateTransformMessage. Default 1. */
   initialSequenceNumber?: number;
   /** Initial sequence number for command-queue messages. Default 1. */
@@ -1958,12 +1982,22 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     position: () => ({ x: state.pose.x, y: state.pose.y, z: state.pose.z }),
   });
 
+  // Shared knowledge base — process-wide cache of lazy-loaded offline data
+  // (terrain templates, STF strings, ...). Defaults to the module-level
+  // `defaultKnowledge` singleton; tests inject a fresh instance for isolation.
+  const knowledge = opts.knowledge ?? defaultKnowledge;
+
   // Offline procedural terrain — `ctx.terrain.getHeight(x, z)` etc. Stateless
-  // wrt the dispatcher (no subscriptions, no detach handle); its only state
-  // is a per-planet appearance cache that's GC'd with the script context.
+  // wrt the dispatcher (no subscriptions, no detach handle); all caching
+  // lives on the shared `Knowledge.terrain` KB.
   const terrainView = createTerrainView({
+    knowledge,
     getCurrentPlanet: (): string => locationView.planet,
   });
+
+  // STF (string-table) resolver — `ctx.strings.resolve(file, key)` etc.
+  // Stateless wrapper over the shared `Knowledge.strings` KB.
+  const stringsView = createStringsView({ knowledge });
 
   const characterSheetHandle = createCharacterSheet({
     dispatcher: opts.dispatcher,
@@ -2121,6 +2155,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     survey: surveyCallable,
     location: locationView,
     terrain: terrainView,
+    strings: stringsView,
     sui: suiNamespace,
     npc: npcNamespace,
     bank: bankView,

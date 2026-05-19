@@ -24,6 +24,7 @@
  * transcript bodies.
  */
 import type { ServerEndpoint } from '../types.js';
+import { type Knowledge, defaultKnowledge } from './knowledge.js';
 import type { ScenarioFn } from './script/context.js';
 import {
   type FullLifecycleOptions,
@@ -66,6 +67,15 @@ export interface FleetOptions {
    * fresh `SwgClient` per config.
    */
   clientFactory?: (opts: SwgClientOptions) => SwgClient;
+  /**
+   * Shared knowledge base — passed to every spawned `SwgClient` so all
+   * fleet members read from the same process-wide cache (terrain templates,
+   * STF strings, ...). Defaults to the module-level `defaultKnowledge`
+   * singleton — the recommended choice for production fleets so the N
+   * clients on the same planet parse `<planet>.trn` exactly once. Tests
+   * inject a fresh instance for isolation.
+   */
+  knowledge?: Knowledge;
 }
 
 export interface FleetRunOptions {
@@ -122,10 +132,12 @@ export interface FleetResult {
 export class Fleet {
   private readonly loginServer: ServerEndpoint;
   private readonly clientFactory: (opts: SwgClientOptions) => SwgClient;
+  private readonly knowledge: Knowledge;
 
   constructor(opts: FleetOptions) {
     this.loginServer = opts.loginServer;
     this.clientFactory = opts.clientFactory ?? ((o) => new SwgClient(o));
+    this.knowledge = opts.knowledge ?? defaultKnowledge;
   }
 
   async run(configs: FleetClientConfig[], runOpts: FleetRunOptions = {}): Promise<FleetResult> {
@@ -174,7 +186,10 @@ export class Fleet {
   }
 
   private async runOne(config: FleetClientConfig): Promise<FleetOutcome> {
-    const client = this.clientFactory({ loginServer: this.loginServer });
+    const client = this.clientFactory({
+      loginServer: this.loginServer,
+      knowledge: this.knowledge,
+    });
     const startedAt = Date.now();
     try {
       const lifecycleResult = await client.fullLifecycle(forwardToLifecycle(config));

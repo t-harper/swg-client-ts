@@ -1,8 +1,12 @@
 /**
- * TerrainView — `ctx.terrain` on `ScriptContext`. Lazy-loads the procedural
- * terrain template for the current planet (or any planet you ask for) and
- * caches the resulting `ProceduralTerrainAppearance` keyed by planet name
- * for the lifetime of the script context.
+ * TerrainView — `ctx.terrain` on `ScriptContext`. A thin, stateless wrapper
+ * that delegates to a shared `Knowledge.terrain` (the process-wide per-planet
+ * `ProceduralTerrainAppearance` cache). The view's only job is to substitute
+ * the current planet from `getCurrentPlanet()` when callers ask for "the
+ * terrain right here"; everything else flows through the shared KB so a
+ * 30-client Fleet on Naboo parses `naboo.trn` exactly once and shares one
+ * `ProceduralTerrainAppearance` instance (and one chunk cache) across all
+ * scripts.
  *
  * The underlying procedural generator is the bit-exact port of the C++
  * `sharedTerrain` + `sharedFractal` libraries at `src/terrain/sim/` — it
@@ -11,32 +15,29 @@
  * ground truth is
  * `~/code/swg-main/src/engine/shared/library/sharedTerrain/...`.
  *
- * The first call for a planet pays the load cost (file I/O + IFF parse +
- * generator prepare — typically 50-200 ms depending on planet complexity).
- * Subsequent calls return the cached appearance instance. Failed loads are
- * NOT cached, so a transient asset-resolution failure (e.g. a planet whose
- * `.trn` isn't extracted yet) won't poison the cache for retries.
+ * The first call for a planet (across the entire process) pays the load cost
+ * (file I/O + IFF parse + generator prepare — typically 50-200 ms depending
+ * on planet complexity). Subsequent calls — from any script — return the
+ * cached appearance instance. Failed loads are NOT cached, so a transient
+ * asset-resolution failure won't poison the cache for retries.
  *
- * The view holds no dispatcher subscriptions, so it has no detach handle —
- * its only state is the appearance cache, which is garbage-collected with
- * the ScriptContext.
+ * The view holds no dispatcher subscriptions and no per-instance state, so
+ * there is no detach handle.
  */
 
-import {
-  ProceduralTerrainAppearance,
-  type ProceduralTerrainTemplate,
-  loadPlanetTrnTemplate,
-} from '../terrain/sim/index.js';
+import type { ProceduralTerrainAppearance } from '../terrain/sim/index.js';
+import { type Knowledge, defaultKnowledge } from './knowledge.js';
 
 /**
  * Live terrain view exposed on `ctx.terrain`. Provides offline per-coord
- * terrain heights backed by the procedural generator.
+ * terrain heights backed by the procedural generator. All state lives on
+ * the shared `Knowledge.terrain` KB.
  */
 export interface TerrainView {
   /**
    * Procedural terrain appearance for the current planet (from
-   * `ctx.location.planet`). Lazy-loaded on first call; cached per planet
-   * for the lifetime of the script context.
+   * `ctx.location.planet`). Lazy-loaded on first call for that planet
+   * (across the process); cached on the shared `Knowledge.terrain` KB.
    *
    * Throws if the planet's `.trn` can't be resolved (no asset on disk + no
    * TRE archive available). See `src/terrain/asset-loader.ts` for the
@@ -65,56 +66,40 @@ export interface TerrainView {
 
 export interface TerrainViewOptions {
   /**
+   * Shared knowledge base — provides the per-planet appearance cache.
+   * Defaults to the process-wide `defaultKnowledge` so callers that don't
+   * care about isolation (production / CLI / Fleet) can omit it. Tests
+   * construct a fresh `new KnowledgeImpl({ terrain: { loadTemplate, ... } })`
+   * and pass it explicitly to inject loader overrides.
+   */
+  knowledge?: Knowledge;
+  /**
    * Function returning the current planet name (typically
    * `() => locationView.planet`). Re-evaluated on every call so that a
    * mid-script zone-in to a different planet picks up the new value
    * transparently.
    */
   getCurrentPlanet: () => string;
-  /**
-   * Loader override for tests. Defaults to `loadPlanetTrnTemplate` from
-   * `src/terrain/sim/proc-terrain-template.ts`.
-   */
-  loadTemplate?: (planet: string) => Promise<ProceduralTerrainTemplate>;
-  /**
-   * Appearance constructor override for tests. Defaults to
-   * `new ProceduralTerrainAppearance(template)`.
-   */
-  buildAppearance?: (template: ProceduralTerrainTemplate) => ProceduralTerrainAppearance;
 }
 
 /**
- * Build a `TerrainView`. The cache is per-instance (one per script context).
- * Concurrent calls for the same planet share the in-flight load promise.
+ * Build a `TerrainView`. The view itself holds no state — all caching lives
+ * on `opts.knowledge.terrain`. Multiple views sharing the same `Knowledge`
+ * also share the appearance cache (and the chunk cache inside each
+ * `ProceduralTerrainAppearance`).
  */
 export function createTerrainView(opts: TerrainViewOptions): TerrainView {
-  const cache = new Map<string, Promise<ProceduralTerrainAppearance>>();
-  const loadTemplate = opts.loadTemplate ?? loadPlanetTrnTemplate;
-  const buildAppearance =
-    opts.buildAppearance ?? ((template) => new ProceduralTerrainAppearance(template));
-
-  function appearanceFor(planet: string): Promise<ProceduralTerrainAppearance> {
-    const existing = cache.get(planet);
-    if (existing !== undefined) return existing;
-    const pending = loadTemplate(planet).then(buildAppearance);
-    // Don't cache failures — a transient missing-asset error shouldn't
-    // poison every subsequent call. The unhandled-rejection branch here is
-    // a no-op rethrow; callers still see the original rejection.
-    pending.catch(() => {
-      cache.delete(planet);
-    });
-    cache.set(planet, pending);
-    return pending;
-  }
-
+  const knowledge = opts.knowledge ?? defaultKnowledge;
   return {
     appearance(): Promise<ProceduralTerrainAppearance> {
-      return appearanceFor(opts.getCurrentPlanet());
+      return knowledge.terrain.appearanceFor(opts.getCurrentPlanet());
     },
     async getHeight(x: number, z: number): Promise<number> {
-      const appearance = await appearanceFor(opts.getCurrentPlanet());
+      const appearance = await knowledge.terrain.appearanceFor(opts.getCurrentPlanet());
       return appearance.getHeight(x, z);
     },
-    appearanceFor,
+    appearanceFor(planet: string): Promise<ProceduralTerrainAppearance> {
+      return knowledge.terrain.appearanceFor(planet);
+    },
   };
 }

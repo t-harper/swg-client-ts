@@ -79,12 +79,13 @@ import {
 } from '../types.js';
 import { type CreateCharacterOptions, runConnectionStage } from './connection-stage.js';
 import {
-  deleteCharacter,
   type DeleteCharacterOptions,
   type DeleteCharacterReply,
+  deleteCharacter,
 } from './delete-character.js';
 import type { TranscriptEvent } from './dispatcher.js';
 import { runGameStage } from './game-stage.js';
+import { type Knowledge, defaultKnowledge } from './knowledge.js';
 import { runLoginStage } from './login-stage.js';
 import type { ScenarioFn, ScriptResult } from './script/context.js';
 import type { WorldModel } from './world-model.js';
@@ -113,6 +114,14 @@ export interface FullLifecycleRawCaptureOptions {
 
 export interface SwgClientOptions {
   loginServer: ServerEndpoint;
+  /**
+   * Shared knowledge base — the process-wide cache of lazy-loaded offline
+   * data (terrain templates, STF strings, ...). Defaults to the module-level
+   * `defaultKnowledge` singleton. Pass an explicit instance only for tests
+   * (e.g. a fresh `new KnowledgeImpl()` for isolation) or when you want to
+   * pre-warm a private cache that won't leak into other clients.
+   */
+  knowledge?: Knowledge;
 }
 
 export interface FullLifecycleOptions {
@@ -246,9 +255,11 @@ export interface LifecycleResult {
 
 export class SwgClient {
   private readonly loginServer: ServerEndpoint;
+  private readonly knowledge: Knowledge;
 
   constructor(opts: SwgClientOptions) {
     this.loginServer = opts.loginServer;
+    this.knowledge = opts.knowledge ?? defaultKnowledge;
   }
 
   /**
@@ -262,7 +273,9 @@ export class SwgClient {
    * @example
    * await client.deleteCharacter({ account: 'tslive11', characterId: 591551177n });
    */
-  async deleteCharacter(opts: Omit<DeleteCharacterOptions, 'loginServer'>): Promise<DeleteCharacterReply> {
+  async deleteCharacter(
+    opts: Omit<DeleteCharacterOptions, 'loginServer'>,
+  ): Promise<DeleteCharacterReply> {
     return deleteCharacter({ ...opts, loginServer: this.loginServer });
   }
 
@@ -361,6 +374,7 @@ export class SwgClient {
           ...(opts.script !== undefined ? { script: opts.script } : {}),
           onStateChange: opts.onStateChange,
           onTranscript: undefined, // already wired via Stage 2's dispatcher
+          knowledge: this.knowledge,
         });
       }
     } finally {

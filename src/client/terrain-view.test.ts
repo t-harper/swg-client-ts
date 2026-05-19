@@ -4,6 +4,7 @@ import type {
   ProceduralTerrainAppearance,
   ProceduralTerrainTemplate,
 } from '../terrain/sim/index.js';
+import { KnowledgeImpl } from './knowledge.js';
 import { createTerrainView } from './terrain-view.js';
 
 /**
@@ -24,22 +25,18 @@ function makeFakeTemplate(name: string): ProceduralTerrainTemplate {
 describe('createTerrainView', () => {
   it('does NOT call the loader until appearance() is requested', () => {
     const loadTemplate = vi.fn(async () => makeFakeTemplate('naboo'));
-    createTerrainView({
-      getCurrentPlanet: () => 'naboo',
-      loadTemplate,
-      buildAppearance: () => makeFakeAppearance(),
+    const knowledge = new KnowledgeImpl({
+      terrain: { loadTemplate, buildAppearance: () => makeFakeAppearance() },
     });
+    createTerrainView({ knowledge, getCurrentPlanet: () => 'naboo' });
     expect(loadTemplate).not.toHaveBeenCalled();
   });
 
   it('lazy-loads the appearance for the current planet on first call', async () => {
     const loadTemplate = vi.fn(async (planet: string) => makeFakeTemplate(planet));
     const buildAppearance = vi.fn(() => makeFakeAppearance(100));
-    const view = createTerrainView({
-      getCurrentPlanet: () => 'naboo',
-      loadTemplate,
-      buildAppearance,
-    });
+    const knowledge = new KnowledgeImpl({ terrain: { loadTemplate, buildAppearance } });
+    const view = createTerrainView({ knowledge, getCurrentPlanet: () => 'naboo' });
     const appearance = await view.appearance();
     expect(loadTemplate).toHaveBeenCalledWith('naboo');
     expect(buildAppearance).toHaveBeenCalledTimes(1);
@@ -48,11 +45,10 @@ describe('createTerrainView', () => {
 
   it('caches per-planet — repeated calls for the same planet return the same instance', async () => {
     const loadTemplate = vi.fn(async (planet: string) => makeFakeTemplate(planet));
-    const view = createTerrainView({
-      getCurrentPlanet: () => 'naboo',
-      loadTemplate,
-      buildAppearance: () => makeFakeAppearance(),
+    const knowledge = new KnowledgeImpl({
+      terrain: { loadTemplate, buildAppearance: () => makeFakeAppearance() },
     });
+    const view = createTerrainView({ knowledge, getCurrentPlanet: () => 'naboo' });
     const a = await view.appearance();
     const b = await view.appearance();
     expect(a).toBe(b);
@@ -65,11 +61,10 @@ describe('createTerrainView', () => {
       await new Promise((r) => setTimeout(r, 0));
       return makeFakeTemplate(planet);
     });
-    const view = createTerrainView({
-      getCurrentPlanet: () => 'naboo',
-      loadTemplate,
-      buildAppearance: () => makeFakeAppearance(),
+    const knowledge = new KnowledgeImpl({
+      terrain: { loadTemplate, buildAppearance: () => makeFakeAppearance() },
     });
+    const view = createTerrainView({ knowledge, getCurrentPlanet: () => 'naboo' });
     const [a, b] = await Promise.all([view.appearance(), view.appearance()]);
     expect(a).toBe(b);
     expect(loadTemplate).toHaveBeenCalledTimes(1);
@@ -78,11 +73,13 @@ describe('createTerrainView', () => {
   it('re-evaluates getCurrentPlanet on every call (so a mid-script zone picks up the new planet)', async () => {
     let current = 'naboo';
     const loadTemplate = vi.fn(async (planet: string) => makeFakeTemplate(planet));
-    const view = createTerrainView({
-      getCurrentPlanet: () => current,
-      loadTemplate,
-      buildAppearance: (t) => makeFakeAppearance(t.sourceName === 'naboo' ? 1 : 2),
+    const knowledge = new KnowledgeImpl({
+      terrain: {
+        loadTemplate,
+        buildAppearance: (t) => makeFakeAppearance(t.sourceName === 'naboo' ? 1 : 2),
+      },
     });
+    const view = createTerrainView({ knowledge, getCurrentPlanet: () => current });
     const onNaboo = await view.appearance();
     expect(onNaboo.getHeight(0, 0)).toBe(1);
 
@@ -94,11 +91,13 @@ describe('createTerrainView', () => {
 
   it('appearanceFor(planet) loads an explicit planet regardless of current', async () => {
     const loadTemplate = vi.fn(async (planet: string) => makeFakeTemplate(planet));
-    const view = createTerrainView({
-      getCurrentPlanet: () => 'naboo',
-      loadTemplate,
-      buildAppearance: (t) => makeFakeAppearance(t.sourceName === 'naboo' ? 1 : 99),
+    const knowledge = new KnowledgeImpl({
+      terrain: {
+        loadTemplate,
+        buildAppearance: (t) => makeFakeAppearance(t.sourceName === 'naboo' ? 1 : 99),
+      },
     });
+    const view = createTerrainView({ knowledge, getCurrentPlanet: () => 'naboo' });
     const dath = await view.appearanceFor('dathomir');
     expect(dath.getHeight(0, 0)).toBe(99);
     expect(loadTemplate).toHaveBeenCalledWith('dathomir');
@@ -106,11 +105,10 @@ describe('createTerrainView', () => {
 
   it('getHeight(x, z) delegates to the cached appearance', async () => {
     const loadTemplate = vi.fn(async (planet: string) => makeFakeTemplate(planet));
-    const view = createTerrainView({
-      getCurrentPlanet: () => 'naboo',
-      loadTemplate,
-      buildAppearance: () => makeFakeAppearance(7),
+    const knowledge = new KnowledgeImpl({
+      terrain: { loadTemplate, buildAppearance: () => makeFakeAppearance(7) },
     });
+    const view = createTerrainView({ knowledge, getCurrentPlanet: () => 'naboo' });
     expect(await view.getHeight(3, 4)).toBe(14);
     // Second call hits the cache (loadTemplate still called once).
     expect(await view.getHeight(1, 1)).toBe(9);
@@ -124,16 +122,29 @@ describe('createTerrainView', () => {
       if (attempt === 1) throw new Error(`asset missing for ${planet}`);
       return makeFakeTemplate(planet);
     });
-    const view = createTerrainView({
-      getCurrentPlanet: () => 'naboo',
-      loadTemplate,
-      buildAppearance: () => makeFakeAppearance(50),
+    const knowledge = new KnowledgeImpl({
+      terrain: { loadTemplate, buildAppearance: () => makeFakeAppearance(50) },
     });
+    const view = createTerrainView({ knowledge, getCurrentPlanet: () => 'naboo' });
     await expect(view.appearance()).rejects.toThrow('asset missing for naboo');
     // The retry must succeed AND not see the cached failure.
     const ok = await view.appearance();
     expect(ok.getHeight(0, 0)).toBe(50);
     expect(loadTemplate).toHaveBeenCalledTimes(2);
+  });
+
+  it('two views over the same Knowledge share the per-planet appearance cache', async () => {
+    const loadTemplate = vi.fn(async (planet: string) => makeFakeTemplate(planet));
+    const buildAppearance = vi.fn(() => makeFakeAppearance(42));
+    const knowledge = new KnowledgeImpl({ terrain: { loadTemplate, buildAppearance } });
+
+    const viewA = createTerrainView({ knowledge, getCurrentPlanet: () => 'naboo' });
+    const viewB = createTerrainView({ knowledge, getCurrentPlanet: () => 'naboo' });
+
+    const [a, b] = await Promise.all([viewA.appearance(), viewB.appearance()]);
+    expect(a).toBe(b);
+    expect(loadTemplate).toHaveBeenCalledTimes(1);
+    expect(buildAppearance).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -53,46 +53,7 @@ import {
   type WorldObject,
 } from '../src/index.js';
 import { adminConsole, adminGodModeOn, adminPlanetWarp } from './build-city/admin.js';
-import { AutoArrayCodec } from '../src/archive/containers.js';
-import type { IByteStream, IReadIterator } from '../src/archive/interface.js';
-import { StringCodec } from '../src/archive/string.js';
-import { GameNetworkMessage, defineMessageMeta } from '../src/messages/base.js';
-
-// Script-local wire message: SWG's ExpertiseRequestMessage. Server-side at
-// CreatureObject.cpp:14532 has a god-mode bypass — "GOD MODE: Granting you
-// expertise skill X without regard for points, requisites, or permissions"
-// — so a godmode bot can request every expertise leaf in one shot and the
-// server will both add the skill row AND fire the command-tier upgrade
-// chain (which is what unlocks me_buff_health_3, me_enhance_strength_3,
-// etc.). `grantSkill` alone adds the row but skips the upgrade chain.
-//
-// C++ ref: ~/code/swg-main/src/engine/shared/library/sharedNetworkMessages/
-//          src/shared/clientGameServer/ExpertiseRequestMessage.{cpp,h}
-// varCount = 1 (cmd) + addExpertisesList + clearAllExpertisesFirst = 3.
-class ExpertiseRequestMessage extends GameNetworkMessage {
-  static readonly META = defineMessageMeta('ExpertiseRequestMessage');
-  static override readonly messageName = ExpertiseRequestMessage.META.messageName;
-  static readonly typeCrc = ExpertiseRequestMessage.META.typeCrc;
-  static override readonly varCount = 3;
-
-  constructor(
-    public addExpertisesList: readonly string[],
-    public clearAllExpertisesFirst: boolean,
-  ) {
-    super();
-  }
-
-  encodePayload(stream: IByteStream): void {
-    AutoArrayCodec(StringCodec).encode(stream, [...this.addExpertisesList]);
-    stream.writeU8(this.clearAllExpertisesFirst ? 1 : 0);
-  }
-
-  static decodePayload(iter: IReadIterator): ExpertiseRequestMessage {
-    const list = AutoArrayCodec(StringCodec).decode(iter);
-    const clear = iter.readU8() !== 0;
-    return new ExpertiseRequestMessage(list, clear);
-  }
-}
+import { ExpertiseRequestMessage } from '../src/messages/game/expertise-request.js';
 
 // All 93 medic expertise leaves — same list as REQUIRED_SKILLS (the
 // `expertise_me_*` subset). The bot SENDS this in addition to `grantSkill`

@@ -275,6 +275,17 @@ export {
   ConGenericMessageDecoder,
 } from './messages/game/con-generic-message.js';
 
+// Expertise — client→server, "Apply" button in the in-game Expertise window.
+// Wire format verified against a live Windows-client capture (2026-05-18);
+// see expertise-request.test.ts. The real client sends one pick per message
+// with clearAllExpertisesFirst=false; god-mode admin bots can also send
+// batches with clearAllExpertisesFirst=true to bypass point/prereq limits
+// (CreatureObject::processExpertiseRequest, CreatureObject.cpp:14523).
+export {
+  ExpertiseRequestMessage,
+  ExpertiseRequestMessageDecoder,
+} from './messages/game/expertise-request.js';
+
 // Mission message classes — the top-level browser-populate message plus the
 // ObjController subtype decoders that drive the request/response flow.
 export {
@@ -818,3 +829,16 @@ export {
   RemoveBannedKind,
 } from './messages/game/obj-controller/index.js';
 export type { BuildingPermissionData } from './messages/game/obj-controller/index.js';
+
+// NGE profession-pick ObjController subtypes (CM_setProfessionTemplate=1116
+// and CM_setCurrentWorkingSkill=1115). Sent by the live Windows client when
+// the player picks a class from `ws_professiontemplateselect`. Decoders are
+// useful for transcript inspection; encoders + the `ctx.setProfessionTemplate`
+// helper let scripts/bots auto-pick a profession after zone-in.
+export {
+  SetCurrentWorkingSkillDecoder,
+  SetCurrentWorkingSkillKind,
+  SetProfessionTemplateDecoder,
+  SetProfessionTemplateKind,
+} from './messages/game/obj-controller/index.js';
+export type { ProfessionTemplateData } from './messages/game/obj-controller/index.js';

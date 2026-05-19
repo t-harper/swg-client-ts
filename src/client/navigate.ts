@@ -39,12 +39,22 @@
  * one-time `console.warn` so the operator sees the degradation.
  */
 
+import { ByteStream } from '../archive/byte-stream.js';
 import type { Cell, CellPortal, PortalLayout } from '../iff/portal-layout-reader.js';
 import {
   BaselinePackageIds,
   type CellObjectSharedBaseline,
   ObjectTypeTags,
 } from '../messages/game/baselines/index.js';
+import { CLIENT_TO_AUTH_SERVER_FLAGS } from '../messages/game/command-queue/command-queue-enqueue.js';
+import { ObjControllerMessage } from '../messages/game/obj-controller-message.js';
+import {
+  type NetUpdateTransformData,
+  NetUpdateTransformKind,
+  ObjControllerSubtypeIds,
+  type TeleportAckData,
+  TeleportAckDecoder,
+} from '../messages/game/obj-controller/index.js';
 import type { Vector3 } from '../types.js';
 import type { NetworkId } from '../types.js';
 import { type CellPathHop, findCellPath } from './cell-graph.js';
@@ -163,10 +173,17 @@ export type NavigateStep =
        */
       fromCellLocalDoor?: { x: number; z: number; y?: number };
       /**
-       * Two meters inside `toCellId` along the portal's inward normal.
-       * The server's `findContainingCell` requires our cell-local position
-       * to be INSIDE the destination cell's floor footprint; a 2m setback
-       * from the door is a conservative safety margin.
+       * Robust "deep inside the destination cell" point. The server's
+       * `PortalProperty::findContainingCell` iterates the building's
+       * child cells and picks the one whose floor mesh has the closest
+       * point — so the cell-local position must clearly belong to the
+       * destination cell, not just be "past the door."
+       *
+       * Computed by `computeCellLocalEntry` (see its JSDoc): the
+       * arithmetic mean of all passable portal door positions in the
+       * destination cell when it has 2+ portals (the centroid sits in
+       * the interior), or the door position offset 2m away from the
+       * source-cell portal centroid for single-portal alcoves.
        */
       toCellLocalEntry: { x: number; z: number; y?: number };
     }
@@ -641,13 +658,12 @@ function resolveTargetCellNumber(world: WorldModel, target: InteriorTarget): num
 
 /**
  * Compute the world-coord run-up point (a meter past the door on the
- * outside) AND the cell-local entry point inside the destination cell
- * (two meters past the door on the inside) for a cell 0 → interior hop.
+ * outside) AND the cell-local entry point inside the destination cell for
+ * a cell 0 → interior hop.
  *
- * Both offsets use the portal plane's outward normal (computed from the
- * geometry quad's first two edges via a cross product). Sign is flipped
- * when `windingClockwise === false` so the "outward" direction is always
- * away from the building's interior.
+ * The run-up offset uses the portal plane's outward normal (computed from
+ * the geometry quad's first two edges via a cross product, sign flipped
+ * when `windingClockwise === false` so "outward" is consistent).
  *
  * The world-coord transform is:
  *   `portalWorld = building.position + rotateY(door_in_fromCell_frame + outwardNormal*1m, building.yaw)`
@@ -657,9 +673,8 @@ function resolveTargetCellNumber(world: WorldModel, target: InteriorTarget): num
  * server's anti-cheat distance/speed checks happy when the next message
  * is the cell-relative transform.
  *
- * The cell-local entry on the destination side uses the MIRROR portal's
- * inward normal (= the destination cell's outward-normal-into-the-building
- * direction, sign-flipped).
+ * The cell-local entry on the destination side is computed by
+ * `computeCellLocalEntry` — see its JSDoc for the centroid heuristic.
  */
 function computeExteriorPortalEntry(
   buildingPos: Vector3,
@@ -692,7 +707,7 @@ function computeExteriorPortalEntry(
 
   // Cell-local entry on the destination side: door + inwardNormal * 2m,
   // computed in the DESTINATION cell's frame from the mirror portal.
-  const toCellLocalEntry = computeCellLocalEntryFromMirror(hop, layout);
+  const toCellLocalEntry = computeCellLocalEntry(hop, layout);
 
   return { portalWorld, toCellLocalEntry };
 }
@@ -700,8 +715,8 @@ function computeExteriorPortalEntry(
 /**
  * Interior → interior hop. Computes the door position in `fromCell`'s
  * local frame (from the outgoing portal) AND the entry point in
- * `toCell`'s local frame (from the mirror portal on the destination cell,
- * offset 2m along its inward normal).
+ * `toCell`'s local frame via `computeCellLocalEntry` (centroid heuristic
+ * — see its JSDoc).
  */
 function computeInteriorPortalEntry(
   hop: CellPathHop,
@@ -716,28 +731,98 @@ function computeInteriorPortalEntry(
       y: hop.fromCellLocalDoor.y,
       z: hop.fromCellLocalDoor.z,
     },
-    toCellLocalEntry: computeCellLocalEntryFromMirror(hop, layout),
+    toCellLocalEntry: computeCellLocalEntry(hop, layout),
   };
 }
 
 /**
- * Compute the 2m-inside-the-destination-cell entry point. Looks up the
- * mirror portal entry on the destination cell (same geometryIndex, pointing
- * back at the source cell) and uses ITS inward normal.
+ * Compute the entry point in the destination cell's local frame for one
+ * portal hop. The position MUST be closest to the destination cell's floor
+ * (per `PortalProperty::findContainingCell` → `FloorMesh::findClosestLocation`)
+ * for the server to accept the re-parent — being merely "past the door" is
+ * not enough; the position must clearly belong to the destination cell when
+ * the server iterates the building's child cells and picks the one whose
+ * floor is closest.
  *
- * The mirror portal's "outward" normal points OUT of the destination cell
- * (towards the source), so we negate to get "into" the destination cell.
+ * # Why a centroid heuristic (and not the door + inward normal)
  *
- * If no mirror is found (asymmetric portal graph — shouldn't happen for
- * well-formed .pob files), falls back to the source-cell door position
- * with no offset. The walkToCell will still be issued; the server may
- * reject the re-parent and the verify step will log a warning.
+ * Door positions sit AT the cell boundary. The mirror-portal's "inward
+ * normal" is supposed to point from the door into the destination cell —
+ * but the .pob's winding flag is unreliable: for the cantina's front portal,
+ * the source-side winding flag and the destination-side winding flag both
+ * encode the same physical quad, and the sign of the "outward normal"
+ * resolved by `portalOutwardNormal` ends up pointing INTO the source cell
+ * instead of out of it. Negating to get "inward on dest" then takes us
+ * back toward the source, which is exactly where we don't want to land.
+ *
+ * Rather than try to disambiguate the winding sign — which would require
+ * floor-mesh data we don't yet read — we use the destination cell's portal
+ * door positions directly:
+ *
+ *   - **2+ portals**: arithmetic mean of all passable door positions in the
+ *     destination cell. The centroid is robustly inside any convex-ish cell
+ *     (which all SWG cells are — they're authored as polygonal rooms with
+ *     doors on the perimeter). For the cantina's foyer1 (cell 1), this gives
+ *     `((47.80+35.63)/2, (0.10+2.10)/2, (-3.70-7.05)/2) = (41.72, 1.10,
+ *     -5.38)` which sits in the middle of the foyer, far from foyer2's floor.
+ *
+ *   - **1 portal** (e.g. an alcove): no centroid available. Take the door
+ *     position and offset 2m AWAY from the source cell's portal-centroid.
+ *     "Away from where we came in" is a reliable proxy for "into the cell."
+ *     For the cantina's alcove2 (cell 5) reached from the main floor (cell 3,
+ *     11 portals), the source centroid is roughly (-0.92, 0.6, 0.57) and the
+ *     alcove door is (17.22, 1.08, 13.27); offset direction is (+0.82, +0.57)
+ *     (xz-normalized) and the entry lands at (18.86, 1.08, 14.42) — well
+ *     inside alcove2.
+ *
+ *   - **Single-portal dest with single-portal source** (e.g. a one-room
+ *     building entered from exterior — exterior has no useful centroid in
+ *     this fallback path): preserve the old mirror-portal-inward-normal
+ *     behavior with the same 2m offset. This case is rare and matches the
+ *     existing unit-test fixture; we keep it working for forward-compat with
+ *     callers that build hand-crafted test layouts.
+ *
+ *   - **0 portals**: shouldn't happen (an isolated cell can't be reached).
+ *     Falls back to the raw door position.
  */
-function computeCellLocalEntryFromMirror(
+function computeCellLocalEntry(
   hop: CellPathHop,
   layout: PortalLayout,
 ): { x: number; y: number; z: number } {
   const destCell = layout.cells.find((c) => c.index === hop.toCellIndex);
+  if (destCell !== undefined) {
+    const destPassable = destCell.portals.filter((p) => p.passable && !p.disabled);
+    if (destPassable.length >= 2) {
+      return portalDoorCentroid(destPassable);
+    }
+  }
+
+  // Single-portal (or no-portal) destination. Try the source-cell-centroid
+  // direction as a more-robust proxy for "into the destination cell."
+  const sourceCell = layout.cells.find((c) => c.index === hop.fromCellIndex);
+  if (sourceCell !== undefined) {
+    const sourcePassable = sourceCell.portals.filter((p) => p.passable && !p.disabled);
+    if (sourcePassable.length >= 2) {
+      const sourceCentroid = portalDoorCentroid(sourcePassable);
+      const dx = hop.toCellLocalDoor.x - sourceCentroid.x;
+      const dz = hop.toCellLocalDoor.z - sourceCentroid.z;
+      const mag = Math.hypot(dx, dz);
+      if (mag > 1e-6) {
+        const nx = dx / mag;
+        const nz = dz / mag;
+        return {
+          x: hop.toCellLocalDoor.x + nx * PORTAL_INWARD_ENTRY_M,
+          y: hop.toCellLocalDoor.y,
+          z: hop.toCellLocalDoor.z + nz * PORTAL_INWARD_ENTRY_M,
+        };
+      }
+    }
+  }
+
+  // Fallback: mirror-portal inward-normal (preserved for the
+  // single-portal-source-and-dest edge case and as a last resort when the
+  // destination cell isn't in the layout — should be unreachable in practice
+  // for a well-formed .pob).
   const mirror = findMirrorPortal(destCell, hop.fromCellIndex, hop.portal);
   if (mirror === null) {
     return {
@@ -746,8 +831,6 @@ function computeCellLocalEntryFromMirror(
       z: hop.toCellLocalDoor.z,
     };
   }
-  // The mirror's outward normal points out of the destination cell; negate
-  // to get the "into the destination cell" direction.
   const outwardOnDest = portalOutwardNormal(mirror);
   const inwardOnDest = { x: -outwardOnDest.x, y: 0, z: -outwardOnDest.z };
   return {
@@ -755,6 +838,27 @@ function computeCellLocalEntryFromMirror(
     y: hop.toCellLocalDoor.y,
     z: hop.toCellLocalDoor.z + inwardOnDest.z * PORTAL_INWARD_ENTRY_M,
   };
+}
+
+/**
+ * Arithmetic mean of the door positions of the given portals. Used to derive
+ * a "deep inside the cell" point for multi-portal destinations.
+ */
+function portalDoorCentroid(portals: readonly CellPortal[]): {
+  x: number;
+  y: number;
+  z: number;
+} {
+  let sx = 0;
+  let sy = 0;
+  let sz = 0;
+  for (const p of portals) {
+    sx += p.doorPosition.x;
+    sy += p.doorPosition.y;
+    sz += p.doorPosition.z;
+  }
+  const n = portals.length;
+  return { x: sx / n, y: sy / n, z: sz / n };
 }
 
 /**
@@ -885,11 +989,122 @@ export async function navigate(
     }
   }
 
-  const plan = await planNavigate(pc, target, opts, ctx.knowledge);
-  if (plan.fallbackReason !== undefined && plan.fallbackReason !== null) {
-    console.warn(plan.fallbackReason);
+  // Clear any outstanding server-initiated teleports (positive AND negative
+  // sequence numbers) before kicking off the plan. `ctx.ackPendingTeleports`
+  // — invoked by `walkTo`/`walkToCell` further down — only ACKs negative-
+  // seq broadcasts (zone-in `resyncMovementUpdates`); but
+  // `PlayerCreatureController::teleport` (called by every admin warp,
+  // shuttle transition, NPC teleport, etc.) uses POSITIVE seqs from
+  // `getAndIncrementMoveSequenceNumber()`. Until each pending positive seq
+  // is ACKed, `isTeleporting()` stays true server-side and every
+  // client-sourced transform is silently dropped at `handleMove`'s
+  // `isTeleporting()` gate — including by gods (no god short-circuit on
+  // `handleMove`). Doing this scan from inside `navigate` keeps the change
+  // scoped to where it's needed (post-warp interior entries) without
+  // altering the global ack semantics elsewhere.
+
+  // Subscribe to NEW inbound teleports FIRST so anything that arrives
+  // between our initial scan and the plan's first transform is ACKed
+  // by the listener (otherwise there's a race window where late
+  // broadcasts arrive after the transcript-scan but before walkToCell
+  // fires its first transform).
+  const liveAckUnsub = ctx.dispatcher.onMessage(ObjControllerMessage, (m) => {
+    if (m.message !== ObjControllerSubtypeIds.CM_netUpdateTransform) return;
+    if (m.networkId !== playerId) return;
+    if (m.decodedSubtype?.kind !== NetUpdateTransformKind) return;
+    const td = m.decodedSubtype.data as NetUpdateTransformData;
+    if (td.sequenceNumber === 0) return;
+    const acked = navigateAckedSeqs.get(ctx);
+    if (acked !== undefined && acked.has(td.sequenceNumber)) return;
+    acked?.add(td.sequenceNumber);
+    sendTeleportAck(ctx, playerId, td.sequenceNumber);
+  });
+  // Initial scan + ack of anything already in the transcript.
+  ackAllInboundTeleportSeqs(ctx, playerId);
+  // Settle window: wait long enough for any in-flight teleport broadcasts
+  // (e.g. from a recent admin_planetwarp whose UDP packet hasn't reached
+  // the client yet) to arrive AND for the server to process our ACKs.
+  // 500ms covers a typical LAN round-trip + a couple of server frames.
+  // The live listener above catches anything that arrives during the wait;
+  // a final 50ms tail gives the server time to process those last ACKs
+  // before the plan's first transform.
+  await ctx.wait(1500);
+  ackAllInboundTeleportSeqs(ctx, playerId);
+  await ctx.wait(100);
+
+  try {
+    const plan = await planNavigate(pc, target, opts, ctx.knowledge);
+    if (plan.fallbackReason !== undefined && plan.fallbackReason !== null) {
+      console.warn(plan.fallbackReason);
+    }
+    await runPlan(ctx, plan, opts);
+  } finally {
+    liveAckUnsub();
   }
-  await runPlan(ctx, plan, opts);
+}
+
+/**
+ * Scan the dispatcher transcript for every inbound
+ * `ObjControllerMessage(CM_netUpdateTransform=113)` directed at `playerId`,
+ * pull its `sequenceNumber`, and fire a `CM_teleportAck` for any value we
+ * haven't already ACKed via this helper. Idempotent within one navigate
+ * call via a process-local memo.
+ *
+ * Server-side `m_teleportIds` stores both signs:
+ *   - Negative seqs: `resyncMovementUpdates` zone-in lockout
+ *     (`PlayerCreatureController.cpp:285`).
+ *   - Positive seqs: `teleport()` direct teleports
+ *     (`PlayerCreatureController.cpp:307`, invoked by admin warp, shuttle,
+ *     NPC teleport, etc. via `getAndIncrementMoveSequenceNumber()`).
+ *
+ * `ctx.ackPendingTeleports` filters strictly on `< 0`, so positive-seq
+ * teleports leak through and pin `isTeleporting()` to true. Acking the
+ * same id twice is a server-side no-op (`m_teleportIds.erase` of an
+ * absent id is silent), so re-firing any seq we see is safe.
+ */
+function ackAllInboundTeleportSeqs(ctx: ScriptContext, playerId: NetworkId): void {
+  let acked = navigateAckedSeqs.get(ctx);
+  if (acked === undefined) {
+    acked = new Set<number>();
+    navigateAckedSeqs.set(ctx, acked);
+  }
+  const seqsToAck: number[] = [];
+  for (const e of ctx.dispatcher.transcript) {
+    if (e.direction !== 'recv') continue;
+    const decoded = e.decoded;
+    if (!(decoded instanceof ObjControllerMessage)) continue;
+    if (decoded.message !== ObjControllerSubtypeIds.CM_netUpdateTransform) continue;
+    if (decoded.networkId !== playerId) continue;
+    if (decoded.decodedSubtype?.kind !== NetUpdateTransformKind) continue;
+    const td = decoded.decodedSubtype.data as NetUpdateTransformData;
+    const seq = td.sequenceNumber;
+    if (seq === 0) continue;
+    if (acked.has(seq)) continue;
+    acked.add(seq);
+    seqsToAck.push(seq);
+  }
+  for (const seq of seqsToAck) {
+    sendTeleportAck(ctx, playerId, seq);
+  }
+}
+
+/** Per-ScriptContext memo of teleport seqs ACKed by navigate's helper. */
+const navigateAckedSeqs = new WeakMap<ScriptContext, Set<number>>();
+
+function sendTeleportAck(ctx: ScriptContext, playerId: NetworkId, sequenceId: number): void {
+  const data: TeleportAckData = { sequenceId };
+  const stream = new ByteStream();
+  TeleportAckDecoder.encode(stream, data);
+  ctx.send(
+    new ObjControllerMessage(
+      CLIENT_TO_AUTH_SERVER_FLAGS,
+      ObjControllerSubtypeIds.CM_teleportAck,
+      playerId,
+      0,
+      stream.toBytes(),
+      { kind: TeleportAckDecoder.kind, data },
+    ),
+  );
 }
 
 /**

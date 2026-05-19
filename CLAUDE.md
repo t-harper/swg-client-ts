@@ -39,10 +39,17 @@ pnpm cli zone --host=10.254.0.253 --user=ci-test --character=TsTest
                   transcript-io.ts             ← NDJSON capture I/O
                   replay.ts                    ← capture + replay harness
                   reconnect-harness.ts         ← reconnectVerify() — mutate → logout → reconnect → diff
+                  cell-graph.ts                ← BFS pathfinder over PortalLayout cell+portal graph
+                  building-kb.ts               ← per-template .pob + object-template cache (Knowledge.buildings)
+                  navigate.ts                  ← ctx.navigate(target, opts) — mount/walk/portal-walk/verifyCellEntry
                   script/
                     context.ts                 ← ScriptContext (movement/survey/craft/chat/trade/bazaar/sui/npc/...)
                     movement.ts                ← walkTo / walkCircle / walkToCell (mount-cap aware)
                     expectations.ts            ← expectWithin / expectAbsent / expectAfter
+                src/iff/                       ← SWG IFF readers/writers (read-mostly)
+                  iff.ts + iff-writer.ts       ← FORM/CHUNK traversal + emission
+                  portal-layout-reader.ts      ← .pob → PortalLayout (cells + portals + door geometry)
+                  object-template-reader.ts    ← .iff (server template) → BuildingTemplateInfo
                 src/scenarios/                 ← bundled CLI-loadable scenarios
                                                   (walk-line, walk-circle, open-inventory,
                                                    combat-attack, posture-cycle, survey,
@@ -91,7 +98,7 @@ The client started as just `SwgClient.fullLifecycle()` and is now a full program
 
 **See [`docs/scripting-quickref.md`](docs/scripting-quickref.md) for the full `ScriptContext` API — every always-on view (`ctx.world` / `ctx.character` / `ctx.inventory` / `ctx.datapad` / `ctx.bank` / `ctx.group` / `ctx.guild` / `ctx.location` / `ctx.combat` / `ctx.safety` / `ctx.chat` / `ctx.cooldowns` / `ctx.serverTime` / `ctx.hitTimer` / `ctx.missions` / `ctx.crafting` / `ctx.sui` / `ctx.npc` / `ctx.travel`) and every method (movement, combat, chat, crafting, survey, missions, vehicles, SUI, NPC, trade, bazaar, shuttle travel) — auto-generated from JSDoc on the `ScriptContext` interface.** [`docs/views-reference.md`](docs/views-reference.md) and [`docs/actions-reference.md`](docs/actions-reference.md) are the typed deep-dives; [`docs/scripting-cookbook.md`](docs/scripting-cookbook.md) is every bundled scenario in `src/scenarios/`.
 
-## Six wire-format gotchas (memorize)
+## Seven wire-format gotchas (memorize)
 
 These cost hours during the initial build. Don't relearn them.
 
@@ -141,6 +148,9 @@ MessageQueueDataTransform = [u32 syncStamp][i32 seq][Quat 4×f32][Vec3 3×f32][f
 **Engine-locked movement pacing**: `walkTo` / `walkCircle` / `walkToCell` / `navigate` do NOT take a `speed?` option. On foot they always run at `BASE_RUN_SPEED = 7.3` m/s (lifted from `shared_base_player.tpf`'s `speed[MT_run]`; verified against `dsrc/sku.0/sys.shared/compiled/game/object/creature/player/base/shared_base_player.tpf`). The only way to change pace is to mount something — `ctx.mount(vehicleId, { speedCap })` sets the effective speed to `speedCap` until `ctx.dismount()`. The cap is per-vehicle: 12 m/s default for a speeder bike, set higher for a swoop, lower for a creature mount. This mirrors the C++ server, where `getBaseRunSpeed()` returns the template value on foot and `m_vehiclePhysicsData->m_runSpeed` once mounted.
 
 **Zone-in teleport-lockout**: `PlayerCreatureController::resyncMovementUpdates` inserts negative sequence ids into `m_teleportIds` during zone-in. Until the client ACKs them via `ObjControllerMessage(message=CM_teleportAck=319, data=[i32 LE seq])`, every client→server transform is rejected by `handleMove`'s `isTeleporting()` check (returns silently — no error response). The script context's `ctx.ackPendingTeleports()` handles this automatically and is called by all built-in movement primitives (`walkTo`, `walkCircle`, `walkToCell`) on first invocation. Manual code paths that build their own ObjControllerMessage transforms via `ctx.send()` MUST call `await ctx.ackPendingTeleports()` once after zone-in before their first transform.
+
+### 7. Cell entry requires `CM_netUpdateTransformWithParent` with a real cell-local position
+The server's `ServerController::handleNetUpdateTransform` (line 532 in `~/code/swg-main/.../ServerController.cpp`) for plain `CM_netUpdateTransform=113` passes `nullptr` cell — it does NOT auto-resolve the cell from world position. Only `CM_netUpdateTransformWithParent=241` (line 545) re-parents the CREO, and only if the supplied cell-local position is *inside* the cell's floor per `PortalProperty::findContainingCell`. To walk a player INTO a building, use `ctx.navigate({ buildingId, cellName })` which reads the building's `.pob` portal layout, finds the door's world position, walks the player to it, and sends a cell-local transform that lands them inside.
 
 ## Architecture corrections from the implementation
 
@@ -233,6 +243,8 @@ If THAT passes but `live-zone-in-and-logout.test.ts` fails, the issue is in Stag
 
 **Chat** — `ChatInstantMessageToCharacter`, `ChatInstantMessageToClient`, `ChatRequestRoomList`, `ChatRoomList`, `ChatSendToRoom`, `ChatPersistentMessageToServer`, plus `chatAvatarId` factory, `ChatRoomType`, `PERSISTENT_MESSAGE_MAX_SIZE`, and types `ChatAvatarId`, `ChatRoomData`. `ObjController` subtype decoders for spatial chat receive.
 
+**Building portals** — `loadPortalLayout` + `parsePortalLayout` (read a `.pob` file into a `PortalLayout` struct: cells, portals, door geometries), plus the related types `PortalLayout` / `Cell` / `CellPortal` / `PortalGeometry` / `DoorTransform`. `findCellPath(layout, fromIndex, toIndex)` runs a BFS over the cell+portal graph and returns the `CellPathHop[]` the navigate planner emits one `walkThroughPortal` step per. The building-template extractor (`loadBuildingTemplateInfo` -> `BuildingTemplateInfo`, including `portalLayoutFilename`) maps a server-template `.iff` path to its `.pob`. Process-wide cache lives at `Knowledge.buildings` (`knowledge.buildings.templateInfoFor` + `portalLayoutFor`) so a fleet of 30 clients entering the same cantina parses each file exactly once. End-user surface: `ctx.navigate({ buildingId, cellName })` reads all of the above automatically and falls back to today's outdoor-anchor walk when any lookup fails.
+
 Individual stage drivers and the `dispatcher` are also exported as types — use them if you want to do something more granular than `fullLifecycle()` (e.g. login but skip zone-in).
 
 ## File map for quick navigation
@@ -249,6 +261,7 @@ Individual stage drivers and the `dispatcher` are also exported as types — use
 | Craft a tool / item end-to-end | `scripts/craft-a-tool.ts` (open session → list schematics → pick recipe → assign slots → finishCrafting) |
 | Fetch resource stats without sampling | `ctx.fetchResourceAttributes([ids])` (uses `getAttributesBatch`, chunked at 25 ids/call) |
 | Implement movement in a custom script | `ctx.walkTo` / `walkCircle` / `walkToCell` auto-handle teleport-ack; for raw `ctx.send(...)` of transforms call `await ctx.ackPendingTeleports()` once first |
+| Walk player into a building | `ctx.navigate({ buildingId, cellName })` (auto-handles multi-cell paths via `src/client/cell-graph.ts` + `src/iff/portal-layout-reader.ts`). `cellName: ''` picks the first public cell; `cellName: 'cell5'` matches by `cellNumber`; any other string matches the SHARED_NP `cellLabel`. Falls back to the legacy outdoor-anchor walk when the `.pob` / cell-path lookups fail. Example: `tests/integration/live-cantina-entry.test.ts`. |
 | Run N clients in parallel (load test) | `src/client/fleet.ts` — `Fleet.run([cfgs], opts)`; CLI `swarm` |
 | Capture a wire transcript / replay it | `src/client/replay.ts` — `captureLifecycle()` / `replay()`; CLI `capture` / `replay` |
 | Debug a live test failure | `src/client/swg-client.ts` — `transcript` field captures every send/recv |

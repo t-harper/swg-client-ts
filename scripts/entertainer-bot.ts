@@ -35,7 +35,9 @@
 import {
   type LifecycleResult,
   type NetworkId,
+  ObjectMenuSelectMessage,
   ObjectTypeTags,
+  RadialMenuTypes,
   type ScenarioFn,
   type ScriptContext,
   SwgClient,
@@ -415,11 +417,13 @@ function makeScenario(args: Args, killController: { stop: boolean; reason: strin
       'object/tangible/instrument/kloo_horn.iff',
     ];
     const inventoryId = ctx.inventory?.containerId ?? null;
+    let fanfarOid: NetworkId | null = null;
     if (inventoryId) {
       for (const tpl of INSTRUMENTS) {
         try {
           const oid = await adminSpawnInto(ctx, tpl, inventoryId, { timeoutMs: 5_000 });
           print(`spawn ${tpl.split('/').pop()}: oid=${oid.toString()}`);
+          if (tpl.endsWith('/fanfar.iff')) fanfarOid = oid;
         } catch (err) {
           print(
             `spawn ${tpl.split('/').pop()}: FAILED (${err instanceof Error ? err.message : String(err)})`,
@@ -430,6 +434,52 @@ function makeScenario(args: Args, killController: { stop: boolean; reason: strin
       alwaysLog('WARNING: could not resolve inventory id; skipping instrument spawn');
     }
     await ctx.wait(750);
+
+    // 6b. Show-off jog to the cantina. The bot warps to (--x, --z) which is
+    // typically a hold-point outside the building; run to the cantina anchor
+    // (~3528, -4807 — the Mos Eisley cantina's buildout pos) with a flourish
+    // mid-route so anyone watching sees movement + animation, then settle
+    // there to play. Falls back to the warp position on any error.
+    const CANTINA_X = 3528;
+    const CANTINA_Z = -4807;
+    try {
+      const stops = [
+        { x: (args.x + CANTINA_X) / 2, z: (args.z + CANTINA_Z) / 2, flourish: 3 },
+        { x: CANTINA_X, z: CANTINA_Z, flourish: 7 },
+      ];
+      for (const stop of stops) {
+        alwaysLog(`jogging to (${stop.x.toFixed(0)}, ${stop.z.toFixed(0)})`);
+        await ctx.walkTo({ x: stop.x, z: stop.z });
+        ctx.useAbility('flourish', undefined, String(stop.flourish));
+        print(`flourish ${stop.flourish}`);
+        await ctx.wait(500);
+      }
+      alwaysLog(`arrived at cantina (${CANTINA_X}, ${CANTINA_Z})`);
+    } catch (err) {
+      alwaysLog(
+        `WARNING: jog-to-cantina failed (${err instanceof Error ? err.message : String(err)}) — playing from warp spot instead`,
+      );
+    }
+    await ctx.wait(500);
+
+    // 6c. Equip the fanfar so startMusic actually emits instrument sound +
+    // animation. Without an equipped instrument the server accepts the
+    // startMusic command but the visual/audio rendering on watching clients
+    // is "standing still, silent". RadialMenuTypes.ITEM_EQUIP=12 mirrors
+    // the right-click → Equip path the Windows client uses.
+    if (fanfarOid !== null) {
+      try {
+        ctx.send(new ObjectMenuSelectMessage(fanfarOid, RadialMenuTypes.ITEM_EQUIP));
+        alwaysLog(`equipped fanfar (oid=${fanfarOid.toString()})`);
+        await ctx.wait(750);
+      } catch (err) {
+        alwaysLog(
+          `WARNING: equip fanfar failed (${err instanceof Error ? err.message : String(err)})`,
+        );
+      }
+    } else {
+      alwaysLog('WARNING: fanfar oid not captured — startMusic will fire without an instrument');
+    }
 
     // 7. Set the in-game biography so players can /examine the bot to see
     // the shorthand language. Player-command path (per command_table.tab).

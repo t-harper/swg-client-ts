@@ -20,9 +20,8 @@
  * text produced by `commandFuncObject createIn` at ConsoleCommandParserObject.cpp:992).
  */
 
+import type { ScriptContext } from '../../src/client/script/context.js';
 import { ConGenericMessage } from '../../src/messages/game/con-generic-message.js';
-import { ackAllInboundTeleportSeqs } from "../../src/client/navigate.js";
-import type { ScriptContext } from "../../src/client/script/context.js";
 import type { NetworkId } from '../../src/types.js';
 
 /**
@@ -83,7 +82,6 @@ export async function adminPlanetWarp(
   // from the old location.
   ctx.setPose({ x, y, z }, ctx.yaw());
   await ctx.wait(settleMs);
-  ackAllInboundTeleportSeqs(ctx, ctx.sceneStart.playerNetworkId);
 }
 
 /**
@@ -159,11 +157,7 @@ export async function adminSpawnAtXYZ(
   z: number,
   opts: { timeoutMs?: number } = {},
 ): Promise<NetworkId> {
-  const reply = await adminConsole(
-    ctx,
-    `object create ${sharedTemplate} ${x} ${y} ${z}`,
-    opts,
-  );
+  const reply = await adminConsole(ctx, `object create ${sharedTemplate} ${x} ${y} ${z}`, opts);
   return parseNetworkIdFromReply(reply, sharedTemplate);
 }
 

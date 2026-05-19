@@ -17,8 +17,14 @@
  *      assertion against the named cell.
  *
  * Gated on `LIVE=1`. Uses the admin pool helper (account must be in
- * `stella_admin.tab`; admin god-mode is required for the `planetwarp`
- * teleport into Mos Eisley).
+ * `stella_admin.tab`; admin god-mode is enabled so the server's move
+ * validation short-circuits via `isGod()`).
+ *
+ * The test character walks from the Mos Eisley starting-location anchor
+ * (`mos_eisley` from `starting_locations.tab` — ~3528, -4804) to a point
+ * 20m east of the cantina. No `adminPlanetWarp` — the bot's actual
+ * deployed path uses only legitimate movement primitives, and the test
+ * has to walk too so regressions get caught.
  *
  * Per memory `skips_are_errors.md`: the outer `describe.skipIf(!LIVE)` is
  * the only acceptable skip path. Any inner prerequisite that's missing must
@@ -26,7 +32,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { adminGodModeOn, adminPlanetWarp } from '../../scripts/build-city/admin.js';
+import { adminGodModeOn } from '../../scripts/build-city/admin.js';
 import { findCellPath } from '../../src/client/cell-graph.js';
 import { SwgClient } from '../../src/client/swg-client.js';
 import type { NetworkId } from '../../src/types.js';
@@ -89,10 +95,16 @@ describe.skipIf(!LIVE)('live cantina entry — portal-aware multi-hop navigate',
       holdZonedInMs: 0,
       script: async (ctx) => {
         await ctx.wait(2_500);
-        // Admin warp directly to the cantina anchor — the bot's normal
-        // multi-hop "show-off" hop chain isn't needed for this test.
+        // No admin warps for position changes — the test character walks
+        // legitimately from the Mos Eisley starting location to the cantina
+        // anchor. Godmode is still enabled (admin flag, not a teleport)
+        // so the player-template invulnerability doesn't matter and the
+        // server's move-validation `isGod()` short-circuit applies.
         await adminGodModeOn(ctx);
-        await adminPlanetWarp(ctx, 'tatooine', CANTINA_X, 0, CANTINA_Z);
+        // Walk close-but-not-on-top-of the cantina BUIO so the BUIO + cell
+        // SCLT baselines flood into the WorldModel via the proximity radius.
+        // The cantina starting-location (mos_eisley) spawn is ~97 m away.
+        await ctx.walkTo({ x: CANTINA_X + 20, z: CANTINA_Z });
         await ctx.wait(2_500); // let BUIO + cell SCLTs flood in
 
         observed.cellAtStart = ctx.location.cell;
@@ -194,7 +206,9 @@ describe.skipIf(!LIVE)('live cantina entry — portal-aware multi-hop navigate',
       script: async (ctx) => {
         await ctx.wait(2_500);
         await adminGodModeOn(ctx);
-        await adminPlanetWarp(ctx, 'tatooine', CANTINA_X, 0, CANTINA_Z);
+        // No admin warps — walk to a point near the cantina BUIO so its
+        // baselines flood in (same shape as the single-hop test above).
+        await ctx.walkTo({ x: CANTINA_X + 20, z: CANTINA_Z });
         await ctx.wait(2_500);
 
         try {

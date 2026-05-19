@@ -13,6 +13,9 @@
  *      UpdateTransform sprinkled in — we record those too)
  *   3. wait for SceneEndBaselines (server's signal that the baseline phase is done)
  *   4. send CmdSceneReady (client confirms it has loaded) — now "zoned in"
+ *   4a. send NewbieTutorialResponse("clientReady") — triggers
+ *       onLoadingScreenComplete server-side, resetting the 120-second
+ *       invulnerability timer to 1s so client walks can be accepted
  *   5. optionally hold for N ms, sending HeartBeat every ~30s
  *   6. send LogoutMessage, brief delay, then disconnect()
  *
@@ -25,6 +28,7 @@ import { CmdSceneReady } from '../messages/game/cmd-scene-ready.js';
 import { CmdStartScene } from '../messages/game/cmd-start-scene.js';
 import { HeartBeat } from '../messages/game/heart-beat.js';
 import { LogoutMessage } from '../messages/game/logout-message.js';
+import { NewbieTutorialResponse } from '../messages/game/newbie-tutorial-response.js';
 import { SceneCreateObjectByCrc } from '../messages/game/scene-create-object-by-crc.js';
 import { SceneCreateObjectByName } from '../messages/game/scene-create-object-by-name.js';
 import { SceneEndBaselines } from '../messages/game/scene-end-baselines.js';
@@ -165,6 +169,22 @@ export async function runGameStage(opts: GameStageOptions): Promise<GameStageRes
 
     // 4. Send CmdSceneReady — client confirms it has loaded.
     dispatcher.send(new CmdSceneReady());
+
+    // 4a. Send NewbieTutorialResponse("clientReady"). The Windows client
+    // sends this immediately after CmdSceneReady, and it's THE message that
+    // triggers `CreatureObject::onLoadingScreenComplete` server-side. That
+    // resets `m_invulnerabilityTimer` from 120s (set by `onClientAboutToLoad`
+    // when the client first connected) down to 1s. Without this message,
+    // `PlayerCreatureController::handleMove` returns false for the full 120s
+    // because the gate `getInvulnerabilityTimer() > 0.f` has NO god short-
+    // circuit — even an authenticated admin god is blocked. Admin warps work
+    // because `planetwarp` routes through `teleport()` directly (not
+    // handleMove), but any client-driven `CM_netUpdateTransform` walk is
+    // silently dropped during the lockout window. See
+    // `/home/tharper/code/swg-main/src/engine/server/library/serverGame/src/shared/object/CreatureObject.cpp:7620`
+    // and Client.cpp:1735-1748 for the server-side handler.
+    dispatcher.send(new NewbieTutorialResponse('clientReady'));
+
     opts.onStateChange?.(ZoneState.ZonedIn);
 
     // 4a. Auto-open the player's inventory + datapad so the server pushes

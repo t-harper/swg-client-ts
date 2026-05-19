@@ -32,6 +32,9 @@
  *       [--rebuff-after-min=2] [--verbose]
  */
 
+import { AutoArrayCodec } from '../src/archive/containers.js';
+import type { IByteStream, IReadIterator } from '../src/archive/interface.js';
+import { StringCodec } from '../src/archive/string.js';
 import {
   type LifecycleResult,
   type NetworkId,
@@ -41,16 +44,8 @@ import {
   SwgClient,
   type WorldObject,
 } from '../src/index.js';
-import {
-  adminConsole,
-  adminGodModeOn,
-  adminPlanetWarp,
-  adminSpawnInto,
-} from './build-city/admin.js';
-import { AutoArrayCodec } from '../src/archive/containers.js';
-import type { IByteStream, IReadIterator } from '../src/archive/interface.js';
-import { StringCodec } from '../src/archive/string.js';
 import { GameNetworkMessage, defineMessageMeta } from '../src/messages/base.js';
+import { adminConsole, adminGodModeOn, adminSpawnInto } from './build-city/admin.js';
 
 // Mirrors buff-bot.ts ExpertiseRequestMessage — godmode bypass at
 // CreatureObject.cpp:14532 grants every expertise without point checks.
@@ -186,10 +181,10 @@ const SHORTHAND_MAP: Record<string, readonly string[]> = {
 
 // Bio text — keep <500 chars per the playerObject limit; we use ~250.
 const BIO_TEXT =
-  "Auto-buff bard. /say one of: buff heal, buff harvest, buff second, " +
-  "buff flow, buff flush, buff inspire, buff all. Aliases: harv crafter " +
-  "chance sc gwf agility success fws loot insp me everything. " +
-  "(/say kill to stop the bot.)";
+  'Auto-buff bard. /say one of: buff heal, buff harvest, buff second, ' +
+  'buff flow, buff flush, buff inspire, buff all. Aliases: harv crafter ' +
+  'chance sc gwf agility success fws loot insp me everything. ' +
+  '(/say kill to stop the bot.)';
 
 // Skill chain (class_entertainer_phase1..4_master). grantSkill enforces
 // prereqs server-side; we walk the chain in order.
@@ -381,10 +376,7 @@ function makeScenario(args: Args, killController: { stop: boolean; reason: strin
     print(`granting ${EXPERTISE_SKILL_MODS.length} inspire/performance skill mods`);
     for (const [mod, value] of EXPERTISE_SKILL_MODS) {
       try {
-        const reply = await adminConsole(
-          ctx,
-          `skill grantSkillMod ${mod} ${value} ${myOidStr}`,
-        );
+        const reply = await adminConsole(ctx, `skill grantSkillMod ${mod} ${value} ${myOidStr}`);
         if (/error|fail|invalid|unknown/i.test(reply)) {
           print(`  grantSkillMod ${mod}: ${reply.trim().slice(0, 120)}`);
         } else {
@@ -395,10 +387,14 @@ function makeScenario(args: Args, killController: { stop: boolean; reason: strin
       }
     }
 
-    // 5. Warp to outside Mos Eisley cantina (waypoint per collection.tab:5544).
-    alwaysLog(`warping to ${args.planet} (${args.x}, ${args.z})`);
-    await adminPlanetWarp(ctx, args.planet, args.x, 0, args.z);
-    alwaysLog(`warped to ${args.planet} (${args.x}, ${args.z})`);
+    // 5. Walk to Mos Eisley cantina. No admin warps for position changes —
+    // the bot uses only legitimate movement primitives. The character
+    // spawns at the start-location chosen in fullLifecycle (mos_eisley),
+    // walks across town to the cantina anchor.
+    {
+      const startPos = ctx.location.position;
+      alwaysLog(`walking from (${startPos.x.toFixed(0)}, ${startPos.z.toFixed(0)}) toward cantina`);
+    }
 
     // 6. Spawn instruments into the bot's inventory so it can play music.
     // shared_kloo_horn.iff isn't built in this server fork (the .tpf
@@ -438,47 +434,28 @@ function makeScenario(args: Args, killController: { stop: boolean; reason: strin
     }
     await ctx.wait(750);
 
-    // 6b. Show-off hop to the cantina. The bot's initial warp lands at the
-    // user-supplied (--x, --z) hold-point; chain two more adminPlanetWarp
-    // hops with flourishes in between so anyone watching sees the bot
-    // pop-flourish-pop-flourish to the cantina anchor (~3528, -4807 — the
-    // Mos Eisley cantina's buildout pos). We use planetwarp instead of
-    // walkTo because walkTo's client→server CM_netUpdateTransform messages
-    // appear to get silently swallowed after an adminPlanetWarp even with
-    // an explicit ackPendingTeleports — the bot's log says "jogging" but
-    // watching clients see it frozen at the warp point. planetwarp goes
-    // through the server's authoritative `requestSceneWarp` path which
-    // always re-broadcasts the new position to every nearby observer.
-    // World coords of the Mos Eisley cantina building, computed from the
-    // buildout entry `tatooine_6_2_ws.tab:43` (sector_local 1384.35, 5,
-    // 1325.87) → world coords by adding the sector's min_x/min_z offset
-    // from `buildout/areas_tatooine.tab` (tatooine_6_2 minX=2048, minZ=-6144).
-    // Was previously using (3528, -4807) — that's the *spaceport*, ~100m NE.
+    // 6b. Walk to the cantina anchor with a mid-route flourish for visual
+    // flavor. World coords of the Mos Eisley cantina building, computed
+    // from the buildout entry `tatooine_6_2_ws.tab:43` (sector_local
+    // 1384.35, 5, 1325.87) → world coords by adding the sector's
+    // min_x/min_z offset from `buildout/areas_tatooine.tab`
+    // (tatooine_6_2 minX=2048, minZ=-6144).
     const CANTINA_X = 3432;
     const CANTINA_Z = -4819;
     // Static OID of the cantina BUIO from the buildout file (preserved
     // verbatim at runtime by ServerBuildoutManager). Used by ctx.navigate
     // to find a public cell inside the building.
     const CANTINA_BUILDING_OID = 1082874n;
-    try {
-      const hops = [
-        { x: (args.x + CANTINA_X) / 2, z: (args.z + CANTINA_Z) / 2, flourish: 3 },
-        { x: CANTINA_X, z: CANTINA_Z, flourish: 7 },
-      ];
-      for (const hop of hops) {
-        alwaysLog(`hopping to (${hop.x.toFixed(0)}, ${hop.z.toFixed(0)})`);
-        await adminPlanetWarp(ctx, args.planet, hop.x, 0, hop.z);
-        ctx.useAbility('flourish', undefined, String(hop.flourish));
-        print(`flourish ${hop.flourish}`);
-        await ctx.wait(750);
-      }
-      alwaysLog(`arrived at cantina (${CANTINA_X}, ${CANTINA_Z})`);
-    } catch (err) {
-      alwaysLog(
-        `WARNING: hop-to-cantina failed (${err instanceof Error ? err.message : String(err)}) — playing from warp spot instead`,
-      );
+    // Let navigate own the outdoor walk to the building anchor — it
+    // computes its own approach point near the portal and walks there
+    // before the portal-cross. Doing our own pre-walkTo separately
+    // can leave the bot in a server-side state that navigate's portal
+    // walk doesn't resume cleanly from. (One walk-to call, not two.)
+    {
+      const pos = ctx.location.position;
+      const distance = Math.hypot(CANTINA_X - pos.x, CANTINA_Z - pos.z);
+      alwaysLog(`approaching cantina (${CANTINA_X}, ${CANTINA_Z}) — ${distance.toFixed(0)}m`);
     }
-    await ctx.wait(500);
 
     // 6c. Enter the cantina via ctx.navigate. The buildingId is the static
     // BUIO OID from `tatooine_6_2_ws.tab` (preserved verbatim at runtime);
@@ -489,12 +466,18 @@ function makeScenario(args: Args, killController: { stop: boolean; reason: strin
       await ctx.navigate({ buildingId: CANTINA_BUILDING_OID, cellName: '' }, { useMount: 'never' });
       const cell = ctx.location.cell;
       if (cell !== null && cell.buildingId === CANTINA_BUILDING_OID) {
-        alwaysLog(`inside cantina cell ✓ (cellName=${cell.cellName ?? 'public'}, cellNumber=${cell.cellNumber})`);
+        alwaysLog(
+          `inside cantina cell ✓ (cellName=${cell.cellName ?? 'public'}, cellNumber=${cell.cellNumber})`,
+        );
       } else {
-        alwaysLog(`WARNING: navigate returned but ctx.location.cell is ${cell === null ? 'null (outdoors)' : 'wrong building'}; continuing outside`);
+        alwaysLog(
+          `WARNING: navigate returned but ctx.location.cell is ${cell === null ? 'null (outdoors)' : 'wrong building'}; continuing outside`,
+        );
       }
     } catch (err) {
-      alwaysLog(`WARNING: cantina entry failed (${err instanceof Error ? err.message : String(err)}); continuing outside`);
+      alwaysLog(
+        `WARNING: cantina entry failed (${err instanceof Error ? err.message : String(err)}); continuing outside`,
+      );
     }
     await ctx.wait(500);
 
@@ -514,7 +497,9 @@ function makeScenario(args: Args, killController: { stop: boolean; reason: strin
           alwaysLog(`WARNING: equip didn't take — fanfar containerId=${containerNow.toString()}`);
         }
       } catch (err) {
-        alwaysLog(`WARNING: equip fanfar failed (${err instanceof Error ? err.message : String(err)})`);
+        alwaysLog(
+          `WARNING: equip fanfar failed (${err instanceof Error ? err.message : String(err)})`,
+        );
       }
     }
 
@@ -537,9 +522,7 @@ function makeScenario(args: Args, killController: { stop: boolean; reason: strin
       ctx.useAbility('startMusic', undefined, 'rock');
       print('startMusic+rock');
     } catch (err) {
-      alwaysLog(
-        `WARNING: startMusic failed (${err instanceof Error ? err.message : String(err)})`,
-      );
+      alwaysLog(`WARNING: startMusic failed (${err instanceof Error ? err.message : String(err)})`);
     }
 
     // 9. Wire chat handlers.
@@ -628,8 +611,19 @@ function makeScenario(args: Args, killController: { stop: boolean; reason: strin
     // All music genres listed are granted by the class_entertainer_phase*
     // skills we just bought; verified against skills.tab COMMANDS columns.
     const MUSIC_GENRES = [
-      'rock', 'starwars2', 'pop', 'folk', 'starwars3', 'ceremonial',
-      'boogie', 'starwars4', 'ballad', 'swing', 'zydeco', 'funk', 'waltz',
+      'rock',
+      'starwars2',
+      'pop',
+      'folk',
+      'starwars3',
+      'ceremonial',
+      'boogie',
+      'starwars4',
+      'ballad',
+      'swing',
+      'zydeco',
+      'funk',
+      'waltz',
     ] as const;
     const pickGenre = (current: string): string => {
       // Pick a different genre than the current one so changeMusic actually

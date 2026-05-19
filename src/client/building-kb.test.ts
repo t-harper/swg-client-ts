@@ -9,6 +9,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
+import type { CrcStringTable } from '../iff/crc-string-table-reader.js';
 import type { PortalLayout } from '../iff/portal-layout-reader.js';
 import { BuildingKBImpl, type BuildingTemplateInfo } from './building-kb.js';
 
@@ -350,5 +351,153 @@ describe('BuildingKBImpl — default loaders (no overrides)', () => {
     // Don't actually call the loader — the asset-loader chain hits the
     // real filesystem / TRE archive, and this suite is filesystem-free.
     // The fact that construction succeeds is the assertion we need.
+  });
+});
+
+// ─── templateNameForCrc: laziness + caching ──────────────────────────────
+
+/**
+ * Build a fake `CrcStringTable` from an `(crc, name)` map. The fake's
+ * `lookup` returns the mapped name or `null`; `entries()` walks the map
+ * in declaration order. Used by every `templateNameForCrc` test below.
+ */
+function fakeCrcTable(entries: { [crcHex: string]: string }): CrcStringTable {
+  const m = new Map<number, string>();
+  for (const [hex, name] of Object.entries(entries)) {
+    m.set(Number.parseInt(hex, 16), name);
+  }
+  return {
+    lookup(crc: number): string | null {
+      return m.get(crc >>> 0) ?? null;
+    },
+    size(): number {
+      return m.size;
+    },
+    *entries() {
+      for (const [crc, name] of m.entries()) yield { crc, name };
+    },
+  };
+}
+
+describe('BuildingKBImpl — templateNameForCrc: laziness + caching', () => {
+  it('does NOT call loadCrcStringTable until templateNameForCrc is invoked', () => {
+    const loadCrcStringTable = vi.fn(async () => fakeCrcTable({}));
+    new BuildingKBImpl({ loadCrcStringTable });
+    expect(loadCrcStringTable).not.toHaveBeenCalled();
+  });
+
+  it('loads the table once and reuses it for every lookup', async () => {
+    const loadCrcStringTable = vi.fn(async () =>
+      fakeCrcTable({
+        '0x3ff15d0a': 'object/building/tatooine/shared_cantina_tatooine.iff',
+        '0xdeadbeef': 'object/building/test/shared_test.iff',
+      }),
+    );
+    const kb = new BuildingKBImpl({ loadCrcStringTable });
+
+    const cantina = await kb.templateNameForCrc(0x3ff15d0a);
+    expect(cantina).toBe('object/building/tatooine/shared_cantina_tatooine.iff');
+
+    const test = await kb.templateNameForCrc(0xdeadbeef);
+    expect(test).toBe('object/building/test/shared_test.iff');
+
+    // Unknown CRC returns null without re-loading.
+    const missing = await kb.templateNameForCrc(0x12345678);
+    expect(missing).toBeNull();
+
+    expect(loadCrcStringTable).toHaveBeenCalledTimes(1);
+  });
+
+  it('coalesces concurrent templateNameForCrc calls into one load', async () => {
+    const loadCrcStringTable = vi.fn(async () => {
+      // Microtask hop so concurrent callers race to the same in-flight promise.
+      await new Promise((r) => setTimeout(r, 0));
+      return fakeCrcTable({ '0x3ff15d0a': 'foo/bar.iff' });
+    });
+    const kb = new BuildingKBImpl({ loadCrcStringTable });
+    const [a, b, c] = await Promise.all([
+      kb.templateNameForCrc(0x3ff15d0a),
+      kb.templateNameForCrc(0x3ff15d0a),
+      kb.templateNameForCrc(0x3ff15d0a),
+    ]);
+    expect(loadCrcStringTable).toHaveBeenCalledTimes(1);
+    expect(a).toBe('foo/bar.iff');
+    expect(b).toBe('foo/bar.iff');
+    expect(c).toBe('foo/bar.iff');
+  });
+
+  it('handles high-bit-set CRCs (unsigned uint32)', async () => {
+    // The cantina-like fixture but with a high-bit CRC. Verifies we don't
+    // accidentally sign-extend somewhere in the lookup pipeline.
+    const loadCrcStringTable = vi.fn(async () =>
+      fakeCrcTable({ '0xffaabbcc': 'object/high_bit/shared.iff' }),
+    );
+    const kb = new BuildingKBImpl({ loadCrcStringTable });
+    // Pass the signed-int form (negative when interpreted as int32) — the
+    // method must still resolve it.
+    expect(await kb.templateNameForCrc(0xffaabbcc | 0)).toBe('object/high_bit/shared.iff');
+    expect(await kb.templateNameForCrc(0xffaabbcc)).toBe('object/high_bit/shared.iff');
+  });
+
+  it('size() reflects the loaded table once + portal/template entries', async () => {
+    const loadCrcStringTable = vi.fn(async () => fakeCrcTable({ '0x1': 'a.iff' }));
+    const kb = new BuildingKBImpl({
+      loadPortalLayout: async (n) => fakeLayout(n),
+      loadBuildingTemplateInfo: async (n) => ({
+        templateName: n,
+        portalLayoutFilename: null,
+        appearanceFilename: null,
+      }),
+      loadCrcStringTable,
+    });
+    expect(kb.size()).toBe(0);
+    await kb.templateNameForCrc(0x1);
+    expect(kb.size()).toBe(1);
+    await kb.portalLayoutFor('appearance/a.pob');
+    expect(kb.size()).toBe(2);
+    await kb.templateInfoFor('object/x/shared_x.iff');
+    expect(kb.size()).toBe(3);
+  });
+});
+
+describe('BuildingKBImpl — templateNameForCrc: failure handling', () => {
+  it('returns null when the loader rejects, and the NEXT call retries the load', async () => {
+    let attempt = 0;
+    const loadCrcStringTable = vi.fn(async () => {
+      attempt += 1;
+      if (attempt === 1) throw new Error('asset not found');
+      return fakeCrcTable({ '0x1': 'recovered.iff' });
+    });
+    const kb = new BuildingKBImpl({ loadCrcStringTable });
+
+    // First attempt: loader rejects → method returns null.
+    expect(await kb.templateNameForCrc(0x1)).toBeNull();
+    // Cache must have evicted the failed promise so size is still 0.
+    expect(kb.size()).toBe(0);
+
+    // Second attempt: loader succeeds → method returns the mapped name.
+    expect(await kb.templateNameForCrc(0x1)).toBe('recovered.iff');
+    expect(loadCrcStringTable).toHaveBeenCalledTimes(2);
+    expect(kb.size()).toBe(1);
+  });
+
+  it('returns null on an outright string rejection (not an Error instance)', async () => {
+    const loadCrcStringTable = vi.fn((): Promise<CrcStringTable> => Promise.reject('boom'));
+    const kb = new BuildingKBImpl({ loadCrcStringTable });
+    expect(await kb.templateNameForCrc(0x1)).toBeNull();
+    // Cache evicted, next call retries.
+    expect(kb.size()).toBe(0);
+  });
+
+  it('clear() drops the loaded CRC table', async () => {
+    const loadCrcStringTable = vi.fn(async () => fakeCrcTable({ '0x1': 'a.iff' }));
+    const kb = new BuildingKBImpl({ loadCrcStringTable });
+    await kb.templateNameForCrc(0x1);
+    expect(kb.size()).toBe(1);
+    kb.clear();
+    expect(kb.size()).toBe(0);
+    // Next call must reload.
+    await kb.templateNameForCrc(0x1);
+    expect(loadCrcStringTable).toHaveBeenCalledTimes(2);
   });
 });

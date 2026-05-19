@@ -255,16 +255,34 @@ export async function planNavigate(
   // also be retried by planNavigateSync below; we just need a clean
   // string to pass to templateInfoFor().
   const buildingObj = pc.world.get(target.buildingId);
-  const templateName = buildingObj?.templateName;
+  let templateName = buildingObj?.templateName;
   if (templateName === undefined || templateName === '') {
-    return planNavigateSync(
-      pc,
-      target,
-      opts,
-      undefined,
-      null,
-      'navigate: building has no templateName on its WorldObject — falling back, cell entry may not register',
-    );
+    // Buildout objects (the cantina, every static building) arrive via
+    // `SceneCreateObjectByCrc` which carries only the templateCrc. The
+    // friendlier templateName lookup falls through to `BuildingKB.templateNameForCrc`
+    // — a CRC string table loaded once per process and shared by every
+    // navigate call.
+    const templateCrc = buildingObj?.templateCrc;
+    if (templateCrc !== undefined) {
+      const resolved = await knowledge.buildings.templateNameForCrc(templateCrc);
+      if (resolved !== null && resolved !== '') {
+        templateName = resolved;
+      }
+    }
+    if (templateName === undefined || templateName === '') {
+      const crcSuffix =
+        templateCrc !== undefined
+          ? ` (templateCrc=0x${(templateCrc >>> 0).toString(16).padStart(8, '0')} not in CRC string table)`
+          : ' (no templateCrc either)';
+      return planNavigateSync(
+        pc,
+        target,
+        opts,
+        undefined,
+        null,
+        `navigate: building has no templateName on its WorldObject${crcSuffix} — falling back, cell entry may not register`,
+      );
+    }
   }
 
   let layout: PortalLayout | undefined;

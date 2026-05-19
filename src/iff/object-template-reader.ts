@@ -432,21 +432,18 @@ function normalizeFilename(s: string | null): string | null {
  * configured (tests + offline tooling).
  */
 async function defaultLoadFile(templateName: string): Promise<Uint8Array> {
-  const localAsset = join(process.cwd(), 'assets', templateName);
-  if (existsSync(localAsset)) return readFileSync(localAsset);
-
-  const siblingExtract = join(
-    process.cwd(),
-    '..',
-    'swg-main',
-    'data',
-    'sku.0',
-    'sys.shared',
-    'compiled',
-    'game',
-    templateName,
-  );
-  if (existsSync(siblingExtract)) return readFileSync(siblingExtract);
+  const home = process.env.HOME ?? '';
+  const explicit = process.env.SWG_MAIN_DIR ?? '';
+  const sharedSubpath = join('data', 'sku.0', 'sys.shared', 'compiled', 'game', templateName);
+  const candidates: string[] = [
+    join(process.cwd(), 'assets', templateName),
+    join(process.cwd(), '..', 'swg-main', sharedSubpath),
+  ];
+  if (explicit !== '') candidates.push(join(explicit, sharedSubpath));
+  if (home !== '') candidates.push(join(home, 'code', 'swg-main', sharedSubpath));
+  for (const p of candidates) {
+    if (existsSync(p)) return readFileSync(p);
+  }
 
   try {
     const { getTreReader, resolveDefaultTrePath } = await import('../terrain/asset-loader.js');

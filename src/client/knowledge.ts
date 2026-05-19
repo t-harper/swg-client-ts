@@ -35,7 +35,13 @@ import {
   type ProceduralTerrainTemplate,
   loadPlanetTrnTemplate,
 } from '../terrain/sim/index.js';
+import { type BuildingKB, BuildingKBImpl, type BuildingKBOptions } from './building-kb.js';
 import { StringKBImpl } from './string-kb.js';
+
+// Re-export so consumers can import `BuildingKB` / `BuildingTemplateInfo`
+// from the same place they import `Knowledge`. Matches the existing pattern
+// for `TerrainKB` / `StringKB` which are declared in-file below.
+export type { BuildingKB, BuildingKBOptions, BuildingTemplateInfo } from './building-kb.js';
 
 // ──────────────────────────────────────────────────────────────────────
 // TerrainKB — per-planet ProceduralTerrainAppearance cache.
@@ -137,12 +143,19 @@ export interface Knowledge {
   readonly strings: StringKB;
 
   /**
+   * Building static data — `.pob` portal layouts and (once Track B lands)
+   * object-template field extracts. Used by the navigate path to walk a
+   * player into a named cell.
+   */
+  readonly buildings: BuildingKB;
+
+  /**
    * Optional warmup so the first ScriptContext doesn't pay the full
    * cold-start cost. Fire-and-forget; loads happen in parallel.
    */
   preload(opts?: PreloadOptions): Promise<void>;
 
-  /** Drop every cached lens (terrain + strings + ...). Mainly for tests. */
+  /** Drop every cached lens (terrain + strings + buildings + ...). Mainly for tests. */
   clear(): void;
 }
 
@@ -151,11 +164,14 @@ export interface PreloadOptions {
   planets?: readonly string[];
   /** Pre-load STF tables for these files. */
   strings?: readonly string[];
+  /** Pre-load portal layouts for these `.pob` filenames. */
+  buildings?: readonly string[];
 }
 
 export interface KnowledgeOptions {
   terrain?: TerrainKBOptions;
   strings?: StringKBOptions;
+  buildings?: BuildingKBOptions;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -215,10 +231,12 @@ export class TerrainKBImpl implements TerrainKB {
 export class KnowledgeImpl implements Knowledge {
   readonly terrain: TerrainKBImpl;
   readonly strings: StringKB;
+  readonly buildings: BuildingKB;
 
   constructor(opts: KnowledgeOptions = {}) {
     this.terrain = new TerrainKBImpl(opts.terrain);
     this.strings = new StringKBImpl(opts.strings);
+    this.buildings = new BuildingKBImpl(opts.buildings);
   }
 
   async preload(opts: PreloadOptions = {}): Promise<void> {
@@ -233,12 +251,21 @@ export class KnowledgeImpl implements Knowledge {
         tasks.push(this.strings.resolveFile(file));
       }
     }
+    if (opts.buildings !== undefined) {
+      for (const file of opts.buildings) {
+        // Swallow rejections here — preload is fire-and-forget, and missing
+        // assets shouldn't crash the whole warmup. The cache evicts the
+        // failed entry so a later real call surfaces the error to the caller.
+        tasks.push(this.buildings.portalLayoutFor(file).catch(() => undefined));
+      }
+    }
     await Promise.all(tasks);
   }
 
   clear(): void {
     this.terrain.clear();
     this.strings.clear();
+    this.buildings.clear();
   }
 }
 

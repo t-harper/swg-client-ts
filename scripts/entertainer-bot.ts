@@ -45,7 +45,6 @@ import {
   adminConsole,
   adminGodModeOn,
   adminPlanetWarp,
-  adminSpawnAtXYZ,
   adminSpawnInto,
 } from './build-city/admin.js';
 import { AutoArrayCodec } from '../src/archive/containers.js';
@@ -450,8 +449,17 @@ function makeScenario(args: Args, killController: { stop: boolean; reason: strin
     // watching clients see it frozen at the warp point. planetwarp goes
     // through the server's authoritative `requestSceneWarp` path which
     // always re-broadcasts the new position to every nearby observer.
-    const CANTINA_X = 3528;
-    const CANTINA_Z = -4807;
+    // World coords of the Mos Eisley cantina building, computed from the
+    // buildout entry `tatooine_6_2_ws.tab:43` (sector_local 1384.35, 5,
+    // 1325.87) → world coords by adding the sector's min_x/min_z offset
+    // from `buildout/areas_tatooine.tab` (tatooine_6_2 minX=2048, minZ=-6144).
+    // Was previously using (3528, -4807) — that's the *spaceport*, ~100m NE.
+    const CANTINA_X = 3432;
+    const CANTINA_Z = -4819;
+    // Static OID of the cantina BUIO from the buildout file (preserved
+    // verbatim at runtime by ServerBuildoutManager). Used by ctx.navigate
+    // to find a public cell inside the building.
+    const CANTINA_BUILDING_OID = 1082874n;
     try {
       const hops = [
         { x: (args.x + CANTINA_X) / 2, z: (args.z + CANTINA_Z) / 2, flourish: 3 },
@@ -472,31 +480,79 @@ function makeScenario(args: Args, killController: { stop: boolean; reason: strin
     }
     await ctx.wait(500);
 
-    // 6c. Drop a floor-standing ommni_box at the cantina anchor for the
-    // visual ambiance. We TRIED having the bot play music via this
-    // instrument (path 2 of `CreatureObject::getInstrumentAudioId`, which
-    // resolves audioId from `getIntendedTarget()` when no weapon is in
-    // hold_r) but `CM_setIntendedTarget=1220` is NOT on the server's
-    // `ControllerMessageFactory::allowFromClient` registry — sending it
-    // from a client gets the session silently kicked (HackAttempts entry).
-    // Without a working intendedTarget set + no working in-slot equip
-    // path, the bot can't play actual audible music; the show-off jog
-    // around the cantina is what watching players see.
+    // 6c. Enter the cantina via ctx.navigate. The buildingId is the static
+    // BUIO OID from `tatooine_6_2_ws.tab` (preserved verbatim at runtime);
+    // cellName='' picks the first public cell (the main floor). Navigate
+    // handles the cell-relative walkToCell after the outdoor walkTo lands
+    // us at the building anchor.
     try {
-      const ommniOid = await adminSpawnAtXYZ(
-        ctx,
-        'object/tangible/instrument/ommni_box.iff',
-        CANTINA_X,
-        0,
-        CANTINA_Z,
-        { timeoutMs: 5_000 },
-      );
-      alwaysLog(`spawned ambient ommni_box at cantina (oid=${ommniOid.toString()})`);
-      await ctx.wait(500);
+      alwaysLog(`entering cantina (building oid=${CANTINA_BUILDING_OID.toString()})`);
+      await ctx.navigate({
+        buildingId: CANTINA_BUILDING_OID,
+        cellName: '',
+      }, { useMount: 'never' });
+      alwaysLog('inside cantina');
     } catch (err) {
       alwaysLog(
-        `WARNING: ommni_box ambient spawn failed (${err instanceof Error ? err.message : String(err)})`,
+        `WARNING: cantina entry failed (${err instanceof Error ? err.message : String(err)}) — playing from outside`,
       );
+    }
+    await ctx.wait(500);
+
+    // 6d. Equip the fanfar to hold_r. The wire path uses one of three
+    // ground commands depending on which slot the item lands in:
+    //   - `transferItemMisc`  → routed if `isGoingInWeaponSlot=false`
+    //     (i.e. arrangement<=0 OR arrangement's slots don't include
+    //     hold_r/hold_l)
+    //   - `transferItemWeapon` → routed if `isGoingInWeaponSlot=true`
+    //     (arrangement>0 AND slots include hold_r/hold_l)
+    //   - `transferItemArmor` → routed for armor pieces specifically
+    //
+    // We don't know the right arrangement index a priori — the fanfar's
+    // arrangementDescriptor only declares one ARG ([hold_r]) but the wire
+    // index might be 0 or 1. Try the combinations until the fanfar's
+    // WorldModel containerId moves from inventory (`playerOid + 1`) to the
+    // player creature (`playerOid`), which means hold_r equip stuck.
+    if (fanfarOid !== null) {
+      const botOid = ctx.sceneStart.playerNetworkId;
+      const attempts: Array<[string, number]> = [
+        ['transferItemMisc', 0],
+        ['transferItemWeapon', 1],
+        ['transferItemMisc', 1],
+        ['transferItemWeapon', 4],
+        ['transferItemMisc', 4],
+        ['transferItemWeapon', 0],
+      ];
+      let equipped = false;
+      for (const [cmd, arrangement] of attempts) {
+        try {
+          ctx.useAbility(cmd, fanfarOid, `${botOid.toString()} ${arrangement}`);
+          await ctx.wait(1_500);
+          const fanfarObj = ctx.world.get(fanfarOid);
+          const containerNow = fanfarObj?.containerId ?? 0n;
+          if (containerNow === botOid) {
+            alwaysLog(
+              `equipped fanfar to hold_r via ${cmd} arr=${arrangement} ✓ (containerId=playerOid)`,
+            );
+            equipped = true;
+            break;
+          }
+          print(
+            `equip attempt ${cmd}/arr=${arrangement} didn't stick (containerId=${containerNow.toString()})`,
+          );
+        } catch (err) {
+          print(
+            `equip attempt ${cmd}/arr=${arrangement} threw: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+      if (!equipped) {
+        alwaysLog(
+          `WARNING: none of ${attempts.length} equip attempts stuck — startMusic will fail`,
+        );
+      }
+    } else {
+      alwaysLog('WARNING: fanfar oid not captured — startMusic will fail');
     }
 
     // 7. Set the in-game biography so players can /examine the bot to see

@@ -749,7 +749,13 @@ async function main(): Promise<number> {
     lifecycle = await client.fullLifecycle({
       account: args.user,
       characterName: args.character,
-      planet: args.planet,
+      // ClientCreateCharacter wants a CITY KEY from starting_locations.iff
+      // (e.g. "mos_eisley"), NOT a planet name. The CLI `--planet` arg
+      // controls where the bot *warps* to after zone-in via
+      // adminPlanetWarp, so we always create in mos_eisley regardless.
+      // Without this, the create fails with "character_create_failed_bad_location"
+      // when --planet=tatooine (or any other planet name) is the default.
+      planet: 'mos_eisley',
       // NGE medic class baked in at create-time — bypasses the in-game
       // `ws_professiontemplateselect` picker that fresh characters
       // otherwise get on first zone-in. Carried on

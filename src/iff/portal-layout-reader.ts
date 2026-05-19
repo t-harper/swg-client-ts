@@ -585,18 +585,29 @@ function skipNextBlock(iff: Iff): void {
  * `loadPlanetTrn` in `src/terrain/asset-loader.ts`:
  *   1. extracted-on-disk under `<cwd>/assets/`
  *   2. extracted-on-disk under the sibling `swg-main` server-data tree
- *   3. the TRE archive entry — best effort; if no TRE is configured we
+ *   3. `$SWG_MAIN_DIR/serverdata/<filename>` env-override (works from anywhere)
+ *   4. `$HOME/code/swg-main/serverdata/<filename>` fallback (covers
+ *      `.claude/worktrees/` runs where `<cwd>/..` doesn't reach swg-main)
+ *   5. the TRE archive entry — best effort; if no TRE is configured we
  *      just throw "asset missing" rather than "TRE missing".
  *
  * Lazy-imports TRE bits so the parser stays usable without an archive
  * configured (tests + offline tooling).
  */
 async function defaultLoadFile(portalLayoutFilename: string): Promise<Uint8Array> {
-  const localAsset = join(process.cwd(), 'assets', portalLayoutFilename);
-  if (existsSync(localAsset)) return readFileSync(localAsset);
-
-  const siblingExtract = join(process.cwd(), '..', 'swg-main', 'serverdata', portalLayoutFilename);
-  if (existsSync(siblingExtract)) return readFileSync(siblingExtract);
+  const home = process.env.HOME ?? '';
+  const explicit = process.env.SWG_MAIN_DIR ?? '';
+  const candidates: string[] = [
+    join(process.cwd(), 'assets', portalLayoutFilename),
+    join(process.cwd(), '..', 'swg-main', 'serverdata', portalLayoutFilename),
+  ];
+  if (explicit !== '') candidates.push(join(explicit, 'serverdata', portalLayoutFilename));
+  if (home !== '') {
+    candidates.push(join(home, 'code', 'swg-main', 'serverdata', portalLayoutFilename));
+  }
+  for (const p of candidates) {
+    if (existsSync(p)) return readFileSync(p);
+  }
 
   try {
     const { getTreReader, resolveDefaultTrePath } = await import('../terrain/asset-loader.js');

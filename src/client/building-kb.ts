@@ -2,21 +2,29 @@
  * `BuildingKBImpl` — lazy, process-wide cache of building-related lookups
  * that the navigate path needs to walk a player into a named cell.
  *
- * Two caches live here, both keyed by string filename, both behaving like
- * `StringKBImpl`:
+ * Three caches live here, all coalescing concurrent loads and evicting on
+ * failure (so a transient missing-asset error doesn't poison subsequent
+ * calls):
  *
  *   - `portalLayoutFor(portalLayoutFilename)` — resolves a `.pob` file
  *     (e.g. `'appearance/thm_tato_cantina.pob'`) to a parsed `PortalLayout`.
  *   - `templateInfoFor(templateName)` — resolves a building template name
  *     (e.g. `'object/building/tatooine/shared_cantina_tatooine.iff'`) to a
  *     tiny `BuildingTemplateInfo` struct carrying `portalLayoutFilename`
- *     and `appearanceFilename`. The default loader walks the same asset
- *     resolution chain as `loadPortalLayout`.
+ *     and `appearanceFilename`.
+ *   - `templateNameForCrc(crc)` — reverse lookup from `templateCrc`
+ *     (carried on `SceneCreateObjectByCrc`) to the template path string.
+ *     Used by `navigate.ts` when a building's `WorldObject.templateName`
+ *     is undefined (the common case for buildout objects). The underlying
+ *     `CrcStringTable` is loaded once per process and shared by every
+ *     lookup.
  *
  * # Cache shape (mirrors `StringKBImpl`)
  *
  *   - One `Map<filename, Promise<PortalLayout>>` and one
- *     `Map<templateName, Promise<BuildingTemplateInfo>>` per instance.
+ *     `Map<templateName, Promise<BuildingTemplateInfo>>` per instance,
+ *     plus a single `Promise<CrcStringTable> | null` for the CRC reverse
+ *     lookup (lazy, process-wide).
  *   - Concurrent calls for the same key share the same in-flight promise.
  *   - Failed loads are NOT cached — a transient asset-resolution failure
  *     shouldn't poison the cache for every other client. The next call
@@ -26,12 +34,17 @@
  *
  * # Default loaders
  *
- * The default `loadPortalLayout` and `loadBuildingTemplateInfo` resolve
- * bytes via the same priority chain as terrain + strings (extracted on
- * disk first, then TRE archive). Tests inject their own loaders via
- * `BuildingKBOptions` to stay filesystem-free.
+ * The default `loadPortalLayout`, `loadBuildingTemplateInfo`, and
+ * `loadCrcStringTable` resolve bytes via the same priority chain as
+ * terrain + strings (extracted on disk first, then TRE archive). Tests
+ * inject their own loaders via `BuildingKBOptions` to stay
+ * filesystem-free.
  */
 
+import {
+  type CrcStringTable,
+  loadCrcStringTable as defaultLoadCrcStringTable,
+} from '../iff/crc-string-table-reader.js';
 import {
   type BuildingTemplateInfo,
   loadBuildingTemplateInfo as defaultLoadBuildingTemplateInfo,
@@ -86,13 +99,38 @@ export interface BuildingKB {
    */
   templateInfoFor(templateName: string): Promise<BuildingTemplateInfo>;
 
+  /**
+   * Reverse-lookup a template name from its 32-bit CRC. The cantina (and
+   * most other buildout objects) arrive via `SceneCreateObjectByCrc` with
+   * NO `templateName` on the wire — only the `templateCrc`. This method
+   * resolves the CRC to the template path string, which can then feed
+   * `templateInfoFor(name)` to recover the `.pob` / appearance fields.
+   *
+   * Lazy: the underlying `object_template_crc_string_table.iff` (~30k
+   * entries, ~2 MB) is loaded once per process on the first call and
+   * shared by every subsequent lookup. Returns `null` when the CRC
+   * isn't in the table OR the table itself can't be loaded — the navigate
+   * path falls through to the legacy outdoor-anchor walk in either case.
+   *
+   * A transient load failure does NOT poison the cache; the next call
+   * retries. A genuine "this CRC isn't known" result IS cached (it's just
+   * `null`, which is the same value the table itself returns).
+   */
+  templateNameForCrc(crc: number): Promise<string | null>;
+
   /** Maintenance: drop a single portal layout from cache. */
   evict(portalLayoutFilename: string): void;
 
-  /** Maintenance: drop every cached entry (portal layouts + template info). */
+  /**
+   * Maintenance: drop every cached entry — portal layouts, template info,
+   * AND the loaded CRC string table.
+   */
   clear(): void;
 
-  /** Diagnostic: how many entries are currently cached (portal layouts + template info). */
+  /**
+   * Diagnostic: how many entries are currently cached (portal layouts +
+   * template info; the loaded CRC string table counts as +1 once loaded).
+   */
   size(): number;
 }
 
@@ -116,22 +154,46 @@ export interface BuildingKBOptions {
    * archive). Tests inject a synthetic loader to stay filesystem-free.
    */
   loadBuildingTemplateInfo?: (templateName: string) => Promise<BuildingTemplateInfo>;
+  /**
+   * Loader override for `templateNameForCrc`. Defaults to
+   * `loadCrcStringTable('misc/object_template_crc_string_table.iff')`
+   * from `src/iff/crc-string-table-reader.ts`, which walks the same
+   * asset-resolution chain as the other loaders. Tests pass a synthetic
+   * table-loader to stay filesystem-free.
+   */
+  loadCrcStringTable?: () => Promise<CrcStringTable>;
 }
 
 // ─── Implementation ───────────────────────────────────────────────────────
 
+/**
+ * Canonical filename of the CRC → template-name table that ships with the
+ * SWG client. Used by the default `loadCrcStringTable` thunk and the
+ * `clear()` / `size()` accounting.
+ */
+const CRC_STRING_TABLE_FILENAME = 'misc/object_template_crc_string_table.iff';
+
 export class BuildingKBImpl implements BuildingKB {
   private readonly portalCache = new Map<string, Promise<PortalLayout>>();
   private readonly templateCache = new Map<string, Promise<BuildingTemplateInfo>>();
+  /**
+   * One-shot promise for the loaded CRC string table. `null` until the
+   * first `templateNameForCrc` call kicks off a load. Failed loads reset
+   * back to `null` so the next call retries.
+   */
+  private crcTablePromise: Promise<CrcStringTable> | null = null;
   private readonly loadPortalLayout: (portalLayoutFilename: string) => Promise<PortalLayout>;
   private readonly loadBuildingTemplateInfo: (
     templateName: string,
   ) => Promise<BuildingTemplateInfo>;
+  private readonly loadCrcStringTable: () => Promise<CrcStringTable>;
 
   constructor(opts: BuildingKBOptions = {}) {
     this.loadPortalLayout = opts.loadPortalLayout ?? defaultLoadPortalLayout;
     this.loadBuildingTemplateInfo =
       opts.loadBuildingTemplateInfo ?? defaultLoadBuildingTemplateInfo;
+    this.loadCrcStringTable =
+      opts.loadCrcStringTable ?? (() => defaultLoadCrcStringTable(CRC_STRING_TABLE_FILENAME));
   }
 
   portalLayoutFor(portalLayoutFilename: string): Promise<PortalLayout> {
@@ -166,6 +228,34 @@ export class BuildingKBImpl implements BuildingKB {
     return pending;
   }
 
+  async templateNameForCrc(crc: number): Promise<string | null> {
+    // Force a fresh load on every retry path: on a transient failure
+    // (e.g. asset missing) we want the NEXT call to re-attempt the load,
+    // not silently keep returning the cached rejected promise.
+    if (this.crcTablePromise === null) {
+      const pending = this.loadCrcStringTable();
+      pending.catch(() => {
+        // Same eviction discipline as the other caches: only nullify if
+        // we still hold THIS promise (a concurrent successful retry could
+        // have already replaced it).
+        if (this.crcTablePromise === pending) {
+          this.crcTablePromise = null;
+        }
+      });
+      this.crcTablePromise = pending;
+    }
+    let table: CrcStringTable;
+    try {
+      table = await this.crcTablePromise;
+    } catch {
+      // Load failed — the catch handler above has already reset
+      // `crcTablePromise` to null. Surface as "unknown CRC" so the
+      // navigate path's fallback chain runs.
+      return null;
+    }
+    return table.lookup(crc);
+  }
+
   evict(portalLayoutFilename: string): void {
     this.portalCache.delete(portalLayoutFilename);
   }
@@ -173,9 +263,15 @@ export class BuildingKBImpl implements BuildingKB {
   clear(): void {
     this.portalCache.clear();
     this.templateCache.clear();
+    this.crcTablePromise = null;
   }
 
   size(): number {
-    return this.portalCache.size + this.templateCache.size;
+    // Loaded CRC table counts as +1. A pending (not-yet-resolved) load is
+    // still counted — `templateNameForCrc` callers awaiting it will see the
+    // resolved table, so it's a live cache entry from the script's POV.
+    return (
+      this.portalCache.size + this.templateCache.size + (this.crcTablePromise === null ? 0 : 1)
+    );
   }
 }

@@ -718,10 +718,10 @@ export interface ScriptContext {
   /**
    * Shared offline-data knowledge base — exposes the same lenses that
    * `ctx.terrain` and `ctx.strings` are built over, plus the building-static
-   * KB (`knowledge.buildings.portalLayoutFor` / `templateInfoFor`) the
-   * navigate path uses to walk a player into a named cell. Defaults to the
-   * process-wide `defaultKnowledge` singleton; tests inject a fresh instance
-   * via `createScriptContext({ knowledge })`.
+   * KB (`knowledge.buildings.portalLayoutFor` / `templateInfoFor` /
+   * `templateNameForCrc`) the navigate path uses to walk a player into a
+   * named cell. Defaults to the process-wide `defaultKnowledge` singleton;
+   * tests inject a fresh instance via `createScriptContext({ knowledge })`.
    */
   readonly knowledge: Knowledge;
   /**

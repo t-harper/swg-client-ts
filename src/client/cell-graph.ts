@@ -29,16 +29,10 @@
  * enqueue a cell on its first visit. The rule is fully deterministic and
  * data-driven (the order portals are listed in the `.pob`).
  *
- * # Track A dependency (read first)
- *
- * Types come from a local stub `./cell-graph-types.js` because Track A
- * (`src/iff/portal-layout-reader.ts`) has not yet merged into this
- * worktree. See the header of that file for swap instructions during the
- * Track D merge.
  */
 
 import type { Vector3 } from '../types.js';
-import type { Cell, CellPortal, PortalLayout } from './cell-graph-types.js';
+import type { Cell, CellPortal, PortalLayout } from '../iff/portal-layout-reader.js';
 
 /** One hop in a multi-cell traversal — see {@link findCellPath}. */
 export interface CellPathHop {

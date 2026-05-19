@@ -1,15 +1,13 @@
 /**
  * Tests for `findCellPath` — the BFS portal pathfinder.
  *
- * Layouts are constructed inline using the same type shape Track A's
- * `src/iff/portal-layout-reader.ts` will export. When that file lands and
- * `cell-graph.ts` swaps its import, this file should swap the same
- * import line (see `cell-graph-types.ts` header).
+ * Layouts are constructed inline using the same type shape exported by
+ * `src/iff/portal-layout-reader.ts` (the .pob loader).
  */
 
 import { describe, expect, it, vi } from 'vitest';
 import type { Vector3 } from '../types.js';
-import type { Cell, CellPortal, PortalGeometry, PortalLayout } from './cell-graph-types.js';
+import type { Cell, CellPortal, PortalGeometry, PortalLayout } from '../iff/portal-layout-reader.js';
 import { type CellPathHop, findCellPath } from './cell-graph.js';
 
 // -- Fixture builders --------------------------------------------------------
@@ -40,6 +38,7 @@ function portal(spec: PortalSpec): CellPortal {
     geometryIndex: spec.geometryIndex,
     geometry: dummyGeometry(spec.geometryIndex),
     targetCellIndex: spec.targetCellIndex,
+    windingClockwise: false,
     passable: spec.passable ?? true,
     disabled: spec.disabled ?? false,
     doorStyle: spec.doorStyle ?? '',

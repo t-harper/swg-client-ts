@@ -78,6 +78,11 @@ import {
   ZoneState,
 } from '../types.js';
 import { type CreateCharacterOptions, runConnectionStage } from './connection-stage.js';
+import {
+  deleteCharacter,
+  type DeleteCharacterOptions,
+  type DeleteCharacterReply,
+} from './delete-character.js';
 import type { TranscriptEvent } from './dispatcher.js';
 import { runGameStage } from './game-stage.js';
 import { runLoginStage } from './login-stage.js';
@@ -244,6 +249,21 @@ export class SwgClient {
 
   constructor(opts: SwgClientOptions) {
     this.loginServer = opts.loginServer;
+  }
+
+  /**
+   * Delete a character via the LoginServer wire path (same flow the Windows
+   * client's "Delete Character" button on the character-select screen uses).
+   *
+   * Returns the server's `DeleteCharacterReplyMessage` result code. Note:
+   * `OK` means the delete was queued, not that the character is gone —
+   * see {@link deleteCharacter} for caveats.
+   *
+   * @example
+   * await client.deleteCharacter({ account: 'tslive11', characterId: 591551177n });
+   */
+  async deleteCharacter(opts: Omit<DeleteCharacterOptions, 'loginServer'>): Promise<DeleteCharacterReply> {
+    return deleteCharacter({ ...opts, loginServer: this.loginServer });
   }
 
   /**

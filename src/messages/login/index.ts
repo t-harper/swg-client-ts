@@ -23,3 +23,12 @@ export {
   CharacterCreationDisabled,
   CharacterCreationDisabledDecoder,
 } from './character-creation-disabled.js';
+export {
+  DeleteCharacterMessage,
+  DeleteCharacterMessageDecoder,
+} from './delete-character-message.js';
+export {
+  DeleteCharacterReplyMessage,
+  DeleteCharacterReplyMessageDecoder,
+  DeleteCharacterResult,
+} from './delete-character-reply-message.js';

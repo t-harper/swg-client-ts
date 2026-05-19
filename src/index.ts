@@ -275,6 +275,26 @@ export {
   ConGenericMessageDecoder,
 } from './messages/game/con-generic-message.js';
 
+// Delete a character via the LoginServer wire path (same flow as the
+// Windows client's "Delete Character" button on the character-select
+// screen). The high-level `SwgClient.deleteCharacter(...)` method handles
+// login → delete → reply → disconnect in one call. `rc_OK` from the reply
+// only means the delete was queued — the row purge runs async via the
+// LoginServer's TaskDeleteCharacter and the character still appears in
+// subsequent `EnumerateCharacterId` floods until that lands.
+export {
+  deleteCharacter,
+  type DeleteCharacterOptions,
+  type DeleteCharacterReply,
+} from './client/delete-character.js';
+export {
+  DeleteCharacterMessage,
+  DeleteCharacterMessageDecoder,
+  DeleteCharacterReplyMessage,
+  DeleteCharacterReplyMessageDecoder,
+  DeleteCharacterResult,
+} from './messages/login/index.js';
+
 // Expertise — client→server, "Apply" button in the in-game Expertise window.
 // Wire format verified against a live Windows-client capture (2026-05-18);
 // see expertise-request.test.ts. The real client sends one pick per message

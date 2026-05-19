@@ -1,13 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { Knowledge, StringKB, TerrainKB } from './knowledge.js';
+import type { BuildingKB, Knowledge, StringKB, TerrainKB } from './knowledge.js';
 import { createStringsView } from './strings-view.js';
 
 /**
  * Hand-rolled mock `Knowledge` that exposes only the `strings` lens — the
- * view doesn't touch `terrain` or `preload`, so we leave those as `null!`
- * casts to keep the test surface minimal. Tests that need to assert on
- * `knowledge.strings.resolve` calls inject vi.fn()s here.
+ * view doesn't touch `terrain`, `buildings`, or `preload`, so we leave
+ * those as `null!` casts to keep the test surface minimal. Tests that
+ * need to assert on `knowledge.strings.resolve` calls inject vi.fn()s here.
  */
 function makeMockKnowledge(strings: Partial<StringKB>): Knowledge {
   const filled: StringKB = {
@@ -20,6 +20,7 @@ function makeMockKnowledge(strings: Partial<StringKB>): Knowledge {
   return {
     terrain: null as unknown as TerrainKB,
     strings: filled,
+    buildings: null as unknown as BuildingKB,
     preload: vi.fn(async () => {}),
     clear: vi.fn(),
   };

@@ -21,7 +21,8 @@
  */
 
 import { ConGenericMessage } from '../../src/messages/game/con-generic-message.js';
-import type { ScriptContext } from '../../src/client/script/context.js';
+import { ackAllInboundTeleportSeqs } from "../../src/client/navigate.js";
+import type { ScriptContext } from "../../src/client/script/context.js";
 import type { NetworkId } from '../../src/types.js';
 
 /**
@@ -82,6 +83,7 @@ export async function adminPlanetWarp(
   // from the old location.
   ctx.setPose({ x, y, z }, ctx.yaw());
   await ctx.wait(settleMs);
+  ackAllInboundTeleportSeqs(ctx, ctx.sceneStart.playerNetworkId);
 }
 
 /**

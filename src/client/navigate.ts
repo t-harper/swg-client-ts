@@ -1062,7 +1062,7 @@ export async function navigate(
  * same id twice is a server-side no-op (`m_teleportIds.erase` of an
  * absent id is silent), so re-firing any seq we see is safe.
  */
-function ackAllInboundTeleportSeqs(ctx: ScriptContext, playerId: NetworkId): void {
+export function ackAllInboundTeleportSeqs(ctx: ScriptContext, playerId: NetworkId): void {
   let acked = navigateAckedSeqs.get(ctx);
   if (acked === undefined) {
     acked = new Set<number>();

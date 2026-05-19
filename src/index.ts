@@ -867,6 +867,31 @@ export { createStringsView } from './client/strings-view.js';
 export type { StringsView, StringsViewOptions } from './client/strings-view.js';
 
 // =============================================================================
+// Portal-aware cell entry (Track D)
+// =============================================================================
+// `.pob` portal-layout reader + building object-template field extractor +
+// cell-graph BFS pathfinder. These power `ctx.navigate({ buildingId,
+// cellName })` for buildings whose interior cells require traversing one or
+// more portals (the typical case for any non-trivial public structure).
+// `Knowledge.buildings` caches per-template lookups process-wide so a fleet
+// of 30 clients entering the same cantina parses the .pob exactly once.
+export { loadPortalLayout, parsePortalLayout } from './iff/portal-layout-reader.js';
+export type {
+  Cell,
+  CellPortal,
+  DoorTransform,
+  PortalGeometry,
+  PortalLayout,
+} from './iff/portal-layout-reader.js';
+export { findCellPath } from './client/cell-graph.js';
+export type { CellPathHop } from './client/cell-graph.js';
+export type {
+  BuildingKB,
+  BuildingKBOptions,
+  BuildingTemplateInfo,
+} from './client/building-kb.js';
+
+// =============================================================================
 // Building permissions (Feature 0.1)
 // =============================================================================
 // ObjController subtype decoders for the four permission-mutation cross-auth

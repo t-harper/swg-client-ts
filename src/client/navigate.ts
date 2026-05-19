@@ -18,11 +18,37 @@
  * walk loop). The actual walking is delegated to the same primitives
  * (`walkTo` / `walkToCell` / `mount` / `dismount` / `callVehicle`) the rest
  * of the script-context uses.
+ *
+ * # Portal-aware interior pathing (Track D)
+ *
+ * For interior targets the planner now (when possible) reads the building's
+ * `.pob` portal layout via `ctx.knowledge.buildings` and walks the player
+ * THROUGH the portal — issuing a transform a meter past the doorway in
+ * world coords first (to satisfy the server's anti-cheat clamps), then
+ * immediately re-parenting via `CM_netUpdateTransformWithParent` two meters
+ * inside the destination cell along the portal's inward normal. For deep
+ * interior cells the planner emits one `walkThroughPortal` step per hop
+ * along the BFS path produced by `findCellPath`, finishing with a
+ * `verifyCellEntry` step that polls `LocationView.cell` to log a warning
+ * if the server didn't accept the re-parent.
+ *
+ * The portal path is best-effort. When the building's template info isn't
+ * available (Track B not yet landed, or asset missing), when the `.pob`
+ * itself can't be loaded, or when `findCellPath` returns null, the planner
+ * falls back to today's `walkTo(anchor) + walkToCell({0,0})` shape with a
+ * one-time `console.warn` so the operator sees the degradation.
  */
 
-import { BaselinePackageIds, ObjectTypeTags } from '../messages/game/baselines/registry.js';
+import type { Cell, CellPortal, PortalLayout } from '../iff/portal-layout-reader.js';
+import {
+  BaselinePackageIds,
+  type CellObjectSharedBaseline,
+  ObjectTypeTags,
+} from '../messages/game/baselines/index.js';
 import type { Vector3 } from '../types.js';
 import type { NetworkId } from '../types.js';
+import { type CellPathHop, findCellPath } from './cell-graph.js';
+import type { Knowledge } from './knowledge.js';
 import { findCellByName, findFirstPublicCell, resolvePlayerCell } from './location.js';
 import type { ScriptContext } from './script/context.js';
 import type { WorldModel, WorldObject } from './world-model.js';
@@ -73,6 +99,14 @@ export interface NavigateOptions {
    * the building. Only used for interior targets.
    */
   dismountDistanceM?: number;
+  /**
+   * Timeout (ms) for the post-traversal `verifyCellEntry` step that polls
+   * `LocationView.cell` to confirm the server accepted the re-parent.
+   * Default 3000. The verify step does NOT throw on timeout — it logs a
+   * warning and the plan continues — so this is just an upper bound on
+   * how long we'll wait before giving up on a definitive confirmation.
+   */
+  verifyCellEntryTimeoutMs?: number;
 }
 
 /**
@@ -83,6 +117,9 @@ export interface NavigateOptions {
  *   - `callVehicle` / `mount` / `dismount` (motion-state changes)
  *   - `walkTo` (outdoor walk to an x/z)
  *   - `walkToCell` (cell-relative walk inside a cell)
+ *   - `walkThroughPortal` (one cell-graph hop — uses portal-layout data
+ *     to walk to the door and then re-parent past it)
+ *   - `verifyCellEntry` (poll LocationView.cell to confirm the re-parent)
  *
  * The executor stops at the first step that throws.
  */
@@ -97,6 +134,51 @@ export type NavigateStep =
       x: number;
       z: number;
       y?: number;
+    }
+  | {
+      /**
+       * Traverse one cell-graph hop. The executor walks the player to
+       * `portalWorld` (when `fromCellId === null`, i.e. we are coming from
+       * outdoors) OR to `fromCellLocalDoor` inside `fromCellId` (when
+       * `fromCellId !== null`, i.e. we are crossing from one interior cell
+       * to another), then IMMEDIATELY issues a `walkToCell` to
+       * `toCellLocalEntry` inside `toCellId` — the same async frame, no
+       * `wait` in between. Sequencing is the entire point.
+       */
+      kind: 'walkThroughPortal';
+      /** `null` = exterior → first interior; non-null = cell → cell. */
+      fromCellId: NetworkId | null;
+      /** Destination cell's NetworkId. */
+      toCellId: NetworkId;
+      /**
+       * World coords for the on-the-doormat run-up. Only present when
+       * `fromCellId === null` (exterior approach). Computed as
+       * `building.position + rotateY(door_in_fromCell_frame + outwardNormal*1m, building.yaw)`.
+       */
+      portalWorld?: { x: number; z: number; y?: number };
+      /**
+       * Door position in `fromCellId`'s local frame. Only present when
+       * `fromCellId !== null` (interior cell → interior cell). Taken from
+       * the source-cell entry in the portal layout.
+       */
+      fromCellLocalDoor?: { x: number; z: number; y?: number };
+      /**
+       * Two meters inside `toCellId` along the portal's inward normal.
+       * The server's `findContainingCell` requires our cell-local position
+       * to be INSIDE the destination cell's floor footprint; a 2m setback
+       * from the door is a conservative safety margin.
+       */
+      toCellLocalEntry: { x: number; z: number; y?: number };
+    }
+  | {
+      /**
+       * Poll the LocationView until `ctx.location.cell?.id === cellId` (or
+       * timeout). Does NOT throw on mismatch — emits a `console.warn`. The
+       * plan continues either way; this is purely diagnostic.
+       */
+      kind: 'verifyCellEntry';
+      cellId: NetworkId;
+      timeoutMs: number;
     };
 
 export interface NavigatePlan {
@@ -112,6 +194,15 @@ export interface NavigatePlan {
    * targets it's the target coord.
    */
   outdoorAnchor: { x: number; z: number };
+  /**
+   * Diagnostic: filled when the portal-aware path bailed out and the planner
+   * fell back to the legacy `walkTo(anchor) + walkToCell({0,0})` shape.
+   * `null` when the portal-aware path was taken (or the target is outdoor).
+   * `undefined` when the planner produced the legacy shape directly without
+   * an attempted portal lookup (the default for outdoor targets and for
+   * `planNavigateSync` callers that supplied no portal layout).
+   */
+  fallbackReason?: string | null;
 }
 
 interface PlanContext {
@@ -127,29 +218,130 @@ interface PlanContext {
 
 const DEFAULT_MOUNT_THRESHOLD_M = 50;
 const DEFAULT_DISMOUNT_DISTANCE_M = 8;
+const DEFAULT_VERIFY_CELL_ENTRY_TIMEOUT_MS = 3000;
+
+/** How far past the doorway (m) the run-up world point sits. */
+const PORTAL_OUTWARD_RUNUP_M = 1.0;
+/** How far inside the destination cell (m) the entry point sits. */
+const PORTAL_INWARD_ENTRY_M = 2.0;
 
 /**
- * Build a step-by-step plan for the navigation. Pure — no side effects, no
- * dispatcher I/O. Exposed for unit tests that want to assert the planning
- * decisions without running the walk loop.
+ * Async outer wrapper: resolves the building template → portal layout →
+ * cell path, then delegates to `planNavigateSync` which does the pure plan
+ * generation. For outdoor targets and for "best-effort failed" interior
+ * targets it falls straight through (with a `fallbackReason` populated on
+ * the returned plan so the caller can `console.warn` it once).
  *
- * Throws on:
- *   - Interior target whose `buildingId` isn't tracked in the WorldModel
- *     (the BUIO baseline wasn't observed yet; without it we can't resolve
- *     the building's anchor position).
- *   - Interior target whose `cellName` doesn't match any SCLT child of the
- *     building (no door / no such cell).
+ * The pure inner `planNavigateSync` is exposed too so tests can build plans
+ * deterministically without the async lookups.
+ *
+ * Throws (no soft-fail) when the target building isn't in the WorldModel
+ * or the target cell can't be resolved — those are programmer errors, not
+ * "data not available yet" cases. The portal-layout/cell-path lookups, by
+ * contrast, are best-effort and degrade silently to the fallback path.
  */
-export function planNavigate(
+export async function planNavigate(
   pc: PlanContext,
   target: NavigateTarget,
   opts: NavigateOptions = {},
+  knowledge?: Knowledge,
+): Promise<NavigatePlan> {
+  if (!isInteriorTarget(target) || knowledge === undefined) {
+    return planNavigateSync(pc, target, opts);
+  }
+
+  // Resolve the building's template name from the WorldModel. The BUIO
+  // baseline is required for outdoorAnchor anyway, so this lookup will
+  // also be retried by planNavigateSync below; we just need a clean
+  // string to pass to templateInfoFor().
+  const buildingObj = pc.world.get(target.buildingId);
+  const templateName = buildingObj?.templateName;
+  if (templateName === undefined || templateName === '') {
+    return planNavigateSync(
+      pc,
+      target,
+      opts,
+      undefined,
+      null,
+      'navigate: building has no templateName on its WorldObject — falling back, cell entry may not register',
+    );
+  }
+
+  let layout: PortalLayout | undefined;
+  try {
+    const info = await knowledge.buildings.templateInfoFor(templateName);
+    if (info.portalLayoutFilename === null || info.portalLayoutFilename === '') {
+      return planNavigateSync(
+        pc,
+        target,
+        opts,
+        undefined,
+        null,
+        `navigate: template ${templateName} has no portalLayoutFilename — falling back, cell entry may not register`,
+      );
+    }
+    layout = await knowledge.buildings.portalLayoutFor(info.portalLayoutFilename);
+  } catch (err) {
+    const reason =
+      err instanceof Error ? err.message : typeof err === 'string' ? err : 'unknown error';
+    return planNavigateSync(
+      pc,
+      target,
+      opts,
+      undefined,
+      null,
+      `navigate: portal-layout lookup failed for ${templateName} (${reason}) — falling back, cell entry may not register`,
+    );
+  }
+
+  // Resolve the target cell number via the same SCLT-child scan
+  // findCellByName/findFirstPublicCell use, but pull the cellNumber out so
+  // we can hand it to findCellPath.
+  const targetCellNumber = resolveTargetCellNumber(pc.world, target);
+  if (targetCellNumber === null) {
+    // Cell not in the WorldModel yet OR named cell doesn't exist; let
+    // planNavigateSync surface the canonical error via the same path the
+    // legacy planner used (it throws synchronously).
+    return planNavigateSync(pc, target, opts);
+  }
+  const cellPath = findCellPath(layout, 0, targetCellNumber);
+  if (cellPath === null) {
+    return planNavigateSync(
+      pc,
+      target,
+      opts,
+      undefined,
+      null,
+      `navigate: no portal-graph path from exterior to cell ${targetCellNumber} in ${templateName} — falling back, cell entry may not register`,
+    );
+  }
+  return planNavigateSync(pc, target, opts, layout, cellPath);
+}
+
+/**
+ * Pure planner. When `portalLayout` is provided AND `cellPath` is non-null
+ * (and non-empty), emits a sequence of `walkThroughPortal` steps + a final
+ * `verifyCellEntry`. Otherwise emits today's legacy `walkTo + walkToCell`
+ * shape.
+ *
+ * Exposed so tests can build plans without exercising the async portal
+ * lookup. Callers that want the full portal-aware behavior should use
+ * `planNavigate` (the async wrapper) instead.
+ */
+export function planNavigateSync(
+  pc: PlanContext,
+  target: NavigateTarget,
+  opts: NavigateOptions = {},
+  portalLayout?: PortalLayout,
+  cellPath?: CellPathHop[] | null,
+  fallbackReason?: string,
 ): NavigatePlan {
   const useMount = opts.useMount ?? 'auto';
   const mountThresholdM = opts.mountThresholdM ?? DEFAULT_MOUNT_THRESHOLD_M;
   const dismountDistanceM = opts.dismountDistanceM ?? DEFAULT_DISMOUNT_DISTANCE_M;
+  const verifyTimeoutMs = opts.verifyCellEntryTimeoutMs ?? DEFAULT_VERIFY_CELL_ENTRY_TIMEOUT_MS;
 
-  const isInterior = 'buildingId' in target;
+  const isInterior = isInteriorTarget(target);
 
   // Resolve the outdoor anchor — this is where we'll stop, dismount (if
   // mounted), and switch to the cell-relative walk path (interior) OR just
@@ -157,6 +349,7 @@ export function planNavigate(
   let outdoorAnchor: { x: number; z: number };
   let cellId: NetworkId | null = null;
   let cellLocalTarget: { x: number; z: number; y?: number } | null = null;
+  let buildingObjForPortal: WorldObject | null = null;
   if (isInterior) {
     const buildingObj = pc.world.get(target.buildingId);
     if (buildingObj === undefined) {
@@ -173,6 +366,7 @@ export function planNavigate(
       );
     }
     outdoorAnchor = { x: buildingObj.position.x, z: buildingObj.position.z };
+    buildingObjForPortal = buildingObj;
     // Resolve the cellId we'll walk into.
     const resolved =
       target.cellName === ''
@@ -239,34 +433,384 @@ export function planNavigate(
     });
   }
 
-  if (isInterior) {
-    // Dismount before the cell entry. Both the server (dismounts you on cell
-    // entry anyway) and the client (server-side dismount script doesn't
-    // always echo back fast enough) prefer an explicit dismount first.
-    if (pc.mountCapMps !== null || shouldMount) {
-      steps.push({ kind: 'dismount' });
-    }
-    if (
-      !approxEqual(walkAnchor.x, outdoorAnchor.x) ||
-      !approxEqual(walkAnchor.z, outdoorAnchor.z)
-    ) {
-      steps.push({
-        kind: 'walkTo',
-        x: outdoorAnchor.x,
-        z: outdoorAnchor.z,
-      });
-    }
-    const cellStep: NavigateStep = {
-      kind: 'walkToCell',
-      cellId: cellId!,
-      x: cellLocalTarget!.x,
-      z: cellLocalTarget!.z,
-    };
-    if (cellLocalTarget!.y !== undefined) cellStep.y = cellLocalTarget!.y;
-    steps.push(cellStep);
+  if (!isInterior) {
+    return { steps, cellId, outdoorAnchor };
   }
 
-  return { steps, cellId, outdoorAnchor };
+  // Interior target. Dismount before the cell entry. Both the server
+  // (dismounts you on cell entry anyway) and the client (server-side
+  // dismount script doesn't always echo back fast enough) prefer an
+  // explicit dismount first.
+  if (pc.mountCapMps !== null || shouldMount) {
+    steps.push({ kind: 'dismount' });
+  }
+
+  // Cell-id map from `cellNumber` → NetworkId for the building. Used by the
+  // portal path to translate cell-graph indices (which are
+  // `Cell.index` === wire `cellNumber`) into the NetworkIds the cell-relative
+  // transform messages take.
+  const cellIdByNumber = buildCellIdMap(pc.world, target.buildingId);
+
+  // Portal-aware path requires: a loaded layout, a non-empty cell path, a
+  // building world position+yaw (which we have via buildingObjForPortal),
+  // AND we must be able to resolve every hop's cellNumber → NetworkId.
+  // We bind concrete locals after each guard so TypeScript can narrow each
+  // one without `!` non-null assertions sprinkled through the loop body.
+  if (
+    portalLayout !== undefined &&
+    cellPath !== undefined &&
+    cellPath !== null &&
+    cellPath.length > 0 &&
+    buildingObjForPortal !== null &&
+    cellId !== null &&
+    cellLocalTarget !== null &&
+    cellPath.every((hop) => cellIdByNumber.has(hop.toCellIndex))
+  ) {
+    const building = buildingObjForPortal;
+    const path = cellPath;
+    const targetCellId = cellId;
+    const targetCellLocal = cellLocalTarget;
+    const layout = portalLayout;
+    for (let i = 0; i < path.length; ++i) {
+      const hop = path[i];
+      if (hop === undefined) continue; // unreachable: index in range
+      const toCellNetworkId = cellIdByNumber.get(hop.toCellIndex);
+      if (toCellNetworkId === undefined) {
+        // Shouldn't happen given the .every() check above; fall back.
+        return planNavigateSync(
+          pc,
+          target,
+          opts,
+          undefined,
+          null,
+          `navigate: cell ${hop.toCellIndex} has no NetworkId in WorldModel — falling back, cell entry may not register`,
+        );
+      }
+      if (i === 0) {
+        // Exterior → first interior cell. Walk to the world-coord run-up
+        // first, then re-parent.
+        const entry = computeExteriorPortalEntry(
+          { x: building.position.x, y: building.position.y, z: building.position.z },
+          building.yaw,
+          hop,
+          layout,
+        );
+        steps.push({
+          kind: 'walkThroughPortal',
+          fromCellId: null,
+          toCellId: toCellNetworkId,
+          portalWorld: entry.portalWorld,
+          toCellLocalEntry: entry.toCellLocalEntry,
+        });
+      } else {
+        // Cell → cell. Walk to the door inside the source cell, then
+        // re-parent into the destination cell.
+        const prevHop = path[i - 1];
+        if (prevHop === undefined) continue; // unreachable: loop invariant
+        const fromCellNetworkId = cellIdByNumber.get(prevHop.toCellIndex);
+        if (fromCellNetworkId === undefined) {
+          return planNavigateSync(
+            pc,
+            target,
+            opts,
+            undefined,
+            null,
+            `navigate: cell ${prevHop.toCellIndex} has no NetworkId in WorldModel — falling back, cell entry may not register`,
+          );
+        }
+        const entry = computeInteriorPortalEntry(hop, layout);
+        steps.push({
+          kind: 'walkThroughPortal',
+          fromCellId: fromCellNetworkId,
+          toCellId: toCellNetworkId,
+          fromCellLocalDoor: entry.fromCellLocalDoor,
+          toCellLocalEntry: entry.toCellLocalEntry,
+        });
+      }
+    }
+
+    // Final cell-local target inside the destination cell. We always emit a
+    // walkToCell to the requested `cellLocalTarget` (default {0,0}) — the
+    // last hop's `toCellLocalEntry` is just a safe interior point, not the
+    // user's requested position.
+    const cellStep: NavigateStep = {
+      kind: 'walkToCell',
+      cellId: targetCellId,
+      x: targetCellLocal.x,
+      z: targetCellLocal.z,
+    };
+    if (targetCellLocal.y !== undefined) cellStep.y = targetCellLocal.y;
+    steps.push(cellStep);
+
+    // Diagnostic: poll the LocationView to see if the server accepted the
+    // re-parent. Logs a warn on mismatch; does NOT throw.
+    steps.push({ kind: 'verifyCellEntry', cellId: targetCellId, timeoutMs: verifyTimeoutMs });
+
+    return { steps, cellId, outdoorAnchor, fallbackReason: null };
+  }
+
+  // Legacy fallback path — walk to the building anchor, then walkToCell({0,0})
+  // and hope the server's findContainingCell accepts it (it usually doesn't,
+  // hence the whole portal-aware rework above).
+  if (!approxEqual(walkAnchor.x, outdoorAnchor.x) || !approxEqual(walkAnchor.z, outdoorAnchor.z)) {
+    steps.push({
+      kind: 'walkTo',
+      x: outdoorAnchor.x,
+      z: outdoorAnchor.z,
+    });
+  }
+  const cellStep: NavigateStep = {
+    kind: 'walkToCell',
+    cellId: cellId!,
+    x: cellLocalTarget!.x,
+    z: cellLocalTarget!.z,
+  };
+  if (cellLocalTarget!.y !== undefined) cellStep.y = cellLocalTarget!.y;
+  steps.push(cellStep);
+
+  const plan: NavigatePlan = { steps, cellId, outdoorAnchor };
+  if (fallbackReason !== undefined) plan.fallbackReason = fallbackReason;
+  return plan;
+}
+
+function isInteriorTarget(target: NavigateTarget): target is InteriorTarget {
+  return 'buildingId' in target;
+}
+
+/**
+ * Walk the WorldModel for the building's SCLT children and build a
+ * `cellNumber → NetworkId` map. Used to translate cell-graph indices into
+ * the NetworkIds the cell-relative transform messages take. Returns an
+ * empty map if no SCLT children are visible yet (caller should fall back).
+ */
+function buildCellIdMap(world: WorldModel, buildingId: NetworkId): Map<number, NetworkId> {
+  const map = new Map<number, NetworkId>();
+  for (const obj of world.objects()) {
+    if (obj.typeId !== ObjectTypeTags.SCLT) continue;
+    if (obj.containerId !== buildingId) continue;
+    const shared = obj.baselines.get(BaselinePackageIds.SHARED) as
+      | CellObjectSharedBaseline
+      | undefined;
+    if (shared === undefined) continue;
+    map.set(shared.cellNumber, obj.id);
+  }
+  return map;
+}
+
+/**
+ * Find the wire-`cellNumber` for an interior target. Returns null if the
+ * cell isn't in the WorldModel yet — caller falls through to the legacy
+ * error-surfacing path.
+ */
+function resolveTargetCellNumber(world: WorldModel, target: InteriorTarget): number | null {
+  if (target.cellName === '') {
+    const firstPublic = findFirstPublicCell(world, target.buildingId);
+    if (firstPublic === null) return null;
+    const obj = world.get(firstPublic);
+    const shared = obj?.baselines.get(BaselinePackageIds.SHARED) as
+      | CellObjectSharedBaseline
+      | undefined;
+    return shared?.cellNumber ?? null;
+  }
+  const byName = findCellByName(world, target.buildingId, target.cellName);
+  if (byName === null) return null;
+  const obj = world.get(byName);
+  const shared = obj?.baselines.get(BaselinePackageIds.SHARED) as
+    | CellObjectSharedBaseline
+    | undefined;
+  return shared?.cellNumber ?? null;
+}
+
+/**
+ * Compute the world-coord run-up point (a meter past the door on the
+ * outside) AND the cell-local entry point inside the destination cell
+ * (two meters past the door on the inside) for a cell 0 → interior hop.
+ *
+ * Both offsets use the portal plane's outward normal (computed from the
+ * geometry quad's first two edges via a cross product). Sign is flipped
+ * when `windingClockwise === false` so the "outward" direction is always
+ * away from the building's interior.
+ *
+ * The world-coord transform is:
+ *   `portalWorld = building.position + rotateY(door_in_fromCell_frame + outwardNormal*1m, building.yaw)`
+ *
+ * Cell 0 is the exterior, so its "local frame" coincides with world space
+ * AFTER applying the building's transform. The +1m run-up keeps the
+ * server's anti-cheat distance/speed checks happy when the next message
+ * is the cell-relative transform.
+ *
+ * The cell-local entry on the destination side uses the MIRROR portal's
+ * inward normal (= the destination cell's outward-normal-into-the-building
+ * direction, sign-flipped).
+ */
+function computeExteriorPortalEntry(
+  buildingPos: Vector3,
+  buildingYaw: number,
+  hop: CellPathHop,
+  layout: PortalLayout,
+): {
+  portalWorld: { x: number; y: number; z: number };
+  toCellLocalEntry: { x: number; y: number; z: number };
+} {
+  // The hop's portal is the OUTGOING portal on cell 0 (exterior). Its
+  // geometry is expressed in cell 0's local frame, which is the building's
+  // local frame.
+  const outwardNormal = portalOutwardNormal(hop.portal);
+
+  // Door midpoint + 1m along the outward normal (in cell 0's local frame).
+  const doorWithRunUp: Vector3 = {
+    x: hop.fromCellLocalDoor.x + outwardNormal.x * PORTAL_OUTWARD_RUNUP_M,
+    y: hop.fromCellLocalDoor.y,
+    z: hop.fromCellLocalDoor.z + outwardNormal.z * PORTAL_OUTWARD_RUNUP_M,
+  };
+
+  // Rotate by the building's yaw and translate by its world position.
+  const rotated = rotateY(doorWithRunUp, buildingYaw);
+  const portalWorld = {
+    x: buildingPos.x + rotated.x,
+    y: buildingPos.y + doorWithRunUp.y,
+    z: buildingPos.z + rotated.z,
+  };
+
+  // Cell-local entry on the destination side: door + inwardNormal * 2m,
+  // computed in the DESTINATION cell's frame from the mirror portal.
+  const toCellLocalEntry = computeCellLocalEntryFromMirror(hop, layout);
+
+  return { portalWorld, toCellLocalEntry };
+}
+
+/**
+ * Interior → interior hop. Computes the door position in `fromCell`'s
+ * local frame (from the outgoing portal) AND the entry point in
+ * `toCell`'s local frame (from the mirror portal on the destination cell,
+ * offset 2m along its inward normal).
+ */
+function computeInteriorPortalEntry(
+  hop: CellPathHop,
+  layout: PortalLayout,
+): {
+  fromCellLocalDoor: { x: number; y: number; z: number };
+  toCellLocalEntry: { x: number; y: number; z: number };
+} {
+  return {
+    fromCellLocalDoor: {
+      x: hop.fromCellLocalDoor.x,
+      y: hop.fromCellLocalDoor.y,
+      z: hop.fromCellLocalDoor.z,
+    },
+    toCellLocalEntry: computeCellLocalEntryFromMirror(hop, layout),
+  };
+}
+
+/**
+ * Compute the 2m-inside-the-destination-cell entry point. Looks up the
+ * mirror portal entry on the destination cell (same geometryIndex, pointing
+ * back at the source cell) and uses ITS inward normal.
+ *
+ * The mirror portal's "outward" normal points OUT of the destination cell
+ * (towards the source), so we negate to get "into" the destination cell.
+ *
+ * If no mirror is found (asymmetric portal graph — shouldn't happen for
+ * well-formed .pob files), falls back to the source-cell door position
+ * with no offset. The walkToCell will still be issued; the server may
+ * reject the re-parent and the verify step will log a warning.
+ */
+function computeCellLocalEntryFromMirror(
+  hop: CellPathHop,
+  layout: PortalLayout,
+): { x: number; y: number; z: number } {
+  const destCell = layout.cells.find((c) => c.index === hop.toCellIndex);
+  const mirror = findMirrorPortal(destCell, hop.fromCellIndex, hop.portal);
+  if (mirror === null) {
+    return {
+      x: hop.toCellLocalDoor.x,
+      y: hop.toCellLocalDoor.y,
+      z: hop.toCellLocalDoor.z,
+    };
+  }
+  // The mirror's outward normal points out of the destination cell; negate
+  // to get the "into the destination cell" direction.
+  const outwardOnDest = portalOutwardNormal(mirror);
+  const inwardOnDest = { x: -outwardOnDest.x, y: 0, z: -outwardOnDest.z };
+  return {
+    x: hop.toCellLocalDoor.x + inwardOnDest.x * PORTAL_INWARD_ENTRY_M,
+    y: hop.toCellLocalDoor.y,
+    z: hop.toCellLocalDoor.z + inwardOnDest.z * PORTAL_INWARD_ENTRY_M,
+  };
+}
+
+/**
+ * Find the mirror portal on `destCell` — the entry with the same
+ * `geometryIndex` pointing back at `sourceCellIndex`. Falls back to "any
+ * portal with the same geometryIndex" if no direct mirror is found.
+ */
+function findMirrorPortal(
+  destCell: Cell | undefined,
+  sourceCellIndex: number,
+  outgoing: CellPortal,
+): CellPortal | null {
+  if (!destCell) return null;
+  for (const candidate of destCell.portals) {
+    if (
+      candidate.geometryIndex === outgoing.geometryIndex &&
+      candidate.targetCellIndex === sourceCellIndex
+    ) {
+      return candidate;
+    }
+  }
+  for (const candidate of destCell.portals) {
+    if (candidate.geometryIndex === outgoing.geometryIndex) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Compute the outward-pointing portal-plane normal in the portal's owning
+ * cell frame. The quad's first three vertices span two edges; the cross
+ * product gives the plane normal. Direction is flipped when
+ * `windingClockwise === false` so "outward" is consistent.
+ *
+ * We project onto the XZ plane (y=0) for the navigate use case — the
+ * server's findContainingCell ignores y when classifying which cell a
+ * position belongs to (it only checks the floor footprint), and movement
+ * primitives hold y constant. Y-component of the cross is preserved on
+ * the return so callers that want the full 3D normal can have it; only
+ * the XZ projection is normalized for the run-up math.
+ */
+function portalOutwardNormal(portal: CellPortal): { x: number; y: number; z: number } {
+  const v = portal.geometry.vertices;
+  // Two edges from vertex 0.
+  const e1 = { x: v[1].x - v[0].x, y: v[1].y - v[0].y, z: v[1].z - v[0].z };
+  const e2 = { x: v[2].x - v[0].x, y: v[2].y - v[0].y, z: v[2].z - v[0].z };
+  // Cross product e1 × e2.
+  const nx = e1.y * e2.z - e1.z * e2.y;
+  const ny = e1.z * e2.x - e1.x * e2.z;
+  const nz = e1.x * e2.y - e1.y * e2.x;
+  // Flip if winding is anticlockwise on the wire side.
+  const sign = portal.windingClockwise ? 1 : -1;
+  // Normalize on the XZ plane.
+  const xz = Math.hypot(nx * sign, nz * sign);
+  if (xz < 1e-9) {
+    // Degenerate quad — return a small +x default so the offsets are
+    // non-zero. Caller will still produce a walkToCell; the verify step
+    // will surface a warning if the server rejects.
+    return { x: 1, y: ny * sign, z: 0 };
+  }
+  return { x: (nx * sign) / xz, y: ny * sign, z: (nz * sign) / xz };
+}
+
+/**
+ * Rotate (x, z) by `yaw` radians about the y axis. Mirrors the convention
+ * used elsewhere in the client (`yawToQuat` etc.). The translation is
+ * applied by the caller.
+ */
+function rotateY(p: { x: number; y?: number; z: number }, yaw: number): { x: number; z: number } {
+  const c = Math.cos(yaw);
+  const s = Math.sin(yaw);
+  return {
+    x: p.x * c + p.z * s,
+    z: -p.x * s + p.z * c,
+  };
 }
 
 /**
@@ -296,7 +840,8 @@ function approxEqual(a: number, b: number, eps = 1e-3): boolean {
  * point invoked by `ctx.navigate(...)`.
  *
  * Resolves when the player has arrived at the final target. Throws on any
- * step failure (no soft-fail).
+ * step failure (no soft-fail) — except the `verifyCellEntry` step, which
+ * is purely diagnostic and never throws.
  */
 export async function navigate(
   ctx: ScriptContext,
@@ -308,13 +853,13 @@ export async function navigate(
   const pc: PlanContext = {
     world: ctx.world,
     position: ctx.position(),
-    currentCell: playerCellNow === null ? null : playerCellNow.buildingId === 0n ? null : null,
+    currentCell: null,
     mountCapMps: ctx.mountedSpeedCap(),
     vehiclePcdIds: ctx.datapad.vehicles().map((v) => v.networkId),
   };
-  // Set currentCell from the resolved cell descriptor (we discard the
-  // buildingId in the assignment above to keep the type tight). Reassign
-  // here using the cell id from the WorldModel.
+  // Set currentCell from the resolved cell descriptor. We use the player
+  // CREO's containerId directly (the LocationCell type holds the building
+  // id, not the cell id).
   if (playerCellNow !== null) {
     const player = ctx.world.get(playerId);
     if (player !== undefined && player.containerId !== 0n) {
@@ -322,7 +867,10 @@ export async function navigate(
     }
   }
 
-  const plan = planNavigate(pc, target, opts);
+  const plan = await planNavigate(pc, target, opts, ctx.knowledge);
+  if (plan.fallbackReason !== undefined && plan.fallbackReason !== null) {
+    console.warn(plan.fallbackReason);
+  }
   await runPlan(ctx, plan, opts);
 }
 
@@ -388,11 +936,95 @@ export async function runPlan(
         await ctx.walkToCell(step.cellId, target, walkOpts);
         break;
       }
+      case 'walkThroughPortal': {
+        // Sequencing matters: the world-coord walk (or interior cell walk)
+        // must FLOW directly into the cell-relative re-parent with no `wait`
+        // in between. Anything else gives the server a chance to broadcast
+        // a clamped position back at us between the two messages, which the
+        // walkToCell then has to reconcile.
+        if (step.fromCellId === null) {
+          // Exterior → first interior. Walk to the world-coord run-up.
+          if (step.portalWorld !== undefined) {
+            const walkOpts: { y?: number } = {};
+            if (step.portalWorld.y !== undefined) walkOpts.y = step.portalWorld.y;
+            const portalTarget: { x: number; z: number; y?: number } = {
+              x: step.portalWorld.x,
+              z: step.portalWorld.z,
+            };
+            if (step.portalWorld.y !== undefined) portalTarget.y = step.portalWorld.y;
+            await ctx.walkTo(portalTarget, walkOpts);
+          }
+        } else {
+          // Interior → interior. Walk to the door inside the source cell.
+          if (step.fromCellLocalDoor !== undefined) {
+            const walkOpts: { y?: number } = {};
+            if (step.fromCellLocalDoor.y !== undefined) walkOpts.y = step.fromCellLocalDoor.y;
+            const doorTarget: { x: number; z: number; y?: number } = {
+              x: step.fromCellLocalDoor.x,
+              z: step.fromCellLocalDoor.z,
+            };
+            if (step.fromCellLocalDoor.y !== undefined) doorTarget.y = step.fromCellLocalDoor.y;
+            await ctx.walkToCell(step.fromCellId, doorTarget, walkOpts);
+          }
+        }
+        // Immediate re-parent into the destination cell.
+        const entryOpts: { y?: number } = {};
+        if (step.toCellLocalEntry.y !== undefined) entryOpts.y = step.toCellLocalEntry.y;
+        const entryTarget: { x: number; z: number; y?: number } = {
+          x: step.toCellLocalEntry.x,
+          z: step.toCellLocalEntry.z,
+        };
+        if (step.toCellLocalEntry.y !== undefined) entryTarget.y = step.toCellLocalEntry.y;
+        await ctx.walkToCell(step.toCellId, entryTarget, entryOpts);
+        break;
+      }
+      case 'verifyCellEntry': {
+        await verifyCellEntry(ctx, step.cellId, step.timeoutMs);
+        break;
+      }
     }
   }
   // Touch opts to keep the param meaningful when future callers want to wire
   // extra runtime behaviors through (e.g. per-step retry counts).
   void opts;
+}
+
+/**
+ * Poll the player CREO's `containerId` until it equals `expectedCellId`, or
+ * until `timeoutMs` elapses. Diagnostic only — never throws. On timeout (or
+ * mismatch) emits a `console.warn` so the operator sees the server didn't
+ * accept the re-parent.
+ *
+ * We compare against `containerId` directly rather than `LocationView.cell`
+ * because the latter returns a descriptor without the cell's NetworkId; the
+ * raw `containerId` IS the cell id when the player is in a cell.
+ */
+async function verifyCellEntry(
+  ctx: ScriptContext,
+  expectedCellId: NetworkId,
+  timeoutMs: number,
+): Promise<void> {
+  const playerId = ctx.sceneStart.playerNetworkId;
+  const deadline = Date.now() + timeoutMs;
+  const pollIntervalMs = 200;
+  while (Date.now() < deadline) {
+    const player = ctx.world.get(playerId);
+    if (player !== undefined && player.containerId === expectedCellId) {
+      return;
+    }
+    if (ctx.signal.aborted) return;
+    await ctx.wait(pollIntervalMs);
+  }
+  // Final check post-deadline.
+  const player = ctx.world.get(playerId);
+  if (player !== undefined && player.containerId === expectedCellId) {
+    return;
+  }
+  const observedContainerId = player?.containerId.toString() ?? '<unknown>';
+  console.warn(
+    `navigate.verifyCellEntry: expected player ${playerId.toString()} to be in cell ` +
+      `${expectedCellId.toString()} after ${timeoutMs}ms but containerId=${observedContainerId}`,
+  );
 }
 
 /**

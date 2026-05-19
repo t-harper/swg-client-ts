@@ -716,6 +716,15 @@ export interface ScriptContext {
    */
   readonly strings: StringsView;
   /**
+   * Shared offline-data knowledge base — exposes the same lenses that
+   * `ctx.terrain` and `ctx.strings` are built over, plus the building-static
+   * KB (`knowledge.buildings.portalLayoutFor` / `templateInfoFor`) the
+   * navigate path uses to walk a player into a named cell. Defaults to the
+   * process-wide `defaultKnowledge` singleton; tests inject a fresh instance
+   * via `createScriptContext({ knowledge })`.
+   */
+  readonly knowledge: Knowledge;
+  /**
    * Combat helpers — `targets()` (who's targeting us), `engaged` (heuristic
    * "we're in a fight"), `autoLoot` (auto-fire `loot` on creature death),
    * and `attackingNearest()` (sugar over nearestHostile + attackTarget loop).
@@ -2156,6 +2165,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     location: locationView,
     terrain: terrainView,
     strings: stringsView,
+    knowledge,
     sui: suiNamespace,
     npc: npcNamespace,
     bank: bankView,

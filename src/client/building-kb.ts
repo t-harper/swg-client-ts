@@ -7,17 +7,17 @@
  *
  *   - `portalLayoutFor(portalLayoutFilename)` — resolves a `.pob` file
  *     (e.g. `'appearance/thm_tato_cantina.pob'`) to a parsed `PortalLayout`.
- *     Track A (this file) implements it.
  *   - `templateInfoFor(templateName)` — resolves a building template name
- *     (e.g. `'object/building/tatooine/cantina_tatooine.iff'`) to a tiny
- *     `BuildingTemplateInfo` struct carrying `portalLayoutFilename`. Track B
- *     implements the body; Track A ships a placeholder that throws so the
- *     interface + tests are in place.
+ *     (e.g. `'object/building/tatooine/shared_cantina_tatooine.iff'`) to a
+ *     tiny `BuildingTemplateInfo` struct carrying `portalLayoutFilename`
+ *     and `appearanceFilename`. The default loader walks the same asset
+ *     resolution chain as `loadPortalLayout`.
  *
  * # Cache shape (mirrors `StringKBImpl`)
  *
- *   - One `Map<filename, Promise<PortalLayout>>` per instance.
- *   - Concurrent calls for the same file share the same in-flight promise.
+ *   - One `Map<filename, Promise<PortalLayout>>` and one
+ *     `Map<templateName, Promise<BuildingTemplateInfo>>` per instance.
+ *   - Concurrent calls for the same key share the same in-flight promise.
  *   - Failed loads are NOT cached — a transient asset-resolution failure
  *     shouldn't poison the cache for every other client. The next call
  *     retries.
@@ -26,12 +26,16 @@
  *
  * # Default loaders
  *
- * The default `loadPortalLayout` resolves bytes via the same priority chain
- * as terrain + strings (extracted on disk first, then TRE archive). Tests
- * inject their own `loadPortalLayout` via `BuildingKBOptions.loadPortalLayout`
- * to stay filesystem-free.
+ * The default `loadPortalLayout` and `loadBuildingTemplateInfo` resolve
+ * bytes via the same priority chain as terrain + strings (extracted on
+ * disk first, then TRE archive). Tests inject their own loaders via
+ * `BuildingKBOptions` to stay filesystem-free.
  */
 
+import {
+  type BuildingTemplateInfo,
+  loadBuildingTemplateInfo as defaultLoadBuildingTemplateInfo,
+} from '../iff/object-template-reader.js';
 import {
   type PortalLayout,
   loadPortalLayout as defaultLoadPortalLayout,
@@ -68,16 +72,17 @@ export interface BuildingKB {
 
   /**
    * Resolve a building template name to its `BuildingTemplateInfo`
-   * (`portalLayoutFilename`, `appearanceFilename`, …). Track B (the
-   * object-template extractor) implements this; Track A ships only the
-   * interface + a placeholder.
+   * (`portalLayoutFilename`, `appearanceFilename`). Coalesces concurrent
+   * calls for the same template; evicts on load failure so a transient
+   * asset-miss doesn't poison the cache.
    *
-   * Callers should NOT depend on this method until Track B lands — until
-   * then it throws synchronously (well, returns a rejecting promise) with
-   * a clear sentinel message.
+   * Rejects (and removes the cache entry) when the underlying object
+   * template `.iff` can't be loaded or parsed. The navigate path falls
+   * back to the BUIO baseline's `appearance` field for templates that
+   * fail this lookup.
    *
    * `templateName` example:
-   *   - `'object/building/tatooine/cantina_tatooine.iff'`
+   *   - `'object/building/tatooine/shared_cantina_tatooine.iff'`
    */
   templateInfoFor(templateName: string): Promise<BuildingTemplateInfo>;
 
@@ -91,20 +96,10 @@ export interface BuildingKB {
   size(): number;
 }
 
-/**
- * Strongly-typed object-template metadata. Populated by Track B's
- * `loadBuildingTemplateInfo`. Kept here (not in `object-template-reader.ts`)
- * so the `BuildingKB` interface compiles without depending on a file
- * Track B introduces.
- */
-export interface BuildingTemplateInfo {
-  /** Echoed-back template name (e.g. `'object/building/tatooine/cantina_tatooine.iff'`). */
-  templateName: string;
-  /** `.pob` filename the template references, or null if there is none. */
-  portalLayoutFilename: string | null;
-  /** `.msh` / `.apt` appearance filename, or null. Often useful as a fallback. */
-  appearanceFilename: string | null;
-}
+// Re-export `BuildingTemplateInfo` from its canonical home in
+// `object-template-reader.ts` so existing callers that import it from
+// `building-kb.ts` keep working without an extra import line.
+export type { BuildingTemplateInfo } from '../iff/object-template-reader.js';
 
 export interface BuildingKBOptions {
   /**
@@ -114,27 +109,29 @@ export interface BuildingKBOptions {
    */
   loadPortalLayout?: (portalLayoutFilename: string) => Promise<PortalLayout>;
   /**
-   * Loader override for `templateInfoFor`. Set by Track B once the
-   * object-template reader lands. When unset, `templateInfoFor` throws.
+   * Loader override for `templateInfoFor`. Defaults to
+   * `loadBuildingTemplateInfo` from `src/iff/object-template-reader.ts`,
+   * which walks the same asset-resolution chain as the portal-layout
+   * loader (extracted on disk → sibling `swg-main` data tree → TRE
+   * archive). Tests inject a synthetic loader to stay filesystem-free.
    */
   loadBuildingTemplateInfo?: (templateName: string) => Promise<BuildingTemplateInfo>;
 }
 
 // ─── Implementation ───────────────────────────────────────────────────────
 
-const TRACK_B_PLACEHOLDER_MESSAGE = 'Track B not yet landed';
-
 export class BuildingKBImpl implements BuildingKB {
   private readonly portalCache = new Map<string, Promise<PortalLayout>>();
   private readonly templateCache = new Map<string, Promise<BuildingTemplateInfo>>();
   private readonly loadPortalLayout: (portalLayoutFilename: string) => Promise<PortalLayout>;
-  private readonly loadBuildingTemplateInfo?: (
+  private readonly loadBuildingTemplateInfo: (
     templateName: string,
   ) => Promise<BuildingTemplateInfo>;
 
   constructor(opts: BuildingKBOptions = {}) {
     this.loadPortalLayout = opts.loadPortalLayout ?? defaultLoadPortalLayout;
-    this.loadBuildingTemplateInfo = opts.loadBuildingTemplateInfo;
+    this.loadBuildingTemplateInfo =
+      opts.loadBuildingTemplateInfo ?? defaultLoadBuildingTemplateInfo;
   }
 
   portalLayoutFor(portalLayoutFilename: string): Promise<PortalLayout> {
@@ -155,15 +152,11 @@ export class BuildingKBImpl implements BuildingKB {
   }
 
   templateInfoFor(templateName: string): Promise<BuildingTemplateInfo> {
-    // Track B will replace this with the real loader. Until then we throw
-    // the sentinel message so callers (and tests) can detect "not yet
-    // implemented" cleanly without misleading errors.
-    if (this.loadBuildingTemplateInfo === undefined) {
-      return Promise.reject(new Error(TRACK_B_PLACEHOLDER_MESSAGE));
-    }
     const existing = this.templateCache.get(templateName);
     if (existing !== undefined) return existing;
     const pending = this.loadBuildingTemplateInfo(templateName);
+    // Mirror the portal-layout eviction: a failed load gets removed from
+    // the cache so the next call retries instead of refusing forever.
     pending.catch(() => {
       if (this.templateCache.get(templateName) === pending) {
         this.templateCache.delete(templateName);

@@ -35,9 +35,7 @@
 import {
   type LifecycleResult,
   type NetworkId,
-  ObjectMenuSelectMessage,
   ObjectTypeTags,
-  RadialMenuTypes,
   type ScenarioFn,
   type ScriptContext,
   SwgClient,
@@ -440,6 +438,16 @@ function makeScenario(args: Args, killController: { stop: boolean; reason: strin
     // (~3528, -4807 — the Mos Eisley cantina's buildout pos) with a flourish
     // mid-route so anyone watching sees movement + animation, then settle
     // there to play. Falls back to the warp position on any error.
+    //
+    // `adminPlanetWarp` inserts a fresh teleport-pending seq into the server's
+    // `m_teleportIds` for this character. walkTo auto-acks ONCE on its first
+    // invocation, but if any other teleport has happened since then the ack
+    // is already consumed — every subsequent client→server transform is
+    // silently rejected by `PlayerCreatureController::handleMove`'s
+    // `isTeleporting()` check and the bot appears frozen to watching clients.
+    // Force a re-ack here so the post-warp walkTo actually moves the player.
+    await ctx.ackPendingTeleports();
+
     const CANTINA_X = 3528;
     const CANTINA_Z = -4807;
     try {
@@ -462,16 +470,29 @@ function makeScenario(args: Args, killController: { stop: boolean; reason: strin
     }
     await ctx.wait(500);
 
-    // 6c. Equip the fanfar so startMusic actually emits instrument sound +
-    // animation. Without an equipped instrument the server accepts the
-    // startMusic command but the visual/audio rendering on watching clients
-    // is "standing still, silent". RadialMenuTypes.ITEM_EQUIP=12 mirrors
-    // the right-click → Equip path the Windows client uses.
+    // 6c. Equip the fanfar to the bot's hold_r slot. `CreatureObject::
+    // getInstrumentAudioId` (CreatureObject.cpp:5457) only returns a non-zero
+    // audioId for hand-held instruments when they're in `hold_r` — and
+    // performance.java::startMusic (line 873-886) silently aborts with
+    // SID_MUSIC_NO_INSTRUMENT when audioId is 0. The result on watching
+    // clients: Bard stands silent.
+    //
+    // The radial `ITEM_EQUIP=12` doesn't work for instruments because
+    // instrument.java's OnObjectMenuRequest only registers `ITEM_USE` —
+    // there's no equip entry to select. The wire path the real client uses
+    // for an inventory→slot move is the `transferItemMisc` ground command:
+    //   target = fanfarOid
+    //   params = "<destOid> <arrangement>"
+    // where destOid = the slotted container that holds hold_r (= the
+    // player's own creature oid) and arrangement = 0 (the default
+    // arrangement slot index for a hand-held instrument, which maps to
+    // hold_r on the player creature's `equipment` slot configuration).
     if (fanfarOid !== null) {
       try {
-        ctx.send(new ObjectMenuSelectMessage(fanfarOid, RadialMenuTypes.ITEM_EQUIP));
-        alwaysLog(`equipped fanfar (oid=${fanfarOid.toString()})`);
-        await ctx.wait(750);
+        const botOid = ctx.sceneStart.playerNetworkId.toString();
+        ctx.useAbility('transferItemMisc', fanfarOid, `${botOid} 0`);
+        alwaysLog(`equipped fanfar via transferItemMisc (oid=${fanfarOid.toString()} → ${botOid}/hold_r)`);
+        await ctx.wait(1_000);
       } catch (err) {
         alwaysLog(
           `WARNING: equip fanfar failed (${err instanceof Error ? err.message : String(err)})`,

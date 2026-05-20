@@ -607,6 +607,35 @@ export { missionTypeName, MissionsCacheImpl } from './client/missions-cache.js';
 export type { Mission, MissionsCacheView } from './client/missions-cache.js';
 export type { SurveyCallable } from './client/script/context.js';
 
+// Planetary-map locations — the server-side `GetMapLocationsMessage` /
+// `GetMapLocationsResponseMessage` wire system and the `MapLocation`
+// struct. Surfaced on `ScriptContext` as `ctx.map` (resolve / navigate to
+// the nearest named location — starport / cantina / bank / …).
+export {
+  GetMapLocationsMessage,
+  GetMapLocationsMessageDecoder,
+  GetMapLocationsResponseMessage,
+  GetMapLocationsResponseMessageDecoder,
+  MapLocationCodec,
+  MapLocationFlags,
+} from './messages/game/planet-map/index.js';
+export type { MapLocation } from './messages/game/planet-map/index.js';
+export { PlanetMapCacheImpl } from './client/planet-map-cache.js';
+export type {
+  PlanetMapCacheView,
+  PlanetMapData,
+  PlanetMapLoadOptions,
+} from './client/planet-map-cache.js';
+export {
+  MAP_CATEGORY_ALIASES,
+  MAP_CATEGORY_INDEX,
+} from './client/script/map.js';
+export type {
+  MapNearestOptions,
+  MapPlace,
+  MapView,
+} from './client/script/map.js';
+
 // Character snapshot + diff — hashable, deterministic projection of the
 // persisted character state from a LifecycleResult. Used by the reconnect
 // regression test to validate the DB save/load pipeline end-to-end.

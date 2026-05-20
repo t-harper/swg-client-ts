@@ -56,6 +56,10 @@ import '../messages/game/obj-controller/index.js';
 import '../messages/game/crafting/index.js';
 import '../messages/game/missions/index.js';
 import '../messages/game/npc/index.js';
+// Sub-import: register the planetary-map-locations decoders so the
+// server→client GetMapLocationsResponseMessage (the reply to a
+// GetMapLocationsMessage that `ctx.map` sends) can be decoded.
+import '../messages/game/planet-map/index.js';
 import '../messages/game/scene-create-object-by-crc.js';
 import '../messages/game/scene-create-object-by-name.js';
 import '../messages/game/scene-destroy-object.js';

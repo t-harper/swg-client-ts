@@ -153,6 +153,7 @@ import {
   navigate as navigateImpl,
 } from '../navigate.js';
 import { type LastNpcDialog, NpcConverseTracker, runNpcConversation } from '../npc-converse.js';
+import { PlanetMapCacheImpl } from '../planet-map-cache.js';
 import { type StringsView, createStringsView } from '../strings-view.js';
 import { SuiAutoResponder, type SuiAutoResponse, type SuiPage } from '../sui-auto.js';
 import { type BestKnownSample, SurveyCacheImpl, type SurveyLastResults } from '../survey-cache.js';
@@ -176,6 +177,7 @@ import {
   expectAfter as expectAfterImpl,
   expectWithin as expectWithinImpl,
 } from './expectations.js';
+import { type MapHostContext, type MapView, createMapView } from './map.js';
 import {
   type CircleOptions,
   type WalkToCellOptions,
@@ -763,6 +765,22 @@ export interface ScriptContext {
    * Stateless / live: each call reads from `world` + `inventory` directly.
    */
   readonly travel: TravelView;
+  /**
+   * Planetary-map locations — resolve and navigate to the nearest named
+   * location (`starport`, `cantina`, `bank`, …) on the current planet.
+   *
+   *   await ctx.map.nearest('starport')   // closest starport, or undefined
+   *   await ctx.map.list('bank')          // every bank, nearest-first
+   *   await ctx.map.goTo('cantina')       // resolve nearest + ctx.navigate
+   *
+   * Backed by SWG's server-side planetary-map system — the first call
+   * sends a `GetMapLocationsMessage` and the result is cached per planet.
+   *
+   * Scope: planet-wide. Unlike `ctx.world` (whose object set is limited to
+   * the server's awareness range around the player), `ctx.map` sees every
+   * starport / cantina / bank on the planet regardless of distance.
+   */
+  readonly map: MapView;
   /**
    * Buy a shuttle ticket. Talks to the ticket vendor (or finds the nearest
    * if no `vendorId` is supplied), enumerates available destinations across
@@ -1766,6 +1784,8 @@ interface InternalContext extends ScriptContext {
   readonly _surveyCache: SurveyCacheImpl;
   /** Missions cache; detached at script teardown. */
   readonly _missionsCache: MissionsCacheImpl;
+  /** Per-planet planetary-map-locations cache; detached at script teardown. */
+  readonly _planetMapCache: PlanetMapCacheImpl;
   /** Detach handle for the cooldown tracker's dispatcher subscriptions. */
   readonly _cooldownTrackerDetach: () => void;
   /** Detach handle for the server-time tracker's clock-reflect subscription. */
@@ -2042,6 +2062,11 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
   // Missions are pure derived state over the WorldModel — attach is a no-op.
   const missionsCache = new MissionsCacheImpl(opts.world);
   missionsCache.attach();
+  // Planetary-map-locations cache — request-driven (sends a
+  // GetMapLocationsMessage inside `load()`); attach is a no-op. Keyed by
+  // planet, read live via `locationView.planet`.
+  const planetMapCache = new PlanetMapCacheImpl(opts.dispatcher, () => locationView.planet);
+  planetMapCache.attach();
 
   // Build the callable+propertied `ctx.survey` surface. The callable
   // closes over `ctx` (declared below) — JS hoists the binding even though
@@ -2136,6 +2161,9 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
   // action helpers need `ctx.send` / `ctx.nextCommandSequence`. Placeholder
   // until they're wired in below.
   const travelPlaceholder = undefined as unknown as TravelView;
+  // `ctx.map` view — constructed AFTER `ctx` exists since `goTo` calls
+  // `ctx.navigate`. Placeholder until it's wired in below.
+  const mapPlaceholder = undefined as unknown as MapView;
 
   const ctx: InternalContext = {
     dispatcher: opts.dispatcher,
@@ -2161,6 +2189,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     _craftingCache: craftingCache,
     _surveyCache: surveyCache,
     _missionsCache: missionsCache,
+    _planetMapCache: planetMapCache,
     survey: surveyCallable,
     location: locationView,
     terrain: terrainView,
@@ -2181,6 +2210,7 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     safety: safetyPlaceholder,
     _combatHelpersDetach: (): void => combatHelpersDetachImpl(),
     travel: travelPlaceholder,
+    map: mapPlaceholder,
 
     async buyTicket(travelOpts: BuyTicketOptions): Promise<NetworkId> {
       return buyTicketImpl(ctx as unknown as TravelHostContext, ctx.travel, travelOpts);
@@ -3373,6 +3403,21 @@ export function createScriptContext(opts: CreateScriptContextOptions): ScriptCon
     configurable: true,
   });
 
+  // `ctx.map` — planetary-map-locations resolver. Constructed after `ctx`
+  // so the host's `navigate` can close over the wired-up `ctx.navigate`.
+  const mapHost: MapHostContext = {
+    mapCache: planetMapCache,
+    position: () => ctx.position(),
+    navigate: (target, navOpts) => ctx.navigate(target, navOpts),
+  };
+  const mapView = createMapView(mapHost);
+  Object.defineProperty(ctx, 'map', {
+    value: mapView,
+    enumerable: true,
+    writable: false,
+    configurable: true,
+  });
+
   return ctx;
 }
 
@@ -3448,10 +3493,12 @@ export async function runScript(fn: ScenarioFn, ctx: ScriptContext): Promise<Scr
       internal._state.ownedInventoryView.detach();
       internal._state.ownedInventoryView = null;
     }
-    // Live caches — survey / crafting / missions all detach idempotently.
+    // Live caches — survey / crafting / missions / planet-map all detach
+    // idempotently.
     internal._surveyCache.detach();
     internal._craftingCache.detach();
     internal._missionsCache.detach();
+    internal._planetMapCache.detach();
     internal._state.bankView.detach();
     internal._state.datapadView.detach();
   }

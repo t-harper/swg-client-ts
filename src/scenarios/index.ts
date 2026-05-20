@@ -547,6 +547,37 @@ export const bazaarSnipe: ScenarioFactory = (args) => {
   };
 };
 
+/**
+ * Resolve the nearest named planetary-map location and navigate the player
+ * there via `ctx.map.goTo`.
+ *
+ * Uses SWG's server-side planetary-map system — `ctx.map` requests every
+ * registered location on the current planet, picks the nearest one in the
+ * requested category, and walks (or auto-mounts) to it.
+ *
+ * Args:
+ *   category  (required) friendly category name — `starport`, `cantina`,
+ *                        `bank`, `hotel`, `shuttleport`, `medicalcenter`,
+ *                        `cloningfacility`, `garage`, `guild`, `capitol`,
+ *                        `themepark`, `city` (aliases: `spaceport`,
+ *                        `shuttle`, `hospital`, `medcenter`, `cloning`).
+ *   useMount  (default 'auto') 'auto' lets `navigate` mount up for far
+ *                        targets; 'never' forces walking the whole way.
+ *   holdMs    (default 2000) idle time after arriving.
+ */
+export const gotoNearest: ScenarioFactory = (args) => {
+  const category = args.category;
+  if (category === undefined || category === '') {
+    throw new Error('goto-nearest: --script-arg=category=<name> is required (e.g. starport)');
+  }
+  const useMount = args.useMount === 'never' ? 'never' : 'auto';
+  const holdMs = numArg(args, 'holdMs', 2000);
+  return async (ctx) => {
+    await ctx.map.goTo(category, { useMount });
+    if (holdMs > 0) await ctx.wait(holdMs);
+  };
+};
+
 export const scenarios: Record<string, ScenarioFactory> = {
   'walk-line': walkLine,
   'walk-circle': walkCircle,
@@ -557,6 +588,7 @@ export const scenarios: Record<string, ScenarioFactory> = {
   'group-trade': groupTradeScenario,
   'ride-vehicle': rideVehicle,
   'bazaar-snipe': bazaarSnipe,
+  'goto-nearest': gotoNearest,
   dwell,
 };
 

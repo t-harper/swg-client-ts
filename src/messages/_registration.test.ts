@@ -29,7 +29,6 @@ import { ChatPersistentMessageToServer } from './game/chat/chat-persistent-messa
 import { ChatRequestRoomList } from './game/chat/chat-request-room-list.js';
 import { ChatRoomList } from './game/chat/chat-room-list.js';
 import { ChatSendToRoom } from './game/chat/chat-send-to-room.js';
-import { ConGenericMessage } from './game/con-generic-message.js';
 import { CmdSceneReady } from './game/cmd-scene-ready.js';
 import { CmdStartScene } from './game/cmd-start-scene.js';
 import { AcceptAuctionMessage } from './game/commodities/accept-auction-message.js';
@@ -49,10 +48,13 @@ import { IsVendorOwnerMessage } from './game/commodities/is-vendor-owner-message
 import { IsVendorOwnerResponseMessage } from './game/commodities/is-vendor-owner-response-message.js';
 import { RetrieveAuctionItemMessage } from './game/commodities/retrieve-auction-item-message.js';
 import { RetrieveAuctionItemResponseMessage } from './game/commodities/retrieve-auction-item-response-message.js';
+import { ConGenericMessage } from './game/con-generic-message.js';
 import { HeartBeat } from './game/heart-beat.js';
 import { LogoutMessage } from './game/logout-message.js';
 import { PopulateMissionBrowserMessage } from './game/missions/populate-mission-browser-message.js';
 import { ObjControllerMessage } from './game/obj-controller-message.js';
+import { GetMapLocationsMessage } from './game/planet-map/get-map-locations-message.js';
+import { GetMapLocationsResponseMessage } from './game/planet-map/get-map-locations-response-message.js';
 import { SceneCreateObjectByCrc } from './game/scene-create-object-by-crc.js';
 import { SceneCreateObjectByName } from './game/scene-create-object-by-name.js';
 import { SceneDestroyObject } from './game/scene-destroy-object.js';
@@ -146,11 +148,13 @@ const ALL_DECODERS = [
   IsVendorOwnerResponseMessage,
   RetrieveAuctionItemMessage,
   RetrieveAuctionItemResponseMessage,
+  GetMapLocationsMessage,
+  GetMapLocationsResponseMessage,
 ];
 
 describe('message registration', () => {
-  it('exports 67 message classes', () => {
-    expect(ALL_DECODERS.length).toBe(67);
+  it('exports 69 message classes', () => {
+    expect(ALL_DECODERS.length).toBe(69);
   });
 
   it('every class has a non-empty messageName', () => {

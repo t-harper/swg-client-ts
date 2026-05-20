@@ -99,6 +99,41 @@ import type { WorldModel } from './world-model.js';
  * Recommended: pass `basePath: '/tmp/capture'` to get
  *   `/tmp/capture.login.ndjson` + `/tmp/capture.game.ndjson`.
  */
+/**
+ * Build a `pickCharacter` predicate for {@link runConnectionStage} that
+ * targets the named character and throws if it isn't present.
+ *
+ * Why this matters: the old behavior (`cs.find(name) ?? cs[0]`) would
+ * silently fall back to whatever character happened to be first in the
+ * account's avatar list when the requested name wasn't found. So a test
+ * or script asking to play `MyJedi` on an account that already held
+ * `MyMedic` would happily run its provisioning script on `MyMedic` —
+ * unrecoverably modifying the wrong character.
+ *
+ * Behavior:
+ *   - Named character present → returns it.
+ *   - Named character absent BUT the chars list is empty → never reached;
+ *     `runConnectionStage`'s create-if-empty path will have populated the
+ *     list with the freshly-created character (whose name matches), so
+ *     the find() succeeds.
+ *   - Named character absent AND chars list non-empty → throws.
+ *
+ * Exported so callers building their own connection-stage flow can reuse
+ * the same fail-loud semantics.
+ */
+export function makeNamedCharacterPicker(
+  characterName: string,
+): (cs: readonly CharacterInfo[]) => CharacterInfo {
+  return (cs) => {
+    const matched = cs.find((c) => c.name === characterName);
+    if (matched !== undefined) return matched;
+    const available = cs.map((c) => c.name).join(', ') || '(none)';
+    throw new Error(
+      `Character "${characterName}" not found in account's character list [${available}]. Specify an existing character name, use a fresh account so a new character is created, or pre-create the character.`,
+    );
+  };
+}
+
 export interface FullLifecycleRawCaptureOptions {
   /**
    * Base file path. Suffixes `.login.ndjson` and `.game.ndjson` are appended
@@ -346,9 +381,7 @@ export class SwgClient {
           }
         : undefined;
     const picker =
-      opts.characterName !== undefined
-        ? (cs: readonly CharacterInfo[]) => cs.find((c) => c.name === opts.characterName) ?? cs[0]
-        : undefined;
+      opts.characterName !== undefined ? makeNamedCharacterPicker(opts.characterName) : undefined;
     const connectionStage = await runConnectionStage({
       endpoint: {
         host: chosenCluster.connectionServerAddress,

@@ -119,6 +119,20 @@ export const RadialMenuTypes = {
   SERVER_PET_MOUNT: 288,
   /** "Dismount" on a pet/vehicle radial (equivalent to `useAbility('dismount')`). */
   SERVER_PET_DISMOUNT: 289,
+  /**
+   * "Open" (used by Jedi saber crystals as the "Tune Crystal" radial entry).
+   * Selecting this on an untuned saber crystal fires the server-side
+   * `jedi_saber_component.OnObjectMenuSelect` → `verifyTune(player)` which
+   * opens a SUI OK/Cancel confirm dialog; clicking OK (event 0) tunes the
+   * crystal to the player by setting `jedi.crystal.owner.id` as an obj_id
+   * objvar (which is the ONLY way to set obj_id-typed objvars — the
+   * `objvar set` console command only handles INT/REAL/STRING types).
+   *
+   * Value 283 derived by counting `index++` entries up to and including
+   * `SERVER_PET_OPEN` in
+   * `~/code/swg-main/dsrc/sku.0/sys.server/compiled/game/script/menu_info_types.java`.
+   */
+  SERVER_PET_OPEN: 283,
 } as const;
 
 export class ObjectMenuSelectMessage extends GameNetworkMessage {

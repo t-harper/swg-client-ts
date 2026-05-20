@@ -33,14 +33,19 @@ import { SceneCreateObjectByCrc } from '../messages/game/scene-create-object-by-
 import { SceneCreateObjectByName } from '../messages/game/scene-create-object-by-name.js';
 import { SceneEndBaselines } from '../messages/game/scene-end-baselines.js';
 import { type NetworkId, type SceneStart, ZoneState } from '../types.js';
+import type { ControlServer } from './control/control-server.js';
+import { type SessionControl, createSessionControl } from './control/session-control.js';
+import { buildSessionHandle } from './control/session-handle.js';
 import type { MessageDispatcher, TranscriptEvent } from './dispatcher.js';
 import { InventoryViewImpl } from './inventory-view.js';
 import type { Knowledge } from './knowledge.js';
 import {
   type ScenarioFn,
+  type ScriptContextSequences,
   type ScriptResult,
   createScriptContext,
   didScriptLogout,
+  readScriptContextSequences,
   runScript,
 } from './script/context.js';
 import { WorldModel } from './world-model.js';
@@ -86,6 +91,26 @@ export interface GameStageOptions {
    * inside `createScriptContext` when omitted.
    */
   knowledge?: Knowledge;
+  /**
+   * Re-importable scenario source. When set, the game-stage runs an inner
+   * loop: a `reload` directive on `sessionControl` re-invokes this provider
+   * and re-runs the freshly imported scenario against the SAME connection.
+   * Used for iteration 1 when `script` is not set, and for every iteration
+   * after a `reload`.
+   */
+  scriptProvider?: () => Promise<ScenarioFn>;
+  /**
+   * Directive state machine shared with a control socket / supervisor. A
+   * non-`run`/`paused` directive aborts the running scenario; `reload`
+   * re-runs it. The game-stage creates a private one when omitted.
+   */
+  sessionControl?: SessionControl;
+  /**
+   * Control socket whose attached session handle the game-stage swaps on
+   * every script run, so external clients can query and steer the live
+   * session.
+   */
+  controlServer?: ControlServer;
 }
 
 export interface GameStageResult {
@@ -219,28 +244,148 @@ export async function runGameStage(opts: GameStageOptions): Promise<GameStageRes
       heartbeatTimer.unref?.();
     }
 
-    // 5a. Optional script — runs in place of the sleep, then any remaining
-    // hold time is awaited.
+    // 5a. Optional script — runs in place of the sleep. With a
+    // `scriptProvider` set, the game-stage runs an inner loop so a `reload`
+    // directive re-runs freshly imported scenario code against THIS same
+    // connection (dispatcher / world / inventory view all persist).
     const scriptT0 = Date.now();
     let scriptResult: ScriptResult | undefined;
     let scriptLoggedOut = false;
-    if (opts.script !== undefined) {
-      const abortController = new AbortController();
-      const scriptCtx = createScriptContext({
-        dispatcher,
-        sceneStart: startScene,
-        signal: abortController.signal,
-        world,
-        // Hand the already-attached view into the context so it gets shared
-        // (vs. having the context construct & attach its own).
-        inventory: inventoryView,
-        ...(opts.knowledge !== undefined ? { knowledge: opts.knowledge } : {}),
-      });
-      scriptResult = await runScript(opts.script, scriptCtx);
-      scriptLoggedOut = didScriptLogout(scriptCtx);
+    let sessionControl: SessionControl | undefined;
+    const hasScript = opts.script !== undefined || opts.scriptProvider !== undefined;
+    if (hasScript) {
+      const sc = opts.sessionControl ?? createSessionControl();
+      sessionControl = sc;
+      const controlServer = opts.controlServer;
+      // Wire-sequence high-water marks, forwarded across reload iterations
+      // so a re-run doesn't reset the sequences the server keys command-
+      // queue / chat / crafting / mission flows on.
+      let seqs: ScriptContextSequences | null = null;
+      let iteration = 0;
+
+      while (true) {
+        iteration += 1;
+
+        // Resolve the scenario function for this iteration.
+        let fn: ScenarioFn;
+        if (iteration === 1 && opts.script !== undefined) {
+          fn = opts.script;
+        } else if (opts.scriptProvider !== undefined) {
+          try {
+            fn = await opts.scriptProvider();
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            if (iteration === 1) {
+              // No prior session to keep — give up on the script, log out.
+              scriptResult = {
+                elapsedMs: 0,
+                sendsCount: 0,
+                didLogout: false,
+                assertionFailures: [],
+                error: `scriptProvider failed: ${message}`,
+              };
+              break;
+            }
+            // A reload of edited code failed to import. Keep the live
+            // connection and wait for another `reload` (fixed code) or a
+            // terminal directive — `ctl reload` / `ctl stop` stay usable
+            // via a ctx-less session handle.
+            process.stderr.write(`[game-stage] reload failed: ${message}\n`);
+            if (controlServer === undefined) break;
+            sc.resetToRun();
+            controlServer.attachSession(
+              buildSessionHandle({
+                ctx: null,
+                sessionControl: sc,
+                serverInfo: controlServer.serverInfo,
+                reloadCapable: true,
+                scriptStartedAt: Date.now(),
+                lastReloadError: message,
+              }),
+            );
+            const next = await sc.waitForChange();
+            controlServer.detachSession();
+            if (next === 'reload') {
+              sc.resetToRun();
+              continue;
+            }
+            break;
+          }
+        } else {
+          break; // iteration > 1 with no provider — cannot reload.
+        }
+
+        // A non-run/non-paused directive (reload/restart/stop/logout) ends
+        // the running scenario by aborting its signal — a universal stop
+        // even for scenarios that don't cooperatively watch SessionControl.
+        const abortController = new AbortController();
+        const offChange = sc.onChange(() => {
+          if (!sc.shouldKeepRunning()) abortController.abort();
+        });
+        if (!sc.shouldKeepRunning()) abortController.abort();
+
+        const scriptCtx = createScriptContext({
+          dispatcher,
+          sceneStart: startScene,
+          signal: abortController.signal,
+          world,
+          // Share the inventory view constructed once for this stage.
+          inventory: inventoryView,
+          ...(opts.knowledge !== undefined ? { knowledge: opts.knowledge } : {}),
+          ...(seqs !== null
+            ? {
+                initialSequenceNumber: seqs.sequenceNumber,
+                initialCommandSequence: seqs.commandSequence,
+                initialChatSequence: seqs.chatSequence,
+                initialCraftSequence: seqs.craftSequence,
+                initialMissionSequence: seqs.missionSequence,
+                initialBazaarRequestId: seqs.bazaarRequestId,
+              }
+            : {}),
+        });
+        if (controlServer !== undefined) {
+          controlServer.attachSession(
+            buildSessionHandle({
+              ctx: scriptCtx,
+              sessionControl: sc,
+              serverInfo: controlServer.serverInfo,
+              reloadCapable: opts.scriptProvider !== undefined,
+              scriptStartedAt: Date.now(),
+            }),
+          );
+        }
+
+        try {
+          scriptResult = await runScript(fn, scriptCtx);
+          scriptLoggedOut = didScriptLogout(scriptCtx);
+          seqs = readScriptContextSequences(scriptCtx);
+        } finally {
+          controlServer?.detachSession();
+          offChange();
+          // Ensure the prior signal is dead before the next iteration.
+          abortController.abort();
+          // Drop the scenario's trigger actions so a reload re-registers a
+          // clean set — a re-imported scenario must not inherit stale
+          // actions (which would hold a dead context) from the prior run.
+          sc.clearActions();
+        }
+
+        // `reload` re-runs against this connection; everything else ends it.
+        if (sc.directive === 'reload' && opts.scriptProvider !== undefined) {
+          sc.resetToRun();
+          continue;
+        }
+        break;
+      }
     }
     const remainingHoldMs = Math.max(0, holdZonedInMs - (Date.now() - scriptT0));
-    if (remainingHoldMs > 0) await sleep(remainingHoldMs);
+    // Skip the leftover dwell when a control directive ended the run early.
+    if (
+      remainingHoldMs > 0 &&
+      (sessionControl === undefined || sessionControl.shouldKeepRunning())
+    ) {
+      await sleep(remainingHoldMs);
+    }
 
     // 6. Send LogoutMessage. No reply is sent on the client wire.
     // (Skip if the script already sent one via ctx.logout().)

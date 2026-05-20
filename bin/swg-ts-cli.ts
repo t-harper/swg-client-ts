@@ -21,22 +21,27 @@ import {
   type PooledCharacter,
   SwgClient,
   captureLifecycle,
+  controlRequest,
   lifecycleResultToJSON,
+  listSessions,
   readRawCapture,
   readTranscript,
   replay,
+  runSupervised,
+  socketPathFor,
   writeTranscript,
 } from '../src/index.js';
 import type {
   CapturedEvent,
   DecodedFrame,
   DecodedPacketDescription,
+  ScenarioFn,
   TranscriptEvent,
 } from '../src/index.js';
 import { scenarios } from '../src/scenarios/index.js';
 
 interface CliArgs {
-  command: 'zone' | 'swarm' | 'capture' | 'replay' | 'pool' | 'decode-raw' | 'help';
+  command: 'zone' | 'swarm' | 'capture' | 'replay' | 'pool' | 'ctl' | 'decode-raw' | 'help';
   host: string;
   port: number;
   user: string;
@@ -73,6 +78,16 @@ interface CliArgs {
   poolPath?: string;
   poolLeasedBy?: string;
   poolLeaseMs?: number;
+  // ctl subcommand
+  ctlAction: string;
+  ctlPositional: string[];
+  ctlSession?: string;
+  ctlSocketPath?: string;
+  ctlParams: Record<string, string>;
+  ctlTimeoutMs: number;
+  // zone control socket
+  controlSocketName?: string;
+  supervise: boolean;
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -98,6 +113,11 @@ function parseArgs(argv: string[]): CliArgs {
     from: 0,
     limit: 0,
     poolAction: 'help',
+    ctlAction: 'status',
+    ctlPositional: [],
+    ctlParams: {},
+    ctlTimeoutMs: 5_000,
+    supervise: false,
   };
   const positional: string[] = [];
   for (const a of argv) {
@@ -198,6 +218,30 @@ function parseArgs(argv: string[]): CliArgs {
         case 'lease-ms':
           args.poolLeaseMs = Number.parseInt(val, 10);
           break;
+        case 'session':
+          args.ctlSession = val;
+          break;
+        case 'socket':
+          args.ctlSocketPath = val;
+          break;
+        case 'timeout-ms':
+          args.ctlTimeoutMs = Number.parseInt(val, 10);
+          break;
+        case 'param': {
+          const sep = val.indexOf('=');
+          if (sep < 0) {
+            process.stderr.write(`--param expects key=value, got: ${val}\n`);
+            process.exit(2);
+          }
+          args.ctlParams[val.slice(0, sep)] = val.slice(sep + 1);
+          break;
+        }
+        case 'control-socket':
+          args.controlSocketName = val;
+          break;
+        case 'supervise':
+          args.supervise = val === 'true' || val === '';
+          break;
         case 'from':
           args.from = Number.parseInt(val, 10);
           break;
@@ -249,6 +293,10 @@ function parseArgs(argv: string[]): CliArgs {
     }
     // `--character=X` is reused for the pool sub-action's character argument.
     args.poolCharacter = args.character;
+  } else if (cmd === 'ctl') {
+    args.command = 'ctl';
+    args.ctlAction = positional[1] ?? 'status';
+    args.ctlPositional = positional.slice(2);
   } else if (positional.length === 0) {
     args.command = 'help';
   } else {
@@ -268,6 +316,7 @@ function printHelp(): void {
       '                   [--character=<name>] [--cluster=swg] [--planet=mos_eisley]',
       '                   [--profession=combat_brawler] [--hold-ms=5000]',
       '                   [--script=<name>] [--script-arg=k=v ...]',
+      '                   [--control-socket=<name>] [--supervise]',
       '                   [--verbose] [--no-pretty] [--skip-game]',
       '  swg-ts-cli swarm --host=<host> [--port=44453] --count=<N>',
       '                   [--user-prefix=fleet] [--stagger-ms=500]',
@@ -297,6 +346,20 @@ function printHelp(): void {
       '                                                   — create N new chars on the server + pool them',
       '        checkout [--leased-by=X] [--lease-ms=N]    — claim one char + print {account,...,leaseExpiresAt}',
       '        sweep                                      — clear expired leases',
+      '  swg-ts-cli ctl <action> [--session=<name>] [--socket=<path>]',
+      '      Query / steer a running session over its control socket.',
+      '        list                       — list active control sessions',
+      '        status                     — session + zone status',
+      '        get <query> [--param=k=v]  — world|character|inventory|location|',
+      '                                     group|combat|cooldowns|datapad|knowledge',
+      '        pause | resume             — suspend / resume bot behavior',
+      '        stop | logout              — end the session',
+      '        restart                    — reconnect (supervised hosts only)',
+      '        reload                     — re-run freshly imported scenario code',
+      '        say <text...>              — send in-game chat',
+      '        trigger <name>             — invoke a registered bot action',
+      '      --session picks ~/.swg-ts-client/sessions/<name>.sock; omit it when',
+      '      exactly one session is live.',
       '  swg-ts-cli help',
       '',
       `Available scripts: ${Object.keys(scenarios).sort().join(', ')}`,
@@ -408,6 +471,9 @@ async function main(): Promise<number> {
   if (args.command === 'pool') {
     return runPool(args);
   }
+  if (args.command === 'ctl') {
+    return runCtl(args);
+  }
   if (args.command !== 'zone') {
     printHelp();
     return 2;
@@ -440,6 +506,69 @@ async function main(): Promise<number> {
     loginServer: { host: args.host, port: args.port },
   });
 
+  // A reloadable scenario provider — re-imports the scenarios module with a
+  // cache-bust so `ctl reload` picks up edited scenario code. Built only
+  // when a --script was requested.
+  const buildZoneScriptProvider = (): (() => Promise<ScenarioFn>) | undefined => {
+    const scriptName = args.script;
+    if (scriptName === undefined) return undefined;
+    const scriptArgs = args.scriptArgs;
+    return async (): Promise<ScenarioFn> => {
+      const mod = (await import(`../src/scenarios/index.js?v=${Date.now()}`)) as {
+        scenarios: typeof scenarios;
+      };
+      const factory = mod.scenarios[scriptName];
+      if (factory === undefined) throw new Error(`unknown scenario "${scriptName}"`);
+      return factory(scriptArgs);
+    };
+  };
+
+  // --supervise: bind a control socket once and loop the lifecycle so
+  // `ctl restart` can reconnect. Requires a --script (the supervised loop
+  // needs a reloadable scenario source).
+  if (args.supervise) {
+    const scriptProvider = buildZoneScriptProvider();
+    if (scriptProvider === undefined) {
+      process.stderr.write('zone --supervise requires --script=<name>\n');
+      return 2;
+    }
+    const sessionName = args.controlSocketName ?? `zone-${args.user}`;
+    try {
+      const result = await runSupervised({
+        client,
+        sessionName,
+        scriptProvider,
+        lifecycle: {
+          account: args.user,
+          ...(args.password !== undefined ? { password: args.password } : {}),
+          ...(args.cluster !== undefined ? { clusterName: args.cluster } : {}),
+          ...(args.character !== undefined ? { characterName: args.character } : {}),
+          planet: args.planet,
+          profession: args.profession,
+          holdZonedInMs: args.holdMs,
+        },
+        log: (m) => {
+          if (args.verbose) process.stderr.write(`${m}\n`);
+        },
+      });
+      writeJson(args, {
+        ok: true,
+        supervised: true,
+        sessionName,
+        iterations: result.iterations,
+        finalDirective: result.finalDirective,
+        lastLifecycle:
+          result.lastLifecycle !== null ? lifecycleResultToJSON(result.lastLifecycle) : null,
+      });
+      return 0;
+    } catch (err) {
+      writeJson(args, { ok: false, error: err instanceof Error ? err.message : String(err) });
+      return 1;
+    }
+  }
+
+  const zoneScriptProvider = buildZoneScriptProvider();
+
   const transcriptStream: TranscriptEvent[] = [];
   let lastError: Error | null = null;
   try {
@@ -453,6 +582,8 @@ async function main(): Promise<number> {
       holdZonedInMs: args.holdMs,
       skipGameStage: args.skipGame,
       ...(scenarioFn !== undefined ? { script: scenarioFn } : {}),
+      ...(zoneScriptProvider !== undefined ? { scriptProvider: zoneScriptProvider } : {}),
+      ...(args.controlSocketName !== undefined ? { controlSocket: args.controlSocketName } : {}),
       ...(args.rawCaptureBase !== undefined
         ? { rawCapture: { basePath: args.rawCaptureBase } }
         : {}),
@@ -911,6 +1042,130 @@ function pooledToJson(c: PooledCharacter): Record<string, unknown> {
     leaseExpiresAt: c.leaseExpiresAt?.toISOString() ?? null,
     ...(c.metadata !== undefined ? { metadata: c.metadata } : {}),
   };
+}
+
+async function runCtl(args: CliArgs): Promise<number> {
+  if (args.ctlAction === 'list') return runCtlList(args);
+
+  const socketPath = await resolveCtlSocketPath(args);
+  if (socketPath === null) return 2;
+
+  let spec: { kind: 'query' | 'action'; name: string; params?: Record<string, unknown> };
+  switch (args.ctlAction) {
+    case 'status':
+      spec = { kind: 'query', name: 'status' };
+      break;
+    case 'get': {
+      const query = args.ctlPositional[0];
+      if (query === undefined) {
+        process.stderr.write(
+          'ctl get requires a query name: world|character|inventory|location|' +
+            'group|combat|cooldowns|datapad|knowledge\n',
+        );
+        return 2;
+      }
+      spec = { kind: 'query', name: query, params: ctlParams(args) };
+      break;
+    }
+    case 'say': {
+      const text = args.ctlPositional.join(' ').trim() || args.ctlParams.text;
+      if (text === undefined || text === '') {
+        process.stderr.write('ctl say requires text: `ctl say <text...>`\n');
+        return 2;
+      }
+      spec = { kind: 'action', name: 'say', params: { ...args.ctlParams, text } };
+      break;
+    }
+    case 'trigger': {
+      const name = args.ctlPositional[0] ?? args.ctlParams.action;
+      if (name === undefined || name === '') {
+        process.stderr.write('ctl trigger requires an action name: `ctl trigger <name>`\n');
+        return 2;
+      }
+      spec = { kind: 'action', name: 'trigger', params: { ...args.ctlParams, action: name } };
+      break;
+    }
+    case 'stop':
+    case 'logout':
+    case 'restart':
+    case 'pause':
+    case 'resume':
+    case 'reload':
+      spec = { kind: 'action', name: args.ctlAction, params: ctlParams(args) };
+      break;
+    default:
+      process.stderr.write(`Unknown ctl action: ${args.ctlAction}\n`);
+      return 2;
+  }
+
+  try {
+    const response = await controlRequest(socketPath, spec, { timeoutMs: args.ctlTimeoutMs });
+    writeJson(args, response);
+    return response.ok ? 0 : 1;
+  } catch (err) {
+    writeJson(args, { ok: false, error: err instanceof Error ? err.message : String(err) });
+    return 1;
+  }
+}
+
+/** Build a params object from `--param=k=v` flags, or undefined if none given. */
+function ctlParams(args: CliArgs): Record<string, unknown> | undefined {
+  return Object.keys(args.ctlParams).length > 0 ? { ...args.ctlParams } : undefined;
+}
+
+/** Resolve which control socket `ctl` should target. */
+async function resolveCtlSocketPath(args: CliArgs): Promise<string | null> {
+  if (args.ctlSocketPath !== undefined) return args.ctlSocketPath;
+  if (args.ctlSession !== undefined) return socketPathFor(args.ctlSession);
+  const live = (await listSessions()).filter((s) => s.pidAlive);
+  if (live.length === 1) return live[0]?.socketPath ?? null;
+  if (live.length === 0) {
+    process.stderr.write(
+      'no active control sessions — start a bot or `zone --control-socket=<name>`, ' +
+        'or pass --session=<name> / --socket=<path>\n',
+    );
+    return null;
+  }
+  process.stderr.write(
+    `multiple control sessions active — pass --session=<name>: ${live
+      .map((s) => s.name)
+      .join(', ')}\n`,
+  );
+  return null;
+}
+
+/** `ctl list` — enumerate the control-session sidecars, probing each socket. */
+async function runCtlList(args: CliArgs): Promise<number> {
+  const sessions = await listSessions();
+  const probed = await Promise.all(
+    sessions.map(async (s) => {
+      let socketAlive = false;
+      try {
+        const resp = await controlRequest(
+          s.socketPath,
+          { kind: 'query', name: 'status' },
+          { timeoutMs: 800 },
+        );
+        socketAlive = resp.ok;
+      } catch {
+        socketAlive = false;
+      }
+      return {
+        name: s.name,
+        character: s.character,
+        account: s.account,
+        planet: s.planet,
+        pid: s.pid,
+        pidAlive: s.pidAlive,
+        socketAlive,
+        supervised: s.supervised,
+        socketPath: s.socketPath,
+        startedAt: s.startedAt,
+      };
+    }),
+  );
+  writeJson(args, { count: probed.length, sessions: probed });
+  return 0;
 }
 
 function writeJson(args: CliArgs, payload: unknown): void {

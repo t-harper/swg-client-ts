@@ -50,6 +50,7 @@ import {
 import type { GameNetworkMessage } from '../messages/interface.js';
 import { type CharacterSheetHandle, createCharacterSheet, postureName } from './character-sheet.js';
 import type { MessageDispatcher } from './dispatcher.js';
+import { WorldModel } from './world-model.js';
 
 // Side-effect: register all baseline + delta decoders for tag/kind lookup. We
 // don't rely on the registry to decode (we hand-build decodedBaseline), but
@@ -526,6 +527,51 @@ describe('CharacterSheet', () => {
       recv(creoSharedNpBaseline(PLAYER_ID, makeCreoSharedNpBaseline({ level: 80, mood: 3 })));
       expect(handle.view.level).toBe(80);
       expect(handle.view.mood).toBe(3);
+    });
+
+    it('reads performance state from SHARED_NP baseline + delta', () => {
+      setup();
+      // Idle by default — no active performance.
+      recv(creoSharedNpBaseline(PLAYER_ID, makeCreoSharedNpBaseline()));
+      expect(handle.view.performance.performing).toBe(false);
+      expect(handle.view.performance.type).toBe(0);
+      // A SHARED_NP baseline carrying an active performance.
+      recv(
+        creoSharedNpBaseline(
+          PLAYER_ID,
+          makeCreoSharedNpBaseline({
+            performanceType: 7,
+            performanceStartTime: 1234,
+            animatingSkillData: 'music_3',
+            animationMood: 'happy',
+          }),
+        ),
+      );
+      expect(handle.view.performance.performing).toBe(true);
+      expect(handle.view.performance.type).toBe(7);
+      expect(handle.view.performance.startTime).toBe(1234);
+      expect(handle.view.performance.animatingSkillData).toBe('music_3');
+      expect(handle.view.performance.animationMood).toBe('happy');
+      // A delta that clears performanceType flips `performing` back to false.
+      recv(
+        makeDelta(PLAYER_ID, ObjectTypeTags.CREO, BaselinePackageIds.SHARED_NP, {
+          performanceType: 0,
+        }),
+      );
+      expect(handle.view.performance.performing).toBe(false);
+    });
+
+    it('seeds level/mood from the WorldModel when constructed mid-session (reload)', () => {
+      // Simulate a reload: the baseline flood already reached the (shared,
+      // long-lived) WorldModel; a fresh CharacterSheet built afterwards must
+      // back-fill from the world rather than start blank at level 0.
+      const { dispatcher: d2, recv: recvW } = makeFakeDispatcher();
+      const world = new WorldModel({ dispatcher: d2 });
+      recvW(creoSharedNpBaseline(PLAYER_ID, makeCreoSharedNpBaseline({ level: 88, mood: 2 })));
+      const reloaded = createCharacterSheet({ dispatcher: d2, playerNetworkId: PLAYER_ID, world });
+      expect(reloaded.view.level).toBe(88);
+      expect(reloaded.view.mood).toBe(2);
+      expect(reloaded.view.ready).toBe(true);
     });
 
     it('reads HAM current/max from SHARED_NP totalAttributes/totalMaxAttributes', () => {
@@ -1218,6 +1264,7 @@ describe('CharacterSheet', () => {
         get(id: bigint): typeof worldObj | undefined {
           return id === weaponId ? worldObj : undefined;
         },
+        objects: () => [].values(),
       };
       const localHandle = createCharacterSheet({
         dispatcher,
@@ -1283,7 +1330,10 @@ describe('CharacterSheet', () => {
         firstSeenAt: 0,
         lastUpdatedAt: 0,
       };
-      const fakeWorld = { get: (id: bigint) => (id === weaponId ? worldObj : undefined) };
+      const fakeWorld = {
+        get: (id: bigint) => (id === weaponId ? worldObj : undefined),
+        objects: () => [].values(),
+      };
       const localHandle = createCharacterSheet({
         dispatcher,
         playerNetworkId: PLAYER_ID,
@@ -1340,7 +1390,10 @@ describe('CharacterSheet', () => {
         firstSeenAt: 0,
         lastUpdatedAt: 0,
       };
-      const fakeWorld = { get: (id: bigint) => (id === weaponId ? worldObj : undefined) };
+      const fakeWorld = {
+        get: (id: bigint) => (id === weaponId ? worldObj : undefined),
+        objects: () => [].values(),
+      };
       const localHandle = createCharacterSheet({
         dispatcher,
         playerNetworkId: PLAYER_ID,

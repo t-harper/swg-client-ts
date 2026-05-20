@@ -78,6 +78,8 @@ import {
   ZoneState,
 } from '../types.js';
 import { type CreateCharacterOptions, runConnectionStage } from './connection-stage.js';
+import { ControlServer } from './control/control-server.js';
+import type { SessionControl } from './control/session-control.js';
 import {
   type DeleteCharacterOptions,
   type DeleteCharacterReply,
@@ -185,6 +187,26 @@ export interface FullLifecycleOptions {
    * verifying CRC and emitting the same message decodes the live client saw.
    */
   rawCapture?: FullLifecycleRawCaptureOptions;
+  /**
+   * Re-importable scenario source. When set (instead of, or alongside,
+   * `script`), the game-stage can hot-`reload` the scenario — re-import the
+   * module and re-run it against the live connection — when a control
+   * socket requests it. Called once per script run.
+   */
+  scriptProvider?: () => Promise<ScenarioFn>;
+  /**
+   * Shared directive state machine for control-socket / supervisor-driven
+   * runs. Normally supplied by `runSupervised`; omit for a one-shot.
+   */
+  sessionControl?: SessionControl;
+  /**
+   * Expose a control socket for this session. Pass a session name (string)
+   * and the lifecycle binds + tears down its own
+   * `~/.swg-ts-client/sessions/<name>.sock`; pass a pre-built
+   * {@link ControlServer} (supervisor-owned, left running across
+   * lifecycles) to adopt it. External clients connect via `swg-ts-cli ctl`.
+   */
+  controlSocket?: string | ControlServer;
 }
 
 /**
@@ -363,6 +385,31 @@ export class SwgClient {
     });
     opts.onStateChange?.(ZoneState.CharacterSelected);
 
+    // Resolve the control socket — bind our own from a session name, or
+    // adopt a supervisor-provided ControlServer (which it owns the
+    // lifetime of). Created here, after Stage 2, so the metadata sidecar
+    // carries the real selected-character name.
+    let controlServer: ControlServer | null = null;
+    let ownsControlServer = false;
+    if (typeof opts.controlSocket === 'string') {
+      controlServer = new ControlServer({
+        name: opts.controlSocket,
+        supervised: false,
+        account: opts.account,
+        character: connectionStage.selectedCharacter.name,
+        planet: opts.planet ?? null,
+      });
+      ownsControlServer = true;
+      await controlServer.start();
+    } else if (opts.controlSocket !== undefined) {
+      controlServer = opts.controlSocket;
+      await controlServer.updateMetadata({
+        account: opts.account,
+        character: connectionStage.selectedCharacter.name,
+        planet: opts.planet ?? null,
+      });
+    }
+
     let game: Awaited<ReturnType<typeof runGameStage>> | null = null;
     let receivedErrorMessage = false;
     try {
@@ -372,6 +419,9 @@ export class SwgClient {
           dispatcher: connectionStage.dispatcher,
           holdZonedInMs: opts.holdZonedInMs ?? 5_000,
           ...(opts.script !== undefined ? { script: opts.script } : {}),
+          ...(opts.scriptProvider !== undefined ? { scriptProvider: opts.scriptProvider } : {}),
+          ...(opts.sessionControl !== undefined ? { sessionControl: opts.sessionControl } : {}),
+          ...(controlServer !== null ? { controlServer } : {}),
           onStateChange: opts.onStateChange,
           onTranscript: undefined, // already wired via Stage 2's dispatcher
           knowledge: this.knowledge,
@@ -385,6 +435,15 @@ export class SwgClient {
         // ignore
       }
       opts.onStateChange?.(ZoneState.Disconnected);
+      // Tear down the control socket if we created it (a supervisor-owned
+      // server is left running across lifecycles).
+      if (controlServer !== null && ownsControlServer) {
+        try {
+          await controlServer.stop();
+        } catch {
+          // ignore
+        }
+      }
     }
 
     // Did we see any ErrorMessage anywhere in the transcript?

@@ -281,6 +281,27 @@ export interface CharacterFaction {
 }
 
 /**
+ * Live view of the character's current performance (song / dance).
+ *
+ * `performing` is the authoritative "is a performance active" flag —
+ * `m_performanceType` (CREO p6) being non-zero. `type` is the song/dance
+ * id; `animatingSkillData` is the raw skill-animation string the server set
+ * (e.g. `'music_3'`).
+ */
+export interface CharacterPerformance {
+  /** True when a song or dance performance is currently active. */
+  performing: boolean;
+  /** Performance id from CREO p6 `m_performanceType`; `0` when idle. */
+  type: number;
+  /** Server epoch (seconds) the performance started; `0` when idle. */
+  startTime: number;
+  /** Skill-animation data string (e.g. `'music_3'`); `''` when idle. */
+  animatingSkillData: string;
+  /** Animation mood string (e.g. `'neutral'`). */
+  animationMood: string;
+}
+
+/**
  * The live character-sheet view. All fields are getters — reading
  * `ctx.character.health.current` returns the latest known value derived
  * from baselines + deltas applied so far.
@@ -451,6 +472,13 @@ export interface CharacterSheet {
    * know about cells on its own).
    */
   readonly inCell: boolean;
+  /**
+   * Current performance state (song / dance). `performance.performing` is
+   * the authoritative "is the character performing" flag — derived from
+   * CREO p6 `m_performanceType`. Defaults to `performing: false` before any
+   * SHARED_NP baseline lands.
+   */
+  readonly performance: CharacterPerformance;
   /** Snapshot all readable fields as a plain JSON-safe object. */
   toJSON(): Record<string, unknown>;
 }
@@ -542,6 +570,14 @@ interface SheetState {
   activeQuestsBitCount: number;
   /** PLAY p3 m_currentGcwPoints (faction standing). */
   currentGcwPoints: number;
+  /** CREO p6 m_performanceType (song/dance id; 0 = not performing). */
+  performanceType: number;
+  /** CREO p6 m_performanceStartTime (server epoch seconds; 0 = idle). */
+  performanceStartTime: number;
+  /** CREO p6 m_animatingSkillData (skill-animation string; '' = idle). */
+  animatingSkillData: string;
+  /** CREO p6 m_animationMood (animation mood string). */
+  animationMood: string;
   /**
    * Per-weapon-id cache of the most recent `AttributeListMessage`. Populated
    * by the AttributeListMessage subscription whenever an attribute response
@@ -583,6 +619,10 @@ function makeState(templateName: string | null): SheetState {
     workingSkill: null,
     activeQuestsBitCount: 0,
     currentGcwPoints: 0,
+    performanceType: 0,
+    performanceStartTime: 0,
+    animatingSkillData: '',
+    animationMood: '',
     weaponAttributes: new Map(),
   };
 }
@@ -634,6 +674,15 @@ export function createCharacterSheet(opts: CharacterSheetOptions): CharacterShee
     if (data.effects !== undefined) {
       state.visualEffects = applyVisualEffects(state.visualEffects, data.effects);
     }
+    // Performance state (song / dance) — drives `view.performance`.
+    if (data.performanceType !== undefined) state.performanceType = data.performanceType;
+    if (data.performanceStartTime !== undefined) {
+      state.performanceStartTime = data.performanceStartTime;
+    }
+    if (data.animatingSkillData !== undefined) {
+      state.animatingSkillData = data.animatingSkillData;
+    }
+    if (data.animationMood !== undefined) state.animationMood = data.animationMood;
   }
 
   function applyCreoClientServerNp(
@@ -1012,6 +1061,15 @@ export function createCharacterSheet(opts: CharacterSheetOptions): CharacterShee
     get inCell(): boolean {
       return opts.isInCell?.() ?? false;
     },
+    get performance(): CharacterPerformance {
+      return {
+        performing: state.performanceType !== 0,
+        type: state.performanceType,
+        startTime: state.performanceStartTime,
+        animatingSkillData: state.animatingSkillData,
+        animationMood: state.animationMood,
+      };
+    },
     toJSON(): Record<string, unknown> {
       const skillModsObj: Record<string, number> = {};
       for (const [name, total] of view.skillMods) skillModsObj[name] = total;
@@ -1063,9 +1121,63 @@ export function createCharacterSheet(opts: CharacterSheetOptions): CharacterShee
         factionDetails: { ...view.factionDetails },
         heading: view.heading,
         inCell: view.inCell,
+        performance: { ...view.performance },
       };
     },
   };
+
+  // Seed from the WorldModel's already-accumulated baselines. A
+  // CharacterSheet constructed mid-session — e.g. when the game-stage
+  // re-creates the script context for a `reload` — would otherwise have
+  // missed the one-time zone-in baseline flood and start blank (`level` 0,
+  // no skills). The WorldModel persists across reloads and holds the
+  // player's decoded CREO + PlayerObject baselines, so replay them now.
+  function seedFromWorld(): void {
+    if (world === undefined) return;
+    const creo = world.get(playerNetworkId);
+    if (creo !== undefined) {
+      const p1 = creo.baselines.get(BaselinePackageIds.CLIENT_SERVER);
+      const p3 = creo.baselines.get(BaselinePackageIds.SHARED);
+      const p4 = creo.baselines.get(BaselinePackageIds.CLIENT_SERVER_NP);
+      const p6 = creo.baselines.get(BaselinePackageIds.SHARED_NP);
+      if (isDecodedBaseline(p1)) {
+        applyCreoClientServer(p1 as Partial<CreatureObjectClientServerBaseline>);
+        state.ready = true;
+      }
+      if (isDecodedBaseline(p3)) {
+        applyCreoShared(p3 as Partial<CreatureObjectSharedBaseline>);
+        state.ready = true;
+      }
+      if (isDecodedBaseline(p4)) {
+        applyCreoClientServerNp(p4 as Partial<CreatureObjectClientServerNpBaseline>);
+        state.ready = true;
+      }
+      if (isDecodedBaseline(p6)) {
+        applyCreoSharedNp(p6 as Partial<CreatureObjectSharedNpBaseline>);
+        state.ready = true;
+      }
+    }
+    // The PlayerObject is a separate object — find the (single) PLAY object.
+    for (const obj of world.objects()) {
+      if (obj.typeId !== ObjectTypeTags.PLAY) continue;
+      const p1 = obj.baselines.get(BaselinePackageIds.CLIENT_SERVER);
+      const p3 = obj.baselines.get(BaselinePackageIds.SHARED);
+      const p6 = obj.baselines.get(BaselinePackageIds.SHARED_NP);
+      const p8 = obj.baselines.get(BaselinePackageIds.FIRST_PARENT_CLIENT_SERVER);
+      if (isDecodedBaseline(p1)) {
+        applyPlayClientServer(p1 as Partial<PlayerObjectClientServerBaseline>);
+      }
+      if (isDecodedBaseline(p3)) applyPlayShared(p3 as Partial<PlayerObjectSharedBaseline>);
+      if (isDecodedBaseline(p6)) applyPlaySharedNp(p6 as Partial<PlayerObjectSharedNpBaseline>);
+      if (isDecodedBaseline(p8)) {
+        applyPlayFirstParentClientServer(
+          p8 as Partial<PlayerObjectFirstParentClientServerBaseline>,
+        );
+      }
+      break;
+    }
+  }
+  seedFromWorld();
 
   return {
     view,
@@ -1464,4 +1576,18 @@ function factionTypeName(type: number): string {
     default:
       return 'unknown';
   }
+}
+
+/**
+ * True when a `WorldModel` baseline slot holds a typed-decoded object
+ * rather than raw `Uint8Array` package bytes (no decoder registered).
+ * Used by `seedFromWorld` to skip undecoded baselines.
+ */
+function isDecodedBaseline(value: unknown): value is Record<string, unknown> {
+  return (
+    value !== undefined &&
+    value !== null &&
+    typeof value === 'object' &&
+    !(value instanceof Uint8Array)
+  );
 }

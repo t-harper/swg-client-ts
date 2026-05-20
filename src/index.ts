@@ -115,6 +115,7 @@ export type {
   CharacterFaction,
   CharacterGroup,
   CharacterGroupInviter,
+  CharacterPerformance,
   CharacterRoadmap,
   CharacterSheet,
   CharacterSheetHandle,
@@ -923,3 +924,53 @@ export {
   SetProfessionTemplateKind,
 } from './messages/game/obj-controller/index.js';
 export type { ProfessionTemplateData } from './messages/game/obj-controller/index.js';
+
+// =============================================================================
+// Control socket — query + steer a running scripted session over a
+// Unix-domain "file-socket". A session host (a bot, or `SwgClient.fullLifecycle`
+// / `pnpm cli zone` with `controlSocket` set) binds a `ControlServer`; external
+// clients connect via `swg-ts-cli ctl` (or the `controlRequest` helper) to read
+// live state (world / character / inventory / …) and issue write-actions
+// (stop / logout / restart / pause / resume / reload / say / trigger).
+//
+// `runSupervised` is the outer loop bots use — it binds the socket once and
+// reconnects the character on `restart`; `reload` hot-swaps freshly imported
+// scenario code against the live connection.
+// =============================================================================
+export { ControlServer } from './client/control/control-server.js';
+export type { ControlServerOptions } from './client/control/control-server.js';
+export { runSupervised } from './client/control/supervisor.js';
+export type {
+  RunSupervisedOptions,
+  RunSupervisedResult,
+} from './client/control/supervisor.js';
+export { createSessionControl } from './client/control/session-control.js';
+export type {
+  SessionActionFn,
+  SessionControl,
+  SessionDirective,
+} from './client/control/session-control.js';
+export { controlRequest } from './client/control/control-client.js';
+export type { ControlRequestSpec } from './client/control/control-client.js';
+export { CONTROL_PROTOCOL_VERSION } from './client/control/protocol.js';
+export type {
+  ControlActionName,
+  ControlErrorCode,
+  ControlErrorResponse,
+  ControlOkResponse,
+  ControlQueryName,
+  ControlRequest,
+  ControlResponse,
+} from './client/control/protocol.js';
+export {
+  listSessions,
+  metadataPathFor,
+  readSessionMetadata,
+  sessionsDir,
+  socketPathFor,
+} from './client/control/socket-registry.js';
+export type {
+  SessionListEntry,
+  SessionMetadata,
+} from './client/control/socket-registry.js';
+export type { SessionHandle } from './client/control/session-handle.js';

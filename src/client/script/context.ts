@@ -3469,6 +3469,34 @@ export function didScriptLogout(ctx: ScriptContext): boolean {
   return (ctx as InternalContext)._state.didLogout;
 }
 
+/** Snapshot of a context's monotonic wire-sequence counters. */
+export interface ScriptContextSequences {
+  sequenceNumber: number;
+  commandSequence: number;
+  chatSequence: number;
+  craftSequence: number;
+  missionSequence: number;
+  bazaarRequestId: number;
+}
+
+/**
+ * Read a script context's current monotonic wire-sequence counters. The
+ * game-stage reload loop forwards these into the next `createScriptContext`
+ * (via the `initial*` options) so a re-run does not reset the sequences the
+ * server keys command-queue / chat / crafting / mission flows on.
+ */
+export function readScriptContextSequences(ctx: ScriptContext): ScriptContextSequences {
+  const s = (ctx as InternalContext)._state;
+  return {
+    sequenceNumber: s.sequenceNumber,
+    commandSequence: s.commandSequence,
+    chatSequence: s.chatSequence,
+    craftSequence: s.craftSequence,
+    missionSequence: s.missionSequence,
+    bazaarRequestId: s.bazaarRequestId,
+  };
+}
+
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted === true) {

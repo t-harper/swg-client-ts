@@ -88,6 +88,12 @@ What's available beyond the basic lifecycle:
   `changePosture`, `startDance`.
 - **Fleet** — run N independent clients in parallel with staggered launches,
   per-outcome error isolation, per-message-name summary stats.
+- **Control socket** — a running bot or scripted session binds a Unix-domain
+  socket; `swg-ts-cli ctl …` connects to query live state (world, character
+  sheet, inventory, location, …) and issue write-actions (pause/resume, say,
+  trigger, reload, restart, stop, logout). `reload` re-imports edited scenario
+  code and re-runs it against the still-connected session — subsecond bot
+  iteration with no reconnect. See `docs/control-socket.md`.
 - **Capture + replay** — record any session as NDJSON, replay against a fresh
   server to detect wire-format drift.
 - **Raw SOE-layer byte capture (release/0.1)** — opt-in tee of pre-decrypt
@@ -224,8 +230,9 @@ All `.tre` and `.trn` files are gitignored — never committed.
 
 ## CLI
 
-Four subcommands: `zone`, `swarm`, `capture`, `replay`. Exit code is 0 on
-success, 1 on failure. JSON always goes to stdout; logs to stderr.
+Subcommands: `zone`, `swarm`, `capture`, `replay`, `decode-raw`, `pool`, `ctl`.
+Exit code is 0 on success, 1 on failure. JSON always goes to stdout; logs to
+stderr.
 
 ### `zone` flags
 
@@ -241,6 +248,8 @@ success, 1 on failure. JSON always goes to stdout; logs to stderr.
 | `--hold-ms` | `5000` | Time to dwell in the zoned-in state before logging out |
 | `--script` | optional | Name of a bundled scenario to run during the dwell: `walk-line`, `walk-circle`, `open-inventory`, `combat-attack`, `posture-cycle`, `survey`, `dwell` |
 | `--script-arg=k=v` | repeatable | Scenario args (e.g. `--script-arg=radius=8`) |
+| `--control-socket=<name>` | optional | Bind a control socket for this session — `swg-ts-cli ctl` can then query/steer it |
+| `--supervise` | off | Wrap the lifecycle in the restart/reload supervisor loop (requires `--script`); enables `ctl restart` / `ctl reload` |
 | `--verbose` | off | Stream message names + state transitions to stderr |
 | `--skip-game` | off | Stop after `SelectCharacter` (skip zone-in + logout) |
 | `--no-pretty` | off | Single-line JSON instead of pretty-printed |
@@ -268,6 +277,30 @@ Character names follow `Fleet${p}<i>`.
 | `--compare=names\|count` | (replay) Compare observed recv names ordered (default) or as a multiset |
 
 Replay exits 1 if any expected recv name is missing from the observed stream.
+
+### `ctl` (control socket)
+
+Query and steer a running bot, or any session started with `--control-socket`
+(or the `controlSocket` lifecycle option). Each command prints one JSON object
+and exits 0 on success, 1 on a failed command, 2 on a usage error.
+
+| Command | Notes |
+|------|-------|
+| `ctl list` | List active control sessions (probes each socket for liveness) |
+| `ctl status` | Session + zone state; works even before zone-in completes |
+| `ctl get <query>` | `<query>` ∈ `world` `character` `inventory` `location` `group` `combat` `cooldowns` `datapad` `knowledge`; filter `world` with `--param=k=v` |
+| `ctl pause` / `ctl resume` | Suspend / resume bot behavior |
+| `ctl say <text…>` | Send in-game spatial chat |
+| `ctl trigger <name>` | Invoke a scenario-registered named action |
+| `ctl reload` | Re-import edited scenario code and re-run it on the same connection |
+| `ctl restart` | Reconnect the same character (supervised hosts only) |
+| `ctl stop` / `ctl logout` | End the session (`logout` does a graceful in-game logout first) |
+
+`--session=<name>` targets `~/.swg-ts-client/sessions/<name>.sock`; omit it when
+exactly one session is live. `--socket=<path>` overrides. See
+[`docs/control-socket.md`](docs/control-socket.md) for the protocol, the
+supervisor/reload model, and the programmatic API (`controlSocket`,
+`runSupervised`, `controlRequest`).
 
 ## Programmatic use
 
@@ -425,6 +458,7 @@ the full `ScriptContext` API and the ObjController subtype dispatch.
 - `docs/wire-reference.md` — every registered message + ObjController subtype (auto-generated)
 - `docs/wire-spec.md` — distilled byte-level spec
 - `docs/lifecycle.md` — 4-stage state diagram (with script hook)
+- `docs/control-socket.md` — the `ctl` control socket: queries, write-actions, supervisor/reload loop
 - `docs/adding-a-message.md` — recipe for new top-level messages + ObjController subtypes
 - `assets/README.md` — TRE/TRN asset staging (for terrain features + city builder)
 - `../swg-main/CLAUDE.md` — the server side (read this first if you're new)

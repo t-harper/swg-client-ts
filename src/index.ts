@@ -189,6 +189,50 @@ export type {
   SafetyView,
 } from './client/combat-helpers.js';
 export { attachCombatHelpers } from './client/combat-helpers.js';
+
+// Plug-and-play per-profession combat behaviors. The host installs one
+// behavior on the ScriptContext; the framework auto-engages when attacked,
+// runs the profession's ability rotation with cooldown-aware decision
+// making, fires heals predictively, and kites melee enemies on ranged
+// professions. Host scripts wrap cancellable work in
+// `cb.runHostOperation(signal => ...)` so combat can take over when
+// engaged.
+export {
+  installCombatBehavior,
+  PROFESSION_ROTATIONS,
+  bountyHunter,
+  commando,
+  jedi,
+  officer,
+  resolveProfessionRotation,
+  smuggler,
+  spy,
+  verifyAbilities,
+  readKnownCommands,
+  DEFAULT_HEAL_POLICY,
+  DEFAULT_KITE_PROFILES,
+  DEFAULT_TARGETING_POLICY,
+} from './client/script/combat/index.js';
+export type {
+  AbilityCheckResult,
+  CombatBehavior,
+  CombatBehaviorOptions,
+  DisengageEvent,
+  DisengageReason,
+  EngageEvent,
+  EngageReason,
+  HealPolicy,
+  KiteProfile,
+  ProfessionId,
+  Rotation,
+  RotationEngagementState,
+  RotationSlot,
+  TargetingPolicy,
+  TickSample as CombatTickSample,
+  VerifyAbilitiesOpts,
+  WeaponKind,
+} from './client/script/combat/index.js';
+
 export type { WalkToOptions, CircleOptions, WalkToCellOptions } from './client/script/movement.js';
 export type { ExpectOptions } from './client/script/expectations.js';
 
